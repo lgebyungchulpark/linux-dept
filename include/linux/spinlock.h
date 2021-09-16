@@ -92,6 +92,36 @@
 # include <linux/spinlock_up.h>
 #endif
 
+#ifdef CONFIG_DEPT
+#define dept_spin_init(m, k, s, n)		dept_map_init(m, k, s, n, DEPT_TYPE_SPIN)
+#define dept_spin_reinit(m, k, s, n)		dept_map_reinit(m, k, s, n)
+#define dept_spin_nocheck(m)			dept_map_nocheck(m)
+#define dept_spin_lock(m, e_fn, ip)		dept_wait_ecxt_enter(m, 1UL, 1UL, ip, __func__, __func__, e_fn, 0)
+#define dept_spin_lock_nest(m, n_m, ip)		WARN_ON(dept_top_map() != (n_m))
+#define dept_spin_lock_nested(m, ne, e_fn, ip)	dept_wait_ecxt_enter(m, 1UL, 1UL, ip, __func__, __func__, e_fn, ne)
+#define dept_spin_trylock(m, e_fn, ip)		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, 0)
+#define dept_spin_unlock(m, ip)			dept_ecxt_exit(m, ip)
+#define dept_spin_enter(m, e_fn, ip)		dept_ecxt_enter(m, 1UL, ip, "spin_lock_enter", e_fn, 0)
+#define dept_spin_exit(m, ip)			dept_ecxt_exit(m, ip)
+#define dept_spin_switch_nested(m, ne, ip)				\
+	do {								\
+		dept_ecxt_exit(m, ip);					\
+		dept_ecxt_enter(m, 1UL, ip, __func__, "spin_switch_nested", ne);\
+	} while (0)
+#else
+#define dept_spin_init(m, k, s, n)		do { (void)(n); (void)(k); } while (0)
+#define dept_spin_reinit(m, k, s, n)		do { (void)(n); (void)(k); } while (0)
+#define dept_spin_nocheck(m)			do { } while (0)
+#define dept_spin_lock(m, e_fn, ip)		do { } while (0)
+#define dept_spin_lock_nest(m, n_m, ip)		do { } while (0)
+#define dept_spin_lock_nested(m, ne, e_fn, ip)	do { } while (0)
+#define dept_spin_trylock(m, e_fn, ip)		do { } while (0)
+#define dept_spin_unlock(m, ip)			do { } while (0)
+#define dept_spin_enter(m, e_fn, ip)		do { } while (0)
+#define dept_spin_exit(m, ip)			do { } while (0)
+#define dept_spin_switch_nested(m, ne, ip)	do { } while (0)
+#endif
+
 #ifdef CONFIG_DEBUG_SPINLOCK
   extern void __raw_spin_lock_init(raw_spinlock_t *lock, const char *name,
 				   struct lock_class_key *key, short inner);
