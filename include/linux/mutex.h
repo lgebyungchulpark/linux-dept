@@ -76,6 +76,26 @@ struct ww_mutex {
 #endif
 };
 
+#ifdef CONFIG_DEPT
+#define dept_mutex_init(m, k, s, n)		dept_map_init(m, k, s, n, DEPT_TYPE_MUTEX)
+#define dept_mutex_reinit(m, k, s, n)		dept_map_reinit(m, k, s, n)
+#define dept_mutex_nocheck(m)			dept_map_nocheck(m)
+#define dept_mutex_lock(m, e_fn, ip)		dept_wait_ecxt_enter(m, 1UL, 1UL, ip, __func__, __func__, e_fn, 0)
+#define dept_mutex_lock_nest(m, n_m, ip)	WARN_ON(dept_top_map() != (n_m))
+#define dept_mutex_lock_nested(m, ne, e_fn, ip)	dept_wait_ecxt_enter(m, 1UL, 1UL, ip, __func__, __func__, e_fn, ne)
+#define dept_mutex_trylock(m, e_fn, ip)		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, 0)
+#define dept_mutex_unlock(m, ip)		dept_ecxt_exit(m, ip)
+#else
+#define dept_mutex_init(m, k, s, n)		do { (void)(n); (void)(k); } while (0)
+#define dept_mutex_reinit(m, k, s, n)		do { (void)(n); (void)(k); } while (0)
+#define dept_mutex_nocheck(m)			do { } while (0)
+#define dept_mutex_lock(m, e_fn, ip)		do { } while (0)
+#define dept_mutex_lock_nest(m, n_m, ip)	do { } while (0)
+#define dept_mutex_lock_nested(m, ne, e_fn, ip)	do { } while (0)
+#define dept_mutex_trylock(m, e_fn, ip)		do { } while (0)
+#define dept_mutex_unlock(m, ip)		do { } while (0)
+#endif
+
 /*
  * This is the control structure for tasks blocked on mutex,
  * which resides on the blocked task's kernel stack:
@@ -119,11 +139,22 @@ do {									\
 	__mutex_init((mutex), #mutex, &__key);				\
 } while (0)
 
+#ifdef CONFIG_DEPT
+# define __DMAP_MUTEX_INITIALIZER(lockname)			\
+		.dmap = {					\
+			.name = #lockname,			\
+			.type = DEPT_TYPE_MUTEX,		\
+		},
+#else
+# define __DMAP_MUTEX_INITIALIZER(lockname)
+#endif
+
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define __DEP_MAP_MUTEX_INITIALIZER(lockname)			\
 		, .dep_map = {					\
 			.name = #lockname,			\
 			.wait_type_inner = LD_WAIT_SLEEP,	\
+			__DMAP_MUTEX_INITIALIZER(lockname)	\
 		}
 #else
 # define __DEP_MAP_MUTEX_INITIALIZER(lockname)

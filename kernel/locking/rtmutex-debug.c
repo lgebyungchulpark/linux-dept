@@ -177,6 +177,7 @@ void debug_rt_mutex_init(struct rt_mutex *lock, const char *name, struct lock_cl
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	lockdep_init_map(&lock->dep_map, name, key, 0);
+	dept_mutex_init(&lock->dep_map.dmap, &key->dkey, 0, name);
 #endif
 }
 

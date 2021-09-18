@@ -75,9 +75,22 @@ do { \
 # define rt_mutex_debug_task_free(t)			do { } while (0)
 #endif
 
+#ifdef CONFIG_DEPT
+#define __DMAP_RT_MUTEX_INITIALIZER(mutexname)		\
+	.dmap = {					\
+		.name = #mutexname,			\
+		.type = DEPT_TYPE_MUTEX			\
+	},
+#else
+#define __DMAP_RT_MUTEX_INITIALIZER(mutexname)
+#endif
+
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 #define __DEP_MAP_RT_MUTEX_INITIALIZER(mutexname) \
-	, .dep_map = { .name = #mutexname }
+	, .dep_map = {					\
+		.name = #mutexname,			\
+		__DMAP_RT_MUTEX_INITIALIZER(mutexname)	\
+	}
 #else
 #define __DEP_MAP_RT_MUTEX_INITIALIZER(mutexname)
 #endif

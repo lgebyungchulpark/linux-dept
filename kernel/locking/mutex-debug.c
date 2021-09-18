@@ -86,6 +86,7 @@ void debug_mutex_init(struct mutex *lock, const char *name,
 	 */
 	debug_check_no_locks_freed((void *)lock, sizeof(*lock));
 	lockdep_init_map_wait(&lock->dep_map, name, key, 0, LD_WAIT_SLEEP);
+	dept_mutex_init(&lock->dep_map.dmap, &key->dkey, 0, name);
 #endif
 	lock->magic = lock;
 }

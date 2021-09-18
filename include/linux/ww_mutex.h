@@ -135,6 +135,8 @@ static inline void ww_acquire_init(struct ww_acquire_ctx *ctx,
 	debug_check_no_locks_freed((void *)ctx, sizeof(*ctx));
 	lockdep_init_map(&ctx->dep_map, ww_class->acquire_name,
 			 &ww_class->acquire_key, 0);
+	dept_mutex_init(&ctx->dep_map.dmap, &ww_class->acquire_key.dkey, 0,
+			ww_class->acquire_name);
 	mutex_acquire(&ctx->dep_map, 0, 0, _RET_IP_);
 #endif
 #ifdef CONFIG_DEBUG_WW_MUTEX_SLOWPATH
