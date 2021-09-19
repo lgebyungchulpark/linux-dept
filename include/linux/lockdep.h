@@ -539,16 +539,32 @@ do {									\
 	dept_spin_unlock(&(l)->dmap, i);				\
 } while (0)
 
-#define rwlock_acquire(l, s, t, i)		lock_acquire_exclusive(l, s, t, NULL, i)
+#define rwlock_acquire(l, s, t, i)					\
+do {									\
+	lock_acquire_exclusive(l, s, t, NULL, i);			\
+	if (t)								\
+		dept_write_trylock(&(l)->dmap, "write_unlock", i);	\
+	else								\
+		dept_write_lock(&(l)->dmap, s, "write_unlock", i);	\
+} while (0)
 #define rwlock_acquire_read(l, s, t, i)					\
 do {									\
-	if (read_lock_is_recursive())					\
+	if (t) {							\
+		dept_read_trylock(&(l)->dmap, "read_unlock", i);	\
+	} else if (read_lock_is_recursive()) {				\
 		lock_acquire_shared_recursive(l, s, t, NULL, i);	\
-	else								\
+		dept_read_lock(&(l)->dmap, s, "read_unlock", i, 0);	\
+	} else {							\
 		lock_acquire_shared(l, s, t, NULL, i);			\
+		dept_read_lock(&(l)->dmap, s, "read_unlock", i, 1);	\
+	}								\
 } while (0)
 
-#define rwlock_release(l, i)			lock_release(l, i)
+#define rwlock_release(l, i)						\
+do {									\
+	lock_release(l, i);						\
+	dept_rw_unlock(&(l)->dmap, i);					\
+} while (0)
 
 #define seqcount_acquire(l, s, t, i)		lock_acquire_exclusive(l, s, t, NULL, i)
 #define seqcount_acquire_read(l, s, t, i)	lock_acquire_shared_recursive(l, s, t, NULL, i)

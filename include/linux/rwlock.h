@@ -28,6 +28,30 @@ do {								\
 	do { *(lock) = __RW_LOCK_UNLOCKED(lock); } while (0)
 #endif
 
+#ifdef CONFIG_DEPT
+#define DEPT_EVT_R		1UL
+#define DEPT_EVT_W		(1UL << 1)
+#define DEPT_EVT_RW		(DEPT_EVT_R | DEPT_EVT_W)
+
+#define dept_rw_init(m, k, s, n)		dept_map_init(m, k, s, n, DEPT_TYPE_RW)
+#define dept_rw_reinit(m, k, s, n)		dept_map_reinit(m, k, s, n)
+#define dept_rw_nocheck(m)			dept_map_nocheck(m)
+#define dept_write_lock(m, s, e_fn, ip)		dept_wait_ecxt_enter(m, DEPT_EVT_RW, DEPT_EVT_W, ip, __func__, __func__, e_fn, s)
+#define dept_write_trylock(m, e_fn, ip)		dept_ecxt_enter(m, DEPT_EVT_W, ip, __func__, e_fn, 0)
+#define dept_read_lock(m, s, e_fn, ip, q)	dept_wait_ecxt_enter(m, (q) ? DEPT_EVT_RW : DEPT_EVT_W, DEPT_EVT_R, ip, __func__, __func__, e_fn, s)
+#define dept_read_trylock(m, e_fn, ip)		dept_ecxt_enter(m, DEPT_EVT_R, ip, __func__, e_fn, 0)
+#define dept_rw_unlock(m, ip)			dept_ecxt_exit(m, ip)
+#else
+#define dept_rw_init(m, k, s, n)		do { (void)(n); (void)(k); } while (0)
+#define dept_rw_reinit(m, k, s, n)		do { (void)(n); (void)(k); } while (0)
+#define dept_rw_nocheck(m)			do { } while (0)
+#define dept_write_lock(m, s, e_fn, ip)		do { } while (0)
+#define dept_write_trylock(m, e_fn, ip)		do { } while (0)
+#define dept_read_lock(m, s, e_fn, ip, q)	do { } while (0)
+#define dept_read_trylock(m, e_fn, ip)		do { } while (0)
+#define dept_rw_unlock(m, ip)			do { } while (0)
+#endif
+
 #ifdef CONFIG_DEBUG_SPINLOCK
  extern void do_raw_read_lock(rwlock_t *lock) __acquires(lock);
 #define do_raw_read_lock_flags(lock, flags) do_raw_read_lock(lock)
