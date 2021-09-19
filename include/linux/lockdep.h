@@ -574,10 +574,8 @@ do {									\
 	lock_acquire_exclusive(l, s, t, NULL, i);			\
 	if (t)								\
 		dept_mutex_trylock(&(l)->dmap, "mutex_unlock", i);	\
-	else if (s)							\
-		dept_mutex_lock_nested(&(l)->dmap, s, "mutex_unlock", i);\
 	else								\
-		dept_mutex_lock(&(l)->dmap, "mutex_unlock", i);		\
+		dept_mutex_lock(&(l)->dmap, s, "mutex_unlock", i);	\
 } while (0)
 
 /*
@@ -588,12 +586,10 @@ do {									\
 	lock_acquire_exclusive(l, s, t, n, i);				\
 	if (t)								\
 		dept_mutex_trylock(&(l)->dmap, "mutex_unlock", i);	\
-	else if (s)							\
-		dept_mutex_lock_nested(&(l)->dmap, s, "mutex_unlock", i);\
 	else if (n)							\
 		dept_mutex_lock_nest(&(l)->dmap, &(n)->dmap, i);	\
 	else								\
-		dept_mutex_lock(&(l)->dmap, "mutex_unlock", i);		\
+		dept_mutex_lock(&(l)->dmap, s, "mutex_unlock", i);	\
 } while (0)
 
 #define mutex_release(l, i)						\
