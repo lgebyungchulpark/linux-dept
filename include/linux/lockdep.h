@@ -511,10 +511,8 @@ do {									\
 	lock_acquire_exclusive(l, s, t, NULL, i);			\
 	if (t)								\
 		dept_spin_trylock(&(l)->dmap, "spin_unlock", i);	\
-	else if (s)							\
-		dept_spin_lock_nested(&(l)->dmap, s, "spin_unlock", i);	\
 	else								\
-		dept_spin_lock(&(l)->dmap, "spin_unlock", i);		\
+		dept_spin_lock(&(l)->dmap, s, "spin_unlock", i);	\
 } while (0)
 
 /*
@@ -525,12 +523,10 @@ do {									\
 	lock_acquire_exclusive(l, s, t, n, i);				\
 	if (t)								\
 		dept_spin_trylock(&(l)->dmap, "spin_unlock", i);	\
-	else if (s)							\
-		dept_spin_lock_nested(&(l)->dmap, s, "spin_unlock", i);	\
 	else if (n)							\
 		dept_spin_lock_nest(&(l)->dmap, &(n)->dmap, i);		\
 	else								\
-		dept_spin_lock(&(l)->dmap, "spin_unlock", i);		\
+		dept_spin_lock(&(l)->dmap, s, "spin_unlock", i);	\
 } while (0)
 
 #define spin_release(l, i)						\
