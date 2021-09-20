@@ -329,6 +329,7 @@ void __init_rwsem(struct rw_semaphore *sem, const char *name,
 	 */
 	debug_check_no_locks_freed((void *)sem, sizeof(*sem));
 	lockdep_init_map_wait(&sem->dep_map, name, key, 0, LD_WAIT_SLEEP);
+	dept_rwsem_init(&sem->dep_map.dmap, &key->dkey, 0, name);
 #endif
 #ifdef CONFIG_DEBUG_RWSEMS
 	sem->magic = sem;
