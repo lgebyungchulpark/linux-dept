@@ -92,6 +92,22 @@
 # include <linux/spinlock_up.h>
 #endif
 
+#ifdef CONFIG_DEPT
+#define dept_spin_lock(m, ne, t, n, e_fn, ip)				\
+do {									\
+	if (t)								\
+		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, 0);		\
+	else if (n)							\
+		dept_warn_on(dept_top_map() != (n));			\
+	else								\
+		dept_wait_ecxt_enter(m, 1UL, 1UL, ip, __func__, __func__, e_fn, ne);\
+} while (0)
+#define dept_spin_unlock(m, ip)			dept_ecxt_exit(m, ip)
+#else
+#define dept_spin_lock(m, ne, t, n, e_fn, ip)	do { } while (0)
+#define dept_spin_unlock(m, ip)			do { } while (0)
+#endif
+
 #ifdef CONFIG_DEBUG_SPINLOCK
   extern void __raw_spin_lock_init(raw_spinlock_t *lock, const char *name,
 				   struct lock_class_key *key, short inner);
