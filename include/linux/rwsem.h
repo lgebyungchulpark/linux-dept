@@ -20,6 +20,22 @@
 #include <linux/osq_lock.h>
 #endif
 
+#ifdef CONFIG_DEPT
+#define dept_rwsem_lock(m, ne, t, n, e_fn, ip)				\
+do {									\
+	if (t)								\
+		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, 0);		\
+	else if (n)							\
+		dept_warn_on(dept_top_map() != (n));			\
+	else								\
+		dept_wait_ecxt_enter(m, 1UL, 1UL, ip, __func__, __func__, e_fn, ne);\
+} while (0)
+#define dept_rwsem_unlock(m, ip)		dept_ecxt_exit(m, ip)
+#else
+#define dept_rwsem_lock(m, ne, t, n, e_fn, ip)	do { } while (0)
+#define dept_rwsem_unlock(m, ip)		do { } while (0)
+#endif
+
 /*
  * For an uncontended rwsem, count and owner are the only fields a task
  * needs to touch when acquiring the rwsem. So they are put next to each
@@ -64,11 +80,18 @@ static inline int rwsem_is_locked(struct rw_semaphore *sem)
 
 /* Common initializer macros and functions */
 
+#ifdef CONFIG_DEPT
+# define RWSEM_DMAP_INIT(lockname)	.dmap = { .name = #lockname },
+#else
+# define RWSEM_DMAP_INIT(lockname)
+#endif
+
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define __RWSEM_DEP_MAP_INIT(lockname)			\
 	.dep_map = {					\
 		.name = #lockname,			\
 		.wait_type_inner = LD_WAIT_SLEEP,	\
+		RWSEM_DMAP_INIT(lockname)		\
 	},
 #else
 # define __RWSEM_DEP_MAP_INIT(lockname)
