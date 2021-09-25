@@ -28,6 +28,36 @@ do {								\
 	do { *(lock) = __RW_LOCK_UNLOCKED(lock); } while (0)
 #endif
 
+#ifdef CONFIG_DEPT
+#define DEPT_EVT_RWLOCK_R		1UL
+#define DEPT_EVT_RWLOCK_W		(1UL << 1)
+#define DEPT_EVT_RWLOCK_RW		(DEPT_EVT_RWLOCK_R | DEPT_EVT_RWLOCK_W)
+
+#define dept_rwlock_wlock(m, ne, t, n, e_fn, ip)			\
+do {									\
+	if (t)								\
+		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_W, ip, __func__, e_fn, 0);\
+	else if (n)							\
+		dept_warn_on(dept_top_map() != (n));			\
+	else								\
+		dept_wait_ecxt_enter(m, DEPT_EVT_RWLOCK_RW, DEPT_EVT_RWLOCK_W, ip, __func__, __func__, e_fn, ne);\
+} while (0)
+#define dept_rwlock_rlock(m, ne, t, n, e_fn, ip, q)			\
+do {									\
+	if (t)								\
+		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_R, ip, __func__, e_fn, 0);\
+	else if (n)							\
+		dept_warn_on(dept_top_map() != (n));			\
+	else								\
+		dept_wait_ecxt_enter(m, (q) ? DEPT_EVT_RWLOCK_RW : DEPT_EVT_RWLOCK_W, DEPT_EVT_RWLOCK_R, ip, __func__, __func__, e_fn, ne);\
+} while (0)
+#define dept_rwlock_unlock(m, ip)			dept_ecxt_exit(m, ip)
+#else
+#define dept_rwlock_wlock(m, ne, t, n, e_fn, ip)	do { } while (0)
+#define dept_rwlock_rlock(m, ne, t, n, e_fn, ip, q)	do { } while (0)
+#define dept_rwlock_unlock(m, ip)			do { } while (0)
+#endif
+
 #ifdef CONFIG_DEBUG_SPINLOCK
  extern void do_raw_read_lock(rwlock_t *lock) __acquires(lock);
 #define do_raw_read_lock_flags(lock, flags) do_raw_read_lock(lock)
