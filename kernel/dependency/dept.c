@@ -983,27 +983,19 @@ static enum bfs_ret cb_check_dl(struct dept_dep *d,
 	return DEPT_BFS_CONTINUE;
 }
 
+/*
+ * This function is actually in charge of reporting.
+ */
 static inline void check_dl(struct dept_dep *d)
 {
 	bfs(dep_tc(d), cb_check_dl, (void *)d, NULL);
 }
 
-static void add_dep(struct dept_ecxt *e, struct dept_wait *w)
-{
-	struct dept_dep *d;
-
-	if (dep(e->class, w->class))
-		return;
-
-	if (unlikely(!dept_lock()))
-		return;
-
-	d = __add_dep(e, w);
-	if (d)
-		check_dl(d);
-	dept_unlock();
-}
-
+/*
+ * Should keep the search until the end even if it encounters the same
+ * iwait on the way because there might be DEPT_IWAIT_UNKNOWN or
+ * something here and there which should be filled with a valid one.
+ */
 static enum bfs_ret cb_prop_iwait(struct dept_dep *d,
 				  void *in, void **out)
 {
@@ -1033,6 +1025,9 @@ static enum bfs_ret cb_prop_iwait(struct dept_dep *d,
 	if (!tc->iecxt[irq])
 		return DEPT_BFS_CONTINUE;
 
+	/*
+	 * Add irq dependency to form a complete circle.
+	 */
 	new = __add_dep(tc->iecxt[irq], tc->iwait[irq]);
 	if (!new)
 		return DEPT_BFS_CONTINUE;
@@ -1041,6 +1036,9 @@ static enum bfs_ret cb_prop_iwait(struct dept_dep *d,
 	return DEPT_BFS_DONE;
 }
 
+/*
+ * Should start from a class that has 0 of iwait_dist.
+ */
 static void propagate_iwait(struct dept_class *c, int irq)
 {
 	struct dept_dep *new;
@@ -1118,7 +1116,6 @@ static void add_iecxt(struct dept_ecxt *e, int irq, bool stack)
 
 	if (c->iwait[irq] == DEPT_IWAIT_UNKNOWN) {
 		struct dept_wait *w = find_iwait(c, irq);
-		WRITE_ONCE(c->iwait[irq], w);
 
 		/*
 		 * Deadlock detected. Let propagate_iwait() report it.
@@ -1126,6 +1123,9 @@ static void add_iecxt(struct dept_ecxt *e, int irq, bool stack)
 		if (w)
 			propagate_iwait(w->class, irq);
 	} else if (c->iwait[irq]) {
+		/*
+		 * Add irq dependency to form a complete circle.
+		 */
 		struct dept_dep *d = __add_dep(e, c->iwait[irq]);
 
 		/*
@@ -1160,6 +1160,9 @@ static void add_iwait(struct dept_wait *w, int irq)
 	WRITE_ONCE(c->iwait[irq], get_wait(w));
 
 	if (c->iecxt[irq]) {
+		/*
+		 * Add irq dependency to form a complete circle.
+		 */
 		struct dept_dep *d = __add_dep(c->iecxt[irq], w);
 
 		/*
@@ -1209,6 +1212,39 @@ static void add_hist(struct dept_wait *w, unsigned int wg, unsigned int ctxt_id)
 	wh->wait = get_wait(w);
 	wh->wgen = wg;
 	wh->ctxt_id = ctxt_id;
+}
+
+static void add_dep(struct dept_ecxt *e, struct dept_wait *w)
+{
+	struct dept_dep *d;
+	int i;
+
+	if (dep(e->class, w->class))
+		return;
+
+	if (unlikely(!dept_lock()))
+		return;
+
+	d = __add_dep(e, w);
+	if (d) {
+		check_dl(d);
+
+		for (i = 0; i < DEPT_IRQS_NR; i++) {
+			/*
+			 * There's no iwait to propagate in the 'from'.
+			 */
+			if (!e->class->iwait[i])
+				continue;
+			/*
+			 * This case has been already handled by add_iwait().
+			 */
+			if (w->class->iwait[i])
+				continue;
+
+			propagate_iwait(e->class->iwait[i]->class, i);
+		}
+	}
+	dept_unlock();
 }
 
 static atomic_t wgen = ATOMIC_INIT(1);
