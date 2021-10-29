@@ -992,9 +992,14 @@ static inline void check_dl(struct dept_dep *d)
 }
 
 /*
- * Should keep the search until the end even if it encounters the same
- * iwait on the way because there might be DEPT_IWAIT_UNKNOWN or
- * something here and there which should be filled with a valid one.
+ * Should keep the search until the end even if it encounters
+ * iwait_dist <= bfs_dist on the way because there might be
+ * DEPT_IWAIT_UNKNOWN or something here and there which should be filled
+ * with a valid one.
+ *
+ * XXX: The search by the branch can stop when it encounters
+ * iwait_dist <= bfs_dist, if it's proved that there are no need to go
+ * in the case.
  */
 static enum bfs_ret cb_prop_iwait(struct dept_dep *d,
 				  void *in, void **out)
@@ -1471,11 +1476,18 @@ static void do_event(void *obj, struct dept_class *c, unsigned int wg,
 	}
 }
 
+/*
+ * Should keep the search until the end even if it encounters another
+ * iwait on the way because there might be the iwait here and there by
+ * any chance which should be cleaned as well.
+ *
+ * XXX: The search by the branch can stop when it encounters another
+ * iwait, if it's proved that there are no more the iwait in the case.
+ */
 static enum bfs_ret cb_clean_iwait(struct dept_dep *d, void *in, void **out)
 {
 	struct dept_class *c = (struct dept_class *)in;
 	struct dept_class *tc;
-	bool skip = true;
 	int i;
 
 	/*
@@ -1491,11 +1503,7 @@ static enum bfs_ret cb_clean_iwait(struct dept_dep *d, void *in, void **out)
 			continue;
 		WRITE_ONCE(tc->iwait[i], DEPT_IWAIT_UNKNOWN);
 		tc->iwait_dist[i] = INT_MAX;
-		skip = false;
 	}
-
-	if (skip)
-		return DEPT_BFS_SKIP;
 
 	return DEPT_BFS_CONTINUE;
 }
