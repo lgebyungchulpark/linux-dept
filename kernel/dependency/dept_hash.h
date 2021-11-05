@@ -7,3 +7,5 @@
 
 HASH(dep	, 12)
 HASH(class	, 12)
+HASH(staleiw	,  4)
+HASH(staleie	,  4)

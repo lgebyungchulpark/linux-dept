@@ -403,8 +403,15 @@ SET_CONSTRUCTOR(ecxt, initialize_ecxt);
 
 static void initialize_wait(struct dept_wait *w)
 {
+	int i;
+
+	for (i = 0; i < DEPT_IRQS_NR; i++) {
+		w->irq_stack[i] = NULL;
+		w->irq_ip[i] = 0UL;
+	}
+	w->wait_ip = 0UL;
+	w->wait_stack = NULL;
 	w->irqf = 0UL;
-	w->stack = NULL;
 }
 SET_CONSTRUCTOR(wait, initialize_wait);
 
@@ -445,10 +452,15 @@ SET_DESTRUCTOR(ecxt, destroy_ecxt);
 
 static void destroy_wait(struct dept_wait *w)
 {
+	int i;
+
+	for (i = 0; i < DEPT_IRQS_NR; i++)
+		if (w->irq_stack[i])
+			put_stack(w->irq_stack[i]);
 	if (w->class)
 		put_class(w->class);
-	if (w->stack)
-		put_stack(w->stack);
+	if (w->wait_stack)
+		put_stack(w->wait_stack);
 }
 SET_DESTRUCTOR(wait, destroy_wait);
 #undef  SET_DESTRUCTOR
@@ -494,6 +506,26 @@ static unsigned long key_class(struct dept_class *c)
 	return c->key;
 }
 
+static bool cmp_staleiw(struct dept_staleiw *s1, struct dept_staleiw *s2)
+{
+	return s1->ip == s2->ip && s1->irq == s2->irq;
+}
+
+static unsigned long key_staleiw(struct dept_staleiw *s)
+{
+	return s->ip ^ (1UL << s->irq);
+}
+
+static bool cmp_staleie(struct dept_staleie *s1, struct dept_staleie *s2)
+{
+	return s1->ip == s2->ip && s1->irq == s2->irq;
+}
+
+static unsigned long key_staleie(struct dept_staleie *s)
+{
+	return s->ip ^ (1UL << s->irq);
+}
+
 #define HASH(id, bits)							\
 static struct hlist_head table_##id[1UL << bits];			\
 									\
@@ -526,16 +558,29 @@ static inline void hash_del_##id(struct dept_##id *a)			\
 static inline struct dept_dep *dep(struct dept_class *fc,
 				   struct dept_class *tc)
 {
-	struct dept_ecxt dum_e = { .class = fc };
-	struct dept_wait dum_w = { .class = tc };
-	struct dept_dep  dum_d = { .ecxt = &dum_e, .wait = &dum_w };
-	return hash_lookup_dep(&dum_d);
+	struct dept_ecxt onetime_e = { .class = fc };
+	struct dept_wait onetime_w = { .class = tc };
+	struct dept_dep  onetime_d = { .ecxt = &onetime_e,
+				       .wait = &onetime_w };
+	return hash_lookup_dep(&onetime_d);
 }
 
 static inline struct dept_class *class(unsigned long key)
 {
-	struct dept_class dum_c = { .key = key };
-	return hash_lookup_class(&dum_c);
+	struct dept_class onetime_c = { .key = key };
+	return hash_lookup_class(&onetime_c);
+}
+
+static inline struct dept_staleiw *staleiw(unsigned long ip, int irq)
+{
+	struct dept_staleiw onetime_s = { .ip = ip, .irq = irq };
+	return hash_lookup_staleiw(&onetime_s);
+}
+
+static inline struct dept_staleie *staleie(unsigned long ip, int irq)
+{
+	struct dept_staleie onetime_s = { .ip = ip, .irq = irq };
+	return hash_lookup_staleie(&onetime_s);
 }
 
 /*
@@ -578,12 +623,6 @@ static void print_diagram(struct dept_dep *d)
 
 	irqf = e->enirqf & w->irqf;
 
-	if (!irqf) {
-		print_spc(spc, "[S] %s(%s:%d)\n", c_fn, fc->name, fc->sub);
-		print_spc(spc, "[W] %s(%s:%d)\n", w_fn, tc->name, tc->sub);
-		print_spc(spc, "[E] %s(%s:%d)\n", e_fn, fc->name, fc->sub);
-	}
-
 	for_each_set_bit(irq, &irqf, DEPT_IRQS_NR) {
 		if (!firstline)
 			printk("\nor\n\n");
@@ -592,6 +631,12 @@ static void print_diagram(struct dept_dep *d)
 		print_spc(spc, "[S] %s(%s:%d)\n", c_fn, fc->name, fc->sub);
 		print_spc(spc, "    <%s interrupt>\n", irq_str(irq));
 		print_spc(spc + 1, "[W] %s(%s:%d)\n", w_fn, tc->name, tc->sub);
+		print_spc(spc, "[E] %s(%s:%d)\n", e_fn, fc->name, fc->sub);
+	}
+
+	if (!irqf) {
+		print_spc(spc, "[S] %s(%s:%d)\n", c_fn, fc->name, fc->sub);
+		print_spc(spc, "[W] %s(%s:%d)\n", w_fn, tc->name, tc->sub);
 		print_spc(spc, "[E] %s(%s:%d)\n", e_fn, fc->name, fc->sub);
 	}
 }
@@ -613,18 +658,32 @@ static void print_dep(struct dept_dep *d)
 		printk("%s has been enabled:\n", irq_str(irq));
 		print_ip_stack(e->enirq_ip[irq], e->enirq_stack[irq]);
 		printk("\n");
+
+		printk("[S] %s(%s:%d):\n", c_fn, fc->name, fc->sub);
+		print_ip_stack(e->ecxt_ip, e->ecxt_stack);
+		printk("\n");
+
+		printk("[W] %s(%s:%d) in %s context:\n",
+		       w_fn, tc->name, tc->sub, irq_str(irq));
+		print_ip_stack(w->irq_ip[irq], w->irq_stack[irq]);
+		printk("\n");
+
+		printk("[E] %s(%s:%d):\n", e_fn, fc->name, fc->sub);
+		print_ip_stack(e->event_ip, e->event_stack);
 	}
 
-	printk("[S] %s(%s:%d):\n", c_fn, fc->name, fc->sub);
-	print_ip_stack(e->ecxt_ip, e->ecxt_stack);
-	printk("\n");
+	if (!irqf) {
+		printk("[S] %s(%s:%d):\n", c_fn, fc->name, fc->sub);
+		print_ip_stack(e->ecxt_ip, e->ecxt_stack);
+		printk("\n");
 
-	printk("[W] %s(%s:%d):\n", w_fn, tc->name, tc->sub);
-	print_ip_stack(w->ip, w->stack);
-	printk("\n");
+		printk("[W] %s(%s:%d):\n", w_fn, tc->name, tc->sub);
+		print_ip_stack(w->wait_ip, w->wait_stack);
+		printk("\n");
 
-	printk("[E] %s(%s:%d):\n", e_fn, fc->name, fc->sub);
-	print_ip_stack(e->event_ip, e->event_stack);
+		printk("[E] %s(%s:%d):\n", e_fn, fc->name, fc->sub);
+		print_ip_stack(e->event_ip, e->event_stack);
+	}
 }
 
 static void save_current_stack(int skip);
@@ -1042,6 +1101,92 @@ static enum bfs_ret cb_prop_iwait(struct dept_dep *d,
 }
 
 /*
+ * Should keep the search until the end even if it encounters another
+ * iwait on the way because there might be the iwait here and there by
+ * any chance which should be cleaned as well.
+ *
+ * XXX: The search by the branch can stop when it encounters another
+ * iwait, if it's proved that there are no more the iwait in the case.
+ */
+static enum bfs_ret cb_clean_iwait(struct dept_dep *d, void *in, void **out)
+{
+	struct dept_class *c = (struct dept_class *)in;
+	struct dept_class *tc;
+	int i;
+
+	/*
+	 * initial condition for this BFS search
+	 */
+	if (!d)
+		return DEPT_BFS_CONTINUE;
+
+	tc = dep_tc(d);
+
+	for (i = 0; i < DEPT_IRQS_NR; i++) {
+		if (!tc->iwait[i] || tc->iwait[i] != c->iwait[i])
+			continue;
+		WRITE_ONCE(tc->iwait[i], DEPT_IWAIT_UNKNOWN);
+		tc->iwait_dist[i] = INT_MAX;
+	}
+
+	return DEPT_BFS_CONTINUE;
+}
+
+/*
+ * Should perform cleaning iwait even if c is not a root of the iwait
+ * because c might be a bridge for the iwait to propagate.
+ */
+static void clean_iwait(struct dept_class *root, struct dept_class *c)
+{
+	bfs(root, cb_clean_iwait, (void *)c, NULL);
+}
+
+static void stale_iecxt_iwait(struct dept_dep *d, int irq)
+{
+	struct dept_ecxt *ie = d->ecxt;
+	struct dept_wait *iw = d->wait;
+	struct dept_class *iwroot = iw->class;
+	struct dept_staleie *sie;
+	struct dept_staleiw *siw;
+	struct dept_class onetime_c;
+	int i;
+
+	/*
+	 * iwroot should be root of the iwait.
+	 */
+	DEPT_WARN_ON(iwroot->iwait_dist[irq] != 0);
+
+	/*
+	 * ie and iw should have one common irq flag at least.
+	 */
+	DEPT_WARN_ON(!(ie->enirqf & iw->irqf));
+
+	for (i = 0; i < DEPT_IRQS_NR; i++)
+		onetime_c.iwait[i] = (i == irq) ? iw : NULL;
+	clean_iwait(iwroot, &onetime_c);
+
+	sie = new_staleie();
+	if (likely(sie)) {
+		sie->ip = ie->enirq_ip[irq];
+		sie->irq = irq;
+		hash_add_staleie(sie);
+	}
+	ie->enirqf &= ~(1UL << irq);
+	put_ecxt(ie);
+	WRITE_ONCE(dep_fc(d)->iecxt[irq], NULL);
+
+	siw = new_staleiw();
+	if (likely(siw)) {
+		siw->ip = iw->irq_ip[irq];
+		siw->irq = irq;
+		hash_add_staleiw(siw);
+	}
+	iw->irqf &= ~(1UL << irq);
+	put_wait(iw);
+	WRITE_ONCE(dep_tc(d)->iwait[irq], NULL);
+}
+
+/*
  * Should start from a class that has 0 of iwait_dist.
  */
 static void propagate_iwait(struct dept_class *c, int irq)
@@ -1054,8 +1199,10 @@ static void propagate_iwait(struct dept_class *c, int irq)
 		/*
 		 * Deadlock detected. Let check_dl() report it.
 		 */
-		if (new)
+		if (new) {
 			check_dl(new);
+			stale_iecxt_iwait(new, irq);
+		}
 	} while (new);
 }
 
@@ -1096,9 +1243,10 @@ static void add_iecxt(struct dept_ecxt *e, int irq, bool stack)
 	struct dept_class *c = e->class;
 	struct dept_task *dt = dept_task();
 
-	e->enirqf |= (1UL << irq);
-
 	if (READ_ONCE(c->iecxt[irq]))
+		return;
+
+	if (unlikely(staleie(dt->enirq_ip[irq], irq)))
 		return;
 
 	if (unlikely(!dept_lock()))
@@ -1106,6 +1254,12 @@ static void add_iecxt(struct dept_ecxt *e, int irq, bool stack)
 
 	if (c->iecxt[irq])
 		goto unlock;
+
+	if (unlikely(staleie(dt->enirq_ip[irq], irq)))
+		goto unlock;
+
+	e->enirqf |= (1UL << irq);
+
 	WRITE_ONCE(c->iecxt[irq], get_ecxt(e));
 
 	/*
@@ -1136,8 +1290,10 @@ static void add_iecxt(struct dept_ecxt *e, int irq, bool stack)
 		/*
 		 * Deadlock detected. Let check_dl() report it.
 		 */
-		if (d)
+		if (d) {
 			check_dl(d);
+			stale_iecxt_iwait(d, irq);
+		}
 	}
 unlock:
 	dept_unlock();
@@ -1148,10 +1304,11 @@ static void add_iwait(struct dept_wait *w, int irq)
 	struct dept_class *c = w->class;
 	struct dept_wait *iw;
 
-	w->irqf |= (1UL << irq);
-
 	iw = READ_ONCE(c->iwait[irq]);
 	if (iw && READ_ONCE(iw->class) == c)
+		return;
+
+	if (unlikely(staleiw(w->irq_ip[irq], irq)))
 		return;
 
 	if (unlikely(!dept_lock()))
@@ -1161,8 +1318,23 @@ static void add_iwait(struct dept_wait *w, int irq)
 	if (iw && iw->class == c)
 		goto unlock;
 
+	if (unlikely(staleiw(w->irq_ip[irq], irq)))
+		goto unlock;
+
+	w->irqf |= (1UL << irq);
+
 	c->iwait_dist[irq] = 0;
 	WRITE_ONCE(c->iwait[irq], get_wait(w));
+
+	/*
+	 * Should be NULL since it's the first time that these
+	 * irq_{ip,stack}[irq] have ever set.
+	 */
+	DEPT_WARN_ON(w->irq_ip[irq]);
+	DEPT_WARN_ON(w->irq_stack[irq]);
+
+	w->irq_ip[irq] = w->wait_ip;
+	w->irq_stack[irq] = get_current_stack();
 
 	if (c->iecxt[irq]) {
 		/*
@@ -1173,8 +1345,10 @@ static void add_iwait(struct dept_wait *w, int irq)
 		/*
 		 * Deadlock detected. Let check_dl() report it.
 		 */
-		if (d)
+		if (d) {
 			check_dl(d);
+			stale_iecxt_iwait(d, irq);
+		}
 	}
 	propagate_iwait(c, irq);
 unlock:
@@ -1268,9 +1442,9 @@ static unsigned int add_wait(struct dept_class *c, unsigned long ip,
 		return 0U;
 
 	WRITE_ONCE(w->class, get_class(c));
-	w->ip = ip;
+	w->wait_ip = ip;
 	w->wait_fn = w_fn;
-	w->stack = get_current_stack();
+	w->wait_stack = get_current_stack();
 
 	irq = cur_irq();
 	if (irq < DEPT_IRQS_NR)
@@ -1296,9 +1470,9 @@ static unsigned int add_wait(struct dept_class *c, unsigned long ip,
 	}
 
 	if (!wait_refered(w, 1) && !rich_stack) {
-		if (w->stack)
-			put_stack(w->stack);
-		w->stack = NULL;
+		if (w->wait_stack)
+			put_stack(w->wait_stack);
+		w->wait_stack = NULL;
 	}
 
 	/*
@@ -1476,43 +1650,6 @@ static void do_event(void *obj, struct dept_class *c, unsigned int wg,
 	}
 }
 
-/*
- * Should keep the search until the end even if it encounters another
- * iwait on the way because there might be the iwait here and there by
- * any chance which should be cleaned as well.
- *
- * XXX: The search by the branch can stop when it encounters another
- * iwait, if it's proved that there are no more the iwait in the case.
- */
-static enum bfs_ret cb_clean_iwait(struct dept_dep *d, void *in, void **out)
-{
-	struct dept_class *c = (struct dept_class *)in;
-	struct dept_class *tc;
-	int i;
-
-	/*
-	 * initial condition for this BFS search
-	 */
-	if (!d)
-		return DEPT_BFS_CONTINUE;
-
-	tc = dep_tc(d);
-
-	for (i = 0; i < DEPT_IRQS_NR; i++) {
-		if (tc->iwait[i] != c->iwait[i])
-			continue;
-		WRITE_ONCE(tc->iwait[i], DEPT_IWAIT_UNKNOWN);
-		tc->iwait_dist[i] = INT_MAX;
-	}
-
-	return DEPT_BFS_CONTINUE;
-}
-
-static void clean_iwait(struct dept_class *c)
-{
-	bfs(c, cb_clean_iwait, (void *)c, NULL);
-}
-
 static void del_dep_rcu(struct rcu_head *rh)
 {
 	struct dept_dep *d = container_of(rh, struct dept_dep, rh);
@@ -1530,7 +1667,7 @@ static void disconnect_class(struct dept_class *c)
 	struct dept_dep *d, *n;
 	int i;
 
-	clean_iwait(c);
+	clean_iwait(c, c);
 	for (i = 0; i < DEPT_IRQS_NR; i++) {
 		struct dept_ecxt *e = c->iecxt[i];
 		struct dept_wait *w = c->iwait[i];

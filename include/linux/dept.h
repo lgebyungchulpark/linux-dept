@@ -175,10 +175,62 @@ struct dept_wait {
 			unsigned long irqf;
 
 			/*
+			 * where the IRQ wait happened
+			 */
+			unsigned long irq_ip[DEPT_IRQS_NR];
+			struct dept_stack *irq_stack[DEPT_IRQS_NR];
+
+			/*
 			 * where the wait happened
 			 */
+			unsigned long wait_ip;
+			struct dept_stack *wait_stack;
+		};
+	};
+};
+
+struct dept_staleiw {
+	union {
+		struct llist_node pool_node;
+		struct {
+			/*
+			 * reference counter for object management
+			 */
+			atomic_t ref;
+
+			/*
+			 * for hashing this object
+			 */
+			struct hlist_node hash_node;
+
+			/*
+			 * actual data
+			 */
 			unsigned long ip;
-			struct dept_stack *stack;
+			int irq;
+		};
+	};
+};
+
+struct dept_staleie {
+	union {
+		struct llist_node pool_node;
+		struct {
+			/*
+			 * reference counter for object management
+			 */
+			atomic_t ref;
+
+			/*
+			 * for hashing this object
+			 */
+			struct hlist_node hash_node;
+
+			/*
+			 * actual data
+			 */
+			unsigned long ip;
+			int irq;
 		};
 	};
 };
