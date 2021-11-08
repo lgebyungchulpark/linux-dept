@@ -204,6 +204,11 @@ struct dept_staleiw {
 			struct hlist_node hash_node;
 
 			/*
+			 * for linking all staleiws
+			 */
+			struct list_head all_node;
+
+			/*
 			 * actual data
 			 */
 			unsigned long ip;
@@ -225,6 +230,11 @@ struct dept_staleie {
 			 * for hashing this object
 			 */
 			struct hlist_node hash_node;
+
+			/*
+			 * for linking all staleies
+			 */
+			struct list_head all_node;
 
 			/*
 			 * actual data

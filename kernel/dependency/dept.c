@@ -1141,6 +1141,9 @@ static void clean_iwait(struct dept_class *root, struct dept_class *c)
 	bfs(root, cb_clean_iwait, (void *)c, NULL);
 }
 
+static LIST_HEAD(staleies);
+static LIST_HEAD(staleiws);
+
 static void stale_iecxt_iwait(struct dept_dep *d, int irq)
 {
 	struct dept_ecxt *ie = d->ecxt;
@@ -1170,6 +1173,7 @@ static void stale_iecxt_iwait(struct dept_dep *d, int irq)
 		sie->ip = ie->enirq_ip[irq];
 		sie->irq = irq;
 		hash_add_staleie(sie);
+		list_add(&sie->all_node, &staleies);
 	}
 	ie->enirqf &= ~(1UL << irq);
 	put_ecxt(ie);
@@ -1180,6 +1184,7 @@ static void stale_iecxt_iwait(struct dept_dep *d, int irq)
 		siw->ip = iw->irq_ip[irq];
 		siw->irq = irq;
 		hash_add_staleiw(siw);
+		list_add(&siw->all_node, &staleiws);
 	}
 	iw->irqf &= ~(1UL << irq);
 	put_wait(iw);
@@ -1967,6 +1972,20 @@ static inline bool within(const void *addr, void *start, unsigned long size)
 	return addr >= start && addr < start + size;
 }
 
+static void free_staleie_staleiw_range(void *start, unsigned int sz)
+{
+	struct dept_staleie *sie, *sien;
+	struct dept_staleiw *siw, *siwn;
+
+	list_for_each_entry_safe(sie, sien, &staleies, all_node)
+		if (within((void *)sie->ip, start, sz))
+			hash_del_staleie(sie);
+
+	list_for_each_entry_safe(siw, siwn, &staleiws, all_node)
+		if (within((void *)siw->ip, start, sz))
+			hash_del_staleiw(siw);
+}
+
 void dept_free_range(void *start, unsigned int sz)
 {
 	struct dept_task *dt = dept_task();
@@ -1985,6 +2004,11 @@ void dept_free_range(void *start, unsigned int sz)
 	 * with dept_lock().
 	 */
 	while (unlikely(!dept_lock()));
+
+	/*
+	 * Free all staleies and staleiws within the range.
+	 */
+	free_staleie_staleiw_range(start, sz);
 
 	list_for_each_entry_safe(c, n, &classes, all_node) {
 		if (!within((void *)c->key, start, sz) &&
