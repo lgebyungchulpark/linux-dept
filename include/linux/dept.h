@@ -35,255 +35,248 @@ struct task_struct;
 struct dept_class {
 	union {
 		struct llist_node pool_node;
-		struct {
-			/*
-			 * reference counter for object management
-			 */
-			atomic_t ref;
 
-			/*
-			 * unique information about the class
-			 */
-			const char *name;
-			unsigned long key;
-			int sub;
-
-			/*
-			 * for BFS
-			 */
-			unsigned int bfs_gen;
-			int bfs_dist;
-			struct dept_class *bfs_parent;
-
-			/*
-			 * for hashing this object
-			 */
-			struct hlist_node hash_node;
-
-			/*
-			 * for linking all classes
-			 */
-			struct list_head all_node;
-
-			/*
-			 * for associating its dependencies
-			 */
-			struct list_head dep_head;
-			struct list_head dep_rev_head;
-
-			/*
-			 * for tracking IRQ dependencies
-			 */
-			int iwait_dist[DEPT_IRQS_NR];
-			struct dept_ecxt *iecxt[DEPT_IRQS_NR];
-			struct dept_wait *iwait[DEPT_IRQS_NR];
-		};
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t ref;
 	};
+
+	/*
+	 * unique information about the class
+	 */
+	const char *name;
+	unsigned long key;
+	int sub;
+
+	/*
+	 * for BFS
+	 */
+	unsigned int bfs_gen;
+	int bfs_dist;
+	struct dept_class *bfs_parent;
+
+	/*
+	 * for hashing this object
+	 */
+	struct hlist_node hash_node;
+
+	/*
+	 * for linking all classes
+	 */
+	struct list_head all_node;
+
+	/*
+	 * for associating its dependencies
+	 */
+	struct list_head dep_head;
+	struct list_head dep_rev_head;
+
+	/*
+	 * for tracking IRQ dependencies
+	 */
+	int iwait_dist[DEPT_IRQS_NR];
+	struct dept_ecxt *iecxt[DEPT_IRQS_NR];
+	struct dept_wait *iwait[DEPT_IRQS_NR];
 };
 
 struct dept_stack {
 	union {
 		struct llist_node pool_node;
-		struct {
-			/*
-			 * reference counter for object management
-			 */
-			atomic_t ref;
 
-			/*
-			 * backtrace entries
-			 */
-			unsigned long raw[DEPT_MAX_STACK_ENTRY];
-			int nr;
-		};
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t ref;
 	};
+
+	/*
+	 * backtrace entries
+	 */
+	unsigned long raw[DEPT_MAX_STACK_ENTRY];
+	int nr;
 };
 
 struct dept_ecxt {
 	union {
 		struct llist_node pool_node;
-		struct {
-			/*
-			 * reference counter for object management
-			 */
-			atomic_t ref;
 
-			/*
-			 * function that entered to this ecxt
-			 */
-			const char *ecxt_fn;
-
-			/*
-			 * event function
-			 */
-			const char *event_fn;
-
-			/*
-			 * associated class
-			 */
-			struct dept_class *class;
-
-			/*
-			 * flag indicating which IRQ has been
-			 * enabled within the event context
-			 */
-			unsigned long enirqf;
-
-			/*
-			 * where the IRQ-enabled happened
-			 */
-			unsigned long enirq_ip[DEPT_IRQS_NR];
-			struct dept_stack *enirq_stack[DEPT_IRQS_NR];
-
-			/*
-			 * where the event context started
-			 */
-			unsigned long ecxt_ip;
-			struct dept_stack *ecxt_stack;
-
-			/*
-			 * where the event triggered
-			 */
-			unsigned long event_ip;
-			struct dept_stack *event_stack;
-		};
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t ref;
 	};
+
+	/*
+	 * function that entered to this ecxt
+	 */
+	const char *ecxt_fn;
+
+	/*
+	 * event function
+	 */
+	const char *event_fn;
+
+	/*
+	 * associated class
+	 */
+	struct dept_class *class;
+
+	/*
+	 * flag indicating which IRQ has been
+	 * enabled within the event context
+	 */
+	unsigned long enirqf;
+
+	/*
+	 * where the IRQ-enabled happened
+	 */
+	unsigned long enirq_ip[DEPT_IRQS_NR];
+	struct dept_stack *enirq_stack[DEPT_IRQS_NR];
+
+	/*
+	 * where the event context started
+	 */
+	unsigned long ecxt_ip;
+	struct dept_stack *ecxt_stack;
+
+	/*
+	 * where the event triggered
+	 */
+	unsigned long event_ip;
+	struct dept_stack *event_stack;
 };
 
 struct dept_wait {
 	union {
 		struct llist_node pool_node;
-		struct {
-			/*
-			 * reference counter for object management
-			 */
-			atomic_t ref;
 
-			/*
-			 * function causing this wait
-			 */
-			const char *wait_fn;
-
-			/*
-			 * the associated class
-			 */
-			struct dept_class *class;
-
-			/*
-			 * which IRQ the wait was placed in
-			 */
-			unsigned long irqf;
-
-			/*
-			 * where the IRQ wait happened
-			 */
-			unsigned long irq_ip[DEPT_IRQS_NR];
-			struct dept_stack *irq_stack[DEPT_IRQS_NR];
-
-			/*
-			 * where the wait happened
-			 */
-			unsigned long wait_ip;
-			struct dept_stack *wait_stack;
-		};
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t ref;
 	};
+
+	/*
+	 * function causing this wait
+	 */
+	const char *wait_fn;
+
+	/*
+	 * the associated class
+	 */
+	struct dept_class *class;
+
+	/*
+	 * which IRQ the wait was placed in
+	 */
+	unsigned long irqf;
+
+	/*
+	 * where the IRQ wait happened
+	 */
+	unsigned long irq_ip[DEPT_IRQS_NR];
+	struct dept_stack *irq_stack[DEPT_IRQS_NR];
+
+	/*
+	 * where the wait happened
+	 */
+	unsigned long wait_ip;
+	struct dept_stack *wait_stack;
 };
 
 struct dept_staleiw {
 	union {
 		struct llist_node pool_node;
-		struct {
-			/*
-			 * reference counter for object management
-			 */
-			atomic_t ref;
 
-			/*
-			 * for hashing this object
-			 */
-			struct hlist_node hash_node;
-
-			/*
-			 * for linking all staleiws
-			 */
-			struct list_head all_node;
-
-			/*
-			 * actual data
-			 */
-			unsigned long ip;
-			int irq;
-		};
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t ref;
 	};
+
+	/*
+	 * for hashing this object
+	 */
+	struct hlist_node hash_node;
+
+	/*
+	 * for linking all staleiws
+	 */
+	struct list_head all_node;
+
+	/*
+	 * actual data
+	 */
+	unsigned long ip;
+	int irq;
 };
 
 struct dept_staleie {
 	union {
 		struct llist_node pool_node;
-		struct {
-			/*
-			 * reference counter for object management
-			 */
-			atomic_t ref;
 
-			/*
-			 * for hashing this object
-			 */
-			struct hlist_node hash_node;
-
-			/*
-			 * for linking all staleies
-			 */
-			struct list_head all_node;
-
-			/*
-			 * actual data
-			 */
-			unsigned long ip;
-			int irq;
-		};
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t ref;
 	};
+
+	/*
+	 * for hashing this object
+	 */
+	struct hlist_node hash_node;
+
+	/*
+	 * for linking all staleies
+	 */
+	struct list_head all_node;
+
+	/*
+	 * actual data
+	 */
+	unsigned long ip;
+	int irq;
 };
 
 struct dept_dep {
 	union {
 		struct llist_node pool_node;
-		struct {
-			/*
-			 * reference counter for object management
-			 */
-			atomic_t ref;
 
-			/*
-			 * key data of dependency
-			 */
-			struct dept_ecxt *ecxt;
-			struct dept_wait *wait;
-
-			/*
-			 * This object can be referred without dept_lock
-			 * held but with IRQ disabled, e.g. for hash
-			 * lookup. So deferred deletion is needed.
-			 */
-			struct rcu_head rh;
-
-			/*
-			 * for BFS
-			 */
-			struct list_head bfs_node;
-
-			/*
-			 * for hashing this object
-			 */
-			struct hlist_node hash_node;
-
-			/*
-			 * for linking to a class object
-			 */
-			struct list_head dep_node;
-			struct list_head dep_rev_node;
-		};
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t ref;
 	};
+
+	/*
+	 * key data of dependency
+	 */
+	struct dept_ecxt *ecxt;
+	struct dept_wait *wait;
+
+	/*
+	 * This object can be referred without dept_lock
+	 * held but with IRQ disabled, e.g. for hash
+	 * lookup. So deferred deletion is needed.
+	 */
+	struct rcu_head rh;
+
+	/*
+	 * for BFS
+	 */
+	struct list_head bfs_node;
+
+	/*
+	 * for hashing this object
+	 */
+	struct hlist_node hash_node;
+
+	/*
+	 * for linking to a class object
+	 */
+	struct list_head dep_node;
+	struct list_head dep_rev_node;
 };
 
 struct dept_hash {
