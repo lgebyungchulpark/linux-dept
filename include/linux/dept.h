@@ -486,7 +486,7 @@ extern void dept_key_destroy(struct dept_key *k);
 #define DEFINE_DEPT_SDT(x)	struct dept_map x = DEPT_MAP_INIT(x)
 
 /*
- * SDT(Simple version of Dependency Tracker) APIs
+ * SDT(Single-event Dependency Tracker) APIs
  *
  * In case that one dept_map instance maps to a single event, SDT APIs
  * can be used.

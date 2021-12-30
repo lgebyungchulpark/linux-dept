@@ -2182,7 +2182,7 @@ void dept_wait_ecxt_enter(struct dept_map *m, unsigned long w_f,
 		if (!c)
 			continue;
 
-		add_ecxt(m, c, true, ip, c_fn, e_fn, ne);
+		add_ecxt((void *)m, c, true, ip, c_fn, e_fn, ne);
 	}
 	dept_exit(flags);
 }
@@ -2211,7 +2211,7 @@ void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip,
 		if (!c)
 			continue;
 
-		add_ecxt(m, c, false, ip, c_fn, e_fn, ne);
+		add_ecxt((void *)m, c, false, ip, c_fn, e_fn, ne);
 	}
 	dept_exit(flags);
 }
@@ -2240,9 +2240,9 @@ void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip,
 		if (!c)
 			continue;
 
-		add_ecxt(m, c, false, 0UL, NULL, e_fn, 0);
-		do_event(m, c, READ_ONCE(m->wgen), ip);
-		pop_ecxt(m);
+		add_ecxt((void *)m, c, false, 0UL, NULL, e_fn, 0);
+		do_event((void *)m, c, READ_ONCE(m->wgen), ip);
+		pop_ecxt((void *)m);
 	}
 	dept_exit(flags);
 }
@@ -2260,7 +2260,7 @@ void dept_ecxt_exit(struct dept_map *m, unsigned long ip)
 		return;
 
 	flags = dept_enter();
-	pop_ecxt(m);
+	pop_ecxt((void *)m);
 	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_ecxt_exit);
