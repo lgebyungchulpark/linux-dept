@@ -25,34 +25,48 @@
  * stable. Then the dependency check routine shoud be replaced with Dept
  * after. It should finally look like:
  *
+ *
+ *
  * As is:
  *
  *    Lockdep
  *    +-----------------------------------------+
  *    | Lock usage correctness check            | <-> locks
  *    |                                         |
- *    | Dependency check                        |
- *    | (by tracking lock aquisition order)     |
+ *    |                                         |
+ *    | +-------------------------------------+ |
+ *    | | Dependency check                    | |
+ *    | | (by tracking lock aquisition order) | |
+ *    | +-------------------------------------+ |
+ *    |                                         |
  *    +-----------------------------------------+
  *
  *    Dept
  *    +-----------------------------------------+
  *    | Dependency check                        | <-> waits/events
- *    | (by tracking wait and event context)    |     (covering locks)
+ *    | (by tracking wait and event context)    |
  *    +-----------------------------------------+
+ *
+ *
  *
  * To be:
  *
- *    Lockdep (Suggest to rename.)
+ *    Lockdep
  *    +-----------------------------------------+
  *    | Lock usage correctness check            | <-> locks
- *    +-----------------------------------------+
- *
- *    Dept
+ *    |                                         |
+ *    |                                         |
+ *    |       (Request dependency check)        |
+ *    |                    T                    |
+ *    +--------------------|--------------------+
+ *                         |
+ *    Dept                 V
  *    +-----------------------------------------+
  *    | Dependency check                        | <-> waits/events
- *    | (by tracking wait and event context)    |     (covering locks)
+ *    | (by tracking wait and event context)    |
  *    +-----------------------------------------+
+ *
+ *
  *
  * ---
  * This program is free software; you can redistribute it and/or modify
@@ -414,6 +428,12 @@ static void initialize_stack(struct dept_stack *s)
 	s->nr = 0;
 }
 SET_CONSTRUCTOR(stack, initialize_stack);
+
+#define OBJECT(id, nr) \
+static void (*ctor_##id)(struct dept_##id *a);
+	#include "dept_object.h"
+#undef  OBJECT
+
 #undef  SET_CONSTRUCTOR
 
 #define SET_DESTRUCTOR(id, f) \
@@ -457,6 +477,12 @@ static void destroy_wait(struct dept_wait *w)
 		put_stack(w->wait_stack);
 }
 SET_DESTRUCTOR(wait, destroy_wait);
+
+#define OBJECT(id, nr) \
+static void (*dtor_##id)(struct dept_##id *a);
+	#include "dept_object.h"
+#undef  OBJECT
+
 #undef  SET_DESTRUCTOR
 
 /*
@@ -1908,19 +1934,20 @@ void dept_map_init(struct dept_map *m, struct dept_key *k, int sub,
 
 	flags = dept_enter();
 
-	if (k && sub >= 0 && sub < DEPT_MAX_SUBCLASSES_USR) {
-		m->keys = k;
-		clean_classes_cache(&m->keys_local);
-		m->sub_usr = sub;
-	} else {
-		m->keys = NULL;
-		DEPT_WARN_ON(sub < 0 || sub >= DEPT_MAX_SUBCLASSES_USR);
+	if(DEPT_WARN_ON(sub < 0 || sub >= DEPT_MAX_SUBCLASSES_USR)) {
+		m->nocheck = true;
+		goto exit;
 	}
 
+	if (m->keys != k)
+		m->keys = k;
+	clean_classes_cache(&m->keys_local);
+
+	m->sub_usr = sub;
 	m->name = n;
 	m->wgen = 0U;
 	m->nocheck = false;
-
+exit:
 	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_map_init);
@@ -2031,21 +2058,6 @@ void dept_free_range(void *start, unsigned int sz)
 	synchronize_rcu();
 }
 
-static inline struct dept_key *map_key(struct dept_map *m)
-{
-	if (likely(m->keys))
-		return m->keys;
-
-	/*
-	 * Use the embedded struct dept_key instance as key in case no
-	 * key has been assigned yet e.g. statically defined lock.
-	 */
-	if (!m->nocheck)
-		m->keys = &m->keys_local;
-
-	return m->keys;
-}
-
 static inline int map_sub(struct dept_map *m, int e)
 {
 	return m->sub_usr + e * DEPT_MAX_SUBCLASSES_USR;
@@ -2124,8 +2136,10 @@ void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
 	 */
 	for_each_set_bit(e, &w_f, DEPT_MAX_SUBCLASSES_EVT) {
 		struct dept_class *c;
+		struct dept_key *k;
 
-		c = check_new_class(&m->keys_local, map_key(m),
+		k = m->keys ?: &m->keys_local;
+		c = check_new_class(&m->keys_local, k,
 				    map_sub(m, e), m->name);
 		if (!c)
 			continue;
@@ -2165,8 +2179,10 @@ void dept_wait_ecxt_enter(struct dept_map *m, unsigned long w_f,
 	 */
 	for_each_set_bit(e, &w_f, DEPT_MAX_SUBCLASSES_EVT) {
 		struct dept_class *c;
+		struct dept_key *k;
 
-		c = check_new_class(&m->keys_local, map_key(m),
+		k = m->keys ?: &m->keys_local;
+		c = check_new_class(&m->keys_local, k,
 				    map_sub(m, e), m->name);
 		if (!c)
 			continue;
@@ -2176,8 +2192,10 @@ void dept_wait_ecxt_enter(struct dept_map *m, unsigned long w_f,
 
 	for_each_set_bit(e, &e_f, DEPT_MAX_SUBCLASSES_EVT) {
 		struct dept_class *c;
+		struct dept_key *k;
 
-		c = check_new_class(&m->keys_local, map_key(m),
+		k = m->keys ?: &m->keys_local;
+		c = check_new_class(&m->keys_local, k,
 				    map_sub(m, e), m->name);
 		if (!c)
 			continue;
@@ -2205,8 +2223,10 @@ void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip,
 
 	for_each_set_bit(e, &e_f, DEPT_MAX_SUBCLASSES_EVT) {
 		struct dept_class *c;
+		struct dept_key *k;
 
-		c = check_new_class(&m->keys_local, map_key(m),
+		k = m->keys ?: &m->keys_local;
+		c = check_new_class(&m->keys_local, k,
 				    map_sub(m, e), m->name);
 		if (!c)
 			continue;
@@ -2234,8 +2254,10 @@ void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip,
 
 	for_each_set_bit(e, &e_f, DEPT_MAX_SUBCLASSES_EVT) {
 		struct dept_class *c;
+		struct dept_key *k;
 
-		c = check_new_class(&m->keys_local, map_key(m),
+		k = m->keys ?: &m->keys_local;
+		c = check_new_class(&m->keys_local, k,
 				    map_sub(m, e), m->name);
 		if (!c)
 			continue;
@@ -2247,6 +2269,103 @@ void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip,
 	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_event);
+
+void dept_split_map_each_init(struct dept_map_each *me)
+{
+	struct dept_task *dt = dept_task();
+	unsigned long flags;
+
+	if (READ_ONCE(dept_stop) || dt->recursive)
+		return;
+
+	flags = dept_enter();
+
+	me->wgen = 0U;
+
+	dept_exit(flags);
+}
+EXPORT_SYMBOL_GPL(dept_split_map_each_init);
+
+void dept_split_map_common_init(struct dept_map_common *mc,
+				struct dept_key *k, const char *n)
+{
+	struct dept_task *dt = dept_task();
+	unsigned long flags;
+
+	if (READ_ONCE(dept_stop) || dt->recursive)
+		return;
+
+	flags = dept_enter();
+
+	if (mc->keys != k)
+		mc->keys = k;
+	clean_classes_cache(&mc->keys_local);
+
+	/*
+	 * sub_usr is not used with split map.
+	 */
+	mc->sub_usr = 0;
+	mc->name = n;
+	mc->nocheck = false;
+
+	dept_exit(flags);
+}
+EXPORT_SYMBOL_GPL(dept_split_map_common_init);
+
+void dept_wait_split_map(struct dept_map_each *me,
+			 struct dept_map_common *mc,
+			 unsigned long ip, const char *w_fn, int ne)
+{
+	struct dept_task *dt = dept_task();
+	struct dept_class *c;
+	struct dept_key *k;
+	unsigned long flags;
+
+	if (READ_ONCE(dept_stop) || dt->recursive)
+		return;
+
+	if (mc->nocheck)
+		return;
+
+	flags = dept_enter();
+
+	k = mc->keys ?: &mc->keys_local;
+	c = check_new_class(&mc->keys_local, k, 0, mc->name);
+	if (c)
+		WRITE_ONCE(me->wgen, add_wait(c, ip, w_fn, ne));
+
+	dept_exit(flags);
+}
+EXPORT_SYMBOL_GPL(dept_wait_split_map);
+
+void dept_event_split_map(struct dept_map_each *me,
+			  struct dept_map_common *mc,
+			  unsigned long ip, const char *e_fn)
+{
+	struct dept_task *dt = dept_task();
+	struct dept_class *c;
+	struct dept_key *k;
+	unsigned long flags;
+
+	if (READ_ONCE(dept_stop) || dt->recursive)
+		return;
+
+	if (mc->nocheck)
+		return;
+
+	flags = dept_enter();
+
+	k = mc->keys ?: &mc->keys_local;
+	c = check_new_class(&mc->keys_local, k, 0, mc->name);
+	if (c) {
+		add_ecxt((void *)me, c, false, 0UL, NULL, e_fn, 0);
+		do_event((void *)me, c, READ_ONCE(me->wgen), ip);
+		pop_ecxt((void *)me);
+	}
+
+	dept_exit(flags);
+}
+EXPORT_SYMBOL_GPL(dept_event_split_map);
 
 void dept_ecxt_exit(struct dept_map *m, unsigned long ip)
 {
