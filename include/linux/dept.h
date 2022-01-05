@@ -17,7 +17,7 @@
 struct task_struct;
 
 #define DEPT_MAX_STACK_ENTRY		16
-#define DEPT_MAX_WAIT_HIST		16
+#define DEPT_MAX_WAIT_HIST		64
 #define DEPT_MAX_ECXT_HELD		48
 
 #define DEPT_MAX_SUBCLASSES		16

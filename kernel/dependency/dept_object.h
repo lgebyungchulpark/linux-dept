@@ -7,8 +7,8 @@
 
 OBJECT(dep	,1024 * 8)
 OBJECT(class	,1024 * 4)
-OBJECT(stack	,1024 * 16)
+OBJECT(stack	,1024 * 32)
 OBJECT(ecxt	,1024 * 4)
-OBJECT(wait	,1024 * 8)
+OBJECT(wait	,1024 * 32)
 OBJECT(staleiw	,16)
 OBJECT(staleie	,16)
