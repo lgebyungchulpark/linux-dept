@@ -15,6 +15,9 @@
 #include <linux/bitops.h>
 #include <linux/hardirq.h> /* for in_interrupt() */
 #include <linux/hugetlb_inline.h>
+#ifdef CONFIG_DEPT
+#include <linux/dept.h>
+#endif
 
 struct pagevec;
 
@@ -584,6 +587,33 @@ static inline bool wake_page_match(struct wait_page_queue *wait_page,
 
 	return true;
 }
+
+#ifdef CONFIG_DEPT
+extern void dept_page_init(void);
+extern struct dept_map_each *get_pglocked_me(struct page *page);
+extern struct page_ext_operations dept_pglocked_ops;
+extern struct dept_map_common pglocked_mc;
+
+#define pglocked_wait(p)					\
+do {								\
+	struct dept_map_each *me = get_pglocked_me(p);		\
+	if (likely(me))						\
+		dept_wait_split_map(me, &pglocked_mc, _RET_IP_, \
+				    "wait on PG_locked", 0);	\
+} while (0)
+
+#define pglocked_event(p)					\
+do {								\
+	struct dept_map_each *me = get_pglocked_me(p);		\
+	if (likely(me))						\
+		dept_event_split_map(me, &pglocked_mc, _RET_IP_,\
+				     "unlock_page()");		\
+} while (0)
+#else
+#define dept_page_init()	do { } while (0)
+#define pglocked_wait(p)	do { } while (0)
+#define pglocked_event(p)	do { } while (0)
+#endif
 
 extern void __lock_page(struct page *page);
 extern int __lock_page_killable(struct page *page);
