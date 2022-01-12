@@ -326,7 +326,6 @@ static inline int TestClearPage##uname(struct page *page) { return 0; }
 #define TESTSCFLAG_FALSE(uname)						\
 	TESTSETFLAG_FALSE(uname) TESTCLEARFLAG_FALSE(uname)
 
-__PAGEFLAG(Locked, locked, PF_NO_TAIL)
 PAGEFLAG(Waiters, waiters, PF_ONLY_HEAD) __CLEARPAGEFLAG(Waiters, waiters, PF_ONLY_HEAD)
 PAGEFLAG(Error, error, PF_NO_TAIL) TESTCLEARFLAG(Error, error, PF_NO_TAIL)
 PAGEFLAG(Referenced, referenced, PF_HEAD)
@@ -442,6 +441,35 @@ TESTPAGEFLAG(Young, young, PF_ANY)
 SETPAGEFLAG(Young, young, PF_ANY)
 TESTCLEARFLAG(Young, young, PF_ANY)
 PAGEFLAG(Idle, idle, PF_ANY)
+#endif
+
+#ifdef CONFIG_DEPT
+TESTPAGEFLAG(Locked, locked, PF_NO_TAIL)
+
+#include <linux/dept.h>
+extern struct dept_map_each *get_pglocked_me(struct page *page);
+extern struct dept_map_common pglocked_mc;
+
+static __always_inline void __SetPageLocked(struct page *page)
+{
+	struct dept_map_each *me = get_pglocked_me(page);
+	if (likely(me))
+		dept_xwait_start_split_map(me, &pglocked_mc);
+	__set_bit(PG_locked, &PF_NO_TAIL(page, 1)->flags);
+}
+
+static __always_inline void __ClearPageLocked(struct page *page)
+{
+	if (PageLocked(page)) {
+		struct dept_map_each *me = get_pglocked_me(page);
+		if (likely(me))
+			dept_event_split_map(me, &pglocked_mc, _RET_IP_,
+					     "__ClearPageLocked()");
+	}
+	__clear_bit(PG_locked, &PF_NO_TAIL(page, 1)->flags);
+}
+#else
+__PAGEFLAG(Locked, locked, PF_NO_TAIL)
 #endif
 
 /*

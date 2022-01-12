@@ -2337,6 +2337,31 @@ void dept_wait_split_map(struct dept_map_each *me,
 }
 EXPORT_SYMBOL_GPL(dept_wait_split_map);
 
+void dept_xwait_start_split_map(struct dept_map_each *me,
+				struct dept_map_common *mc)
+{
+	struct dept_task *dt = dept_task();
+	unsigned long flags;
+	unsigned int wg;
+
+	if (READ_ONCE(dept_stop) || dt->recursive)
+		return;
+
+	if (mc->nocheck)
+		return;
+
+	flags = dept_enter();
+
+	/*
+	 * Avoid zero wgen.
+	 */
+	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
+	WRITE_ONCE(me->wgen, wg);
+
+	dept_exit(flags);
+}
+EXPORT_SYMBOL_GPL(dept_xwait_start_split_map);
+
 void dept_event_split_map(struct dept_map_each *me,
 			  struct dept_map_common *mc,
 			  unsigned long ip, const char *e_fn)

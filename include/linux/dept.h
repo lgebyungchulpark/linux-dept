@@ -17,7 +17,7 @@
 struct task_struct;
 
 #define DEPT_MAX_STACK_ENTRY		16
-#define DEPT_MAX_WAIT_HIST		16
+#define DEPT_MAX_WAIT_HIST		64
 #define DEPT_MAX_ECXT_HELD		48
 
 #define DEPT_MAX_SUBCLASSES		16
@@ -502,6 +502,7 @@ extern void dept_split_map_each_init(struct dept_map_each *me);
 extern void dept_split_map_common_init(struct dept_map_common *mc, struct dept_key *k, const char *n);
 extern void dept_wait_split_map(struct dept_map_each *me, struct dept_map_common *mc, unsigned long ip, const char *w_fn, int ne);
 extern void dept_event_split_map(struct dept_map_each *me, struct dept_map_common *mc, unsigned long ip, const char *e_fn);
+extern void dept_xwait_start_split_map(struct dept_map_each *me, struct dept_map_common *mc);
 
 /*
  * for users who want to manage external keys
@@ -560,6 +561,7 @@ struct dept_map_commmon { };
 #define dept_split_map_common_init(mc, k, n)		do { (void)(n); (void)(k); } while (0)
 #define dept_wait_split_map(me, mc, ip, w_fn, ne)	do { } while (0)
 #define dept_event_split_map(me, mc, ip, e_fn)		do { } while (0)
+#define dept_xwait_start_split_map(me, mc)		do { } while (0)
 #define dept_key_init(k)				do { (void)(k); } while (0)
 #define dept_key_destroy(k)				do { (void)(k); } while (0)
 
