@@ -17,7 +17,7 @@
 struct task_struct;
 
 #define DEPT_MAX_STACK_ENTRY		16
-#define DEPT_MAX_WAIT_HIST		16
+#define DEPT_MAX_WAIT_HIST		64
 #define DEPT_MAX_ECXT_HELD		48
 
 #define DEPT_MAX_SUBCLASSES		16
@@ -494,6 +494,7 @@ extern void dept_map_nocheck(struct dept_map *m);
 extern void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip, const char *w_fn, int ne);
 extern void dept_wait_ecxt_enter(struct dept_map *m, unsigned long w_f, unsigned long e_f, unsigned long ip, const char *w_fn, const char *c_fn, const char *e_fn, int ne);
 extern void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip, const char *c_fn, const char *e_fn, int ne);
+extern void dept_start_event(struct dept_map *m);
 extern void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip, const char *e_fn);
 extern void dept_ecxt_exit(struct dept_map *m, unsigned long ip);
 extern struct dept_map *dept_top_map(void);
@@ -502,6 +503,7 @@ extern void dept_split_map_each_init(struct dept_map_each *me);
 extern void dept_split_map_common_init(struct dept_map_common *mc, struct dept_key *k, const char *n);
 extern void dept_wait_split_map(struct dept_map_each *me, struct dept_map_common *mc, unsigned long ip, const char *w_fn, int ne);
 extern void dept_event_split_map(struct dept_map_each *me, struct dept_map_common *mc, unsigned long ip, const char *e_fn);
+extern void dept_start_event_split_map(struct dept_map_each *me, struct dept_map_common *mc);
 
 /*
  * for users who want to manage external keys
@@ -552,6 +554,7 @@ struct dept_map_commmon { };
 #define dept_wait(m, w_f, ip, w_fn, ne)			do { } while (0)
 #define dept_wait_ecxt_enter(m, w_f, e_f, ip, w_fn, c_fn, e_fn, ne) do { } while (0)
 #define dept_ecxt_enter(m, e_f, ip, c_fn, e_fn, ne)	do { } while (0)
+#define dept_start_event(m)				do { } while (0)
 #define dept_event(m, e_f, ip, e_fn)			do { } while (0)
 #define dept_ecxt_exit(m, ip)				do { } while (0)
 #define dept_top_map()					NULL
@@ -560,6 +563,7 @@ struct dept_map_commmon { };
 #define dept_split_map_common_init(mc, k, n)		do { (void)(n); (void)(k); } while (0)
 #define dept_wait_split_map(me, mc, ip, w_fn, ne)	do { } while (0)
 #define dept_event_split_map(me, mc, ip, e_fn)		do { } while (0)
+#define dept_start_event_split_map(me, mc)		do { } while (0)
 #define dept_key_init(k)				do { (void)(k); } while (0)
 #define dept_key_destroy(k)				do { (void)(k); } while (0)
 

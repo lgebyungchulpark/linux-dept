@@ -2236,6 +2236,30 @@ void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip,
 }
 EXPORT_SYMBOL_GPL(dept_ecxt_enter);
 
+void dept_start_event(struct dept_map *m)
+{
+	struct dept_task *dt = dept_task();
+	unsigned long flags;
+	unsigned int wg;
+
+	if (READ_ONCE(dept_stop) || dt->recursive)
+		return;
+
+	if (m->nocheck)
+		return;
+
+	flags = dept_enter();
+
+	/*
+	 * Avoid zero wgen.
+	 */
+	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
+	WRITE_ONCE(m->wgen, wg);
+
+	dept_exit(flags);
+}
+EXPORT_SYMBOL_GPL(dept_start_event);
+
 void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip,
 		const char *e_fn)
 {
@@ -2336,6 +2360,31 @@ void dept_wait_split_map(struct dept_map_each *me,
 	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_wait_split_map);
+
+void dept_start_event_split_map(struct dept_map_each *me,
+				 struct dept_map_common *mc)
+{
+	struct dept_task *dt = dept_task();
+	unsigned long flags;
+	unsigned int wg;
+
+	if (READ_ONCE(dept_stop) || dt->recursive)
+		return;
+
+	if (mc->nocheck)
+		return;
+
+	flags = dept_enter();
+
+	/*
+	 * Avoid zero wgen.
+	 */
+	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
+	WRITE_ONCE(me->wgen, wg);
+
+	dept_exit(flags);
+}
+EXPORT_SYMBOL_GPL(dept_start_event_split_map);
 
 void dept_event_split_map(struct dept_map_each *me,
 			  struct dept_map_common *mc,

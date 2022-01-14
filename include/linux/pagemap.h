@@ -15,6 +15,9 @@
 #include <linux/bitops.h>
 #include <linux/hardirq.h> /* for in_interrupt() */
 #include <linux/hugetlb_inline.h>
+#ifdef CONFIG_DEPT
+#include <linux/dept.h>
+#endif
 
 struct pagevec;
 
@@ -585,6 +588,62 @@ static inline bool wake_page_match(struct wait_page_queue *wait_page,
 	return true;
 }
 
+#ifdef CONFIG_DEPT
+extern void dept_page_init(void);
+extern struct dept_map_each *get_pglocked_me(struct page *page);
+extern struct dept_map_each *get_pgwriteback_me(struct page *page);
+extern struct page_ext_operations dept_pglocked_ops;
+extern struct page_ext_operations dept_pgwriteback_ops;
+extern struct dept_map_common pglocked_mc;
+extern struct dept_map_common pgwriteback_mc;
+
+#define pglocked_wait(p)					\
+do {								\
+	struct dept_map_each *me = get_pglocked_me(p);		\
+	if (likely(me))						\
+		dept_wait_split_map(me, &pglocked_mc, _RET_IP_, \
+				    __func__, 0);		\
+} while (0)
+
+#define pglocked_start_event(p)					\
+do {								\
+	struct dept_map_each *me = get_pglocked_me(p);		\
+	if (likely(me))						\
+		dept_start_event_split_map(me, &pglocked_mc);	\
+} while (0)
+
+#define pglocked_event(p)					\
+do {								\
+	struct dept_map_each *me = get_pglocked_me(p);		\
+	if (likely(me))						\
+		dept_event_split_map(me, &pglocked_mc, _RET_IP_,\
+				     __func__);			\
+} while (0)
+
+#define pgwriteback_wait(p)					\
+do {								\
+	struct dept_map_each *me = get_pgwriteback_me(p);	\
+	if (likely(me))						\
+		dept_wait_split_map(me, &pgwriteback_mc, _RET_IP_,\
+				    __func__, 0);		\
+} while (0)
+
+#define pgwriteback_event(p)					\
+do {								\
+	struct dept_map_each *me = get_pgwriteback_me(p);	\
+	if (likely(me))						\
+		dept_event_split_map(me, &pgwriteback_mc, _RET_IP_,\
+				     __func__);			\
+} while (0)
+#else
+#define dept_page_init()		do { } while (0)
+#define pglocked_wait(p)		do { } while (0)
+#define pglocked_start_event(p)		do { } while (0)
+#define pglocked_event(p)		do { } while (0)
+#define pgwriteback_wait(p)		do { } while (0)
+#define pgwriteback_event(p)		do { } while (0)
+#endif
+
 extern void __lock_page(struct page *page);
 extern int __lock_page_killable(struct page *page);
 extern int __lock_page_async(struct page *page, struct wait_page_queue *wait);
@@ -592,13 +651,27 @@ extern int __lock_page_or_retry(struct page *page, struct mm_struct *mm,
 				unsigned int flags);
 extern void unlock_page(struct page *page);
 
+#ifdef CONFIG_DEPT
+#define test_and_set_bit_lock_pglocked(p)			\
+({								\
+	int __ret;						\
+	__ret = test_and_set_bit_lock(PG_locked, &(p)->flags);	\
+	if (!__ret)						\
+		pglocked_start_event(p);			\
+	__ret;							\
+})
+#else
+#define test_and_set_bit_lock_pglocked(p)			\
+	test_and_set_bit_lock(PG_locked, &(p)->flags)
+#endif
+
 /*
  * Return true if the page was successfully locked
  */
 static inline int trylock_page(struct page *page)
 {
 	page = compound_head(page);
-	return (likely(!test_and_set_bit_lock(PG_locked, &page->flags)));
+	return (likely(!test_and_set_bit_lock_pglocked(page)));
 }
 
 /*
@@ -661,7 +734,7 @@ static inline int lock_page_or_retry(struct page *page, struct mm_struct *mm,
 extern void wait_on_page_bit(struct page *page, int bit_nr);
 extern int wait_on_page_bit_killable(struct page *page, int bit_nr);
 
-/* 
+/*
  * Wait for a page to be unlocked.
  *
  * This must be called with the caller "holding" the page,
