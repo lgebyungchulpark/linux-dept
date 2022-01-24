@@ -504,31 +504,6 @@ extern void dept_asked_event_split_map(struct dept_map_each *me, struct dept_map
  */
 extern void dept_key_init(struct dept_key *k);
 extern void dept_key_destroy(struct dept_key *k);
-
-#define DEPT_MAP_INIT(dname)	{ .name = #dname }
-#define DEFINE_DEPT_SDT(x)	struct dept_map x = DEPT_MAP_INIT(x)
-
-/*
- * SDT(Single-event Dependency Tracker) APIs
- *
- * In case that one dept_map instance maps to a single event, SDT APIs
- * can be used.
- */
-#define sdt_map_init(m)							\
-	do {								\
-		static struct dept_key __key;				\
-		dept_map_init(m, &__key, 0, #m);			\
-	} while (0)
-#define sdt_map_init_key(m, k)		dept_map_init(m, k, 0, #m)
-
-#define sdt_wait(m)							\
-	do {								\
-		dept_asked_event(m);					\
-		dept_wait(m, 1UL, _THIS_IP_, "wait", 0);		\
-	} while (0)
-#define sdt_ecxt_enter(m)		dept_ecxt_enter(m, 1UL, _THIS_IP_, "start", "event", 0)
-#define sdt_event(m)			dept_event(m, 1UL, _THIS_IP_, "event")
-#define sdt_ecxt_exit(m)		dept_ecxt_exit(m, _THIS_IP_)
 #else /* !CONFIG_DEPT */
 struct dept_task { };
 struct dept_key  { };
@@ -562,14 +537,5 @@ struct dept_map_commmon { };
 #define dept_asked_event_split_map(me, mc)		do { } while (0)
 #define dept_key_init(k)				do { (void)(k); } while (0)
 #define dept_key_destroy(k)				do { (void)(k); } while (0)
-
-#define DEFINE_DEPT_SDT(x)
-
-#define sdt_map_init(m)					do { } while (0)
-#define sdt_map_init_key(m, k)				do { (void)(k); } while (0)
-#define sdt_wait(m)					do { } while (0)
-#define sdt_ecxt_enter(m)				do { } while (0)
-#define sdt_event(m)					do { } while (0)
-#define sdt_ecxt_exit(m)				do { } while (0)
 #endif
 #endif /* __LINUX_DEPT_H */
