@@ -1215,19 +1215,17 @@ static void stale_iecxt_iwait(struct dept_dep *d, int irq)
  */
 static void propagate_iwait(struct dept_class *c, int irq)
 {
-	struct dept_dep *new;
-	do {
-		new = NULL;
-		bfs(c, cb_prop_iwait, (void *)&irq, (void **)&new);
+	struct dept_dep *new = NULL;
 
-		/*
-		 * Deadlock detected. Let check_dl() report it.
-		 */
-		if (new) {
-			check_dl(new);
-			stale_iecxt_iwait(new, irq);
-		}
-	} while (new);
+	bfs(c, cb_prop_iwait, (void *)&irq, (void **)&new);
+
+	/*
+	 * Deadlock detected. Let check_dl() report it.
+	 */
+	if (new) {
+		check_dl(new);
+		stale_iecxt_iwait(new, irq);
+	}
 }
 
 static enum bfs_ret cb_find_iwait(struct dept_dep *d, void *in, void **out)
@@ -1372,6 +1370,7 @@ static void add_iwait(struct dept_wait *w, int irq)
 		if (d) {
 			check_dl(d);
 			stale_iecxt_iwait(d, irq);
+			goto unlock;
 		}
 	}
 	propagate_iwait(c, irq);
