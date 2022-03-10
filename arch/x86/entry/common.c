@@ -26,6 +26,7 @@
 #include <linux/livepatch.h>
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
+#include <linux/dept.h>
 
 #include <asm/desc.h>
 #include <asm/traps.h>
@@ -279,6 +280,7 @@ __visible void do_syscall_64(unsigned long nr, struct pt_regs *regs)
 {
 	struct thread_info *ti;
 
+	dept_kernel_enter();
 	enter_from_user_mode();
 	local_irq_enable();
 	ti = current_thread_info();
@@ -351,6 +353,7 @@ static __always_inline void do_syscall_32_irqs_on(struct pt_regs *regs)
 /* Handles int $0x80 */
 __visible void do_int80_syscall_32(struct pt_regs *regs)
 {
+	dept_kernel_enter();
 	enter_from_user_mode();
 	local_irq_enable();
 	do_syscall_32_irqs_on(regs);
@@ -374,6 +377,7 @@ __visible long do_fast_syscall_32(struct pt_regs *regs)
 	 */
 	regs->ip = landing_pad;
 
+	dept_kernel_enter();
 	enter_from_user_mode();
 
 	local_irq_enable();

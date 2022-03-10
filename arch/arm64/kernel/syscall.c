@@ -6,6 +6,7 @@
 #include <linux/nospec.h>
 #include <linux/ptrace.h>
 #include <linux/syscalls.h>
+#include <linux/dept.h>
 
 #include <asm/daifflags.h>
 #include <asm/debug-monitors.h>
@@ -101,6 +102,7 @@ static void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
 	cortex_a76_erratum_1463225_svc_handler();
 	local_daif_restore(DAIF_PROCCTX);
 	user_exit();
+	dept_kernel_enter();
 
 	if (has_syscall_work(flags)) {
 		/* set default errno for user-issued syscall(-1) */
