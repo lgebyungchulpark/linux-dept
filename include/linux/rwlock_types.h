@@ -21,8 +21,15 @@ typedef struct {
 
 #define RWLOCK_MAGIC		0xdeaf1eed
 
+#ifdef CONFIG_DEPT
+# define RW_DMAP_INIT(lockname) .dmap = { .name = #lockname },
+#else
+# define RW_DMAP_INIT(lockname)
+#endif
+
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
-# define RW_DEP_MAP_INIT(lockname)	.dep_map = { .name = #lockname }
+# define RW_DEP_MAP_INIT(lockname)	.dep_map = { .name = #lockname, \
+						     RW_DMAP_INIT(lockname) }
 #else
 # define RW_DEP_MAP_INIT(lockname)
 #endif
