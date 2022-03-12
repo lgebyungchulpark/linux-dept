@@ -6201,6 +6201,14 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	rcu_note_context_switch(!!sched_mode);
 
 	/*
+	 * Skip the commit if the current task does not actually go to
+	 * sleep.
+	 */
+	if (READ_ONCE(prev->__state) & TASK_NORMAL &&
+	    sched_mode == SM_NONE)
+		dept_ask_event_wait_commit(_RET_IP_);
+
+	/*
 	 * Make sure that signal_pending_state()->signal_pending() below
 	 * can't be reordered with __set_current_state(TASK_INTERRUPTIBLE)
 	 * done by the caller to avoid the race with signal_wake_up():
