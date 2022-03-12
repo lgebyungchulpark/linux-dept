@@ -15,6 +15,7 @@
 #include <linux/bitops.h>
 #include <linux/hardirq.h> /* for in_interrupt() */
 #include <linux/hugetlb_inline.h>
+#include <linux/dept_page.h>
 
 struct pagevec;
 
@@ -466,8 +467,13 @@ extern void unlock_page(struct page *page);
  */
 static inline int trylock_page(struct page *page)
 {
+	int ret;
+
 	page = compound_head(page);
-	return (likely(!test_and_set_bit_lock(PG_locked, &page->flags)));
+	ret = test_and_set_bit_lock(PG_locked, &page->flags);
+	if (likely(!ret))
+		dept_pglocked_set_bit(page);
+	return likely(!ret);
 }
 
 /*
@@ -514,7 +520,7 @@ static inline int lock_page_or_retry(struct page *page, struct mm_struct *mm,
 extern void wait_on_page_bit(struct page *page, int bit_nr);
 extern int wait_on_page_bit_killable(struct page *page, int bit_nr);
 
-/* 
+/*
  * Wait for a page to be unlocked.
  *
  * This must be called with the caller "holding" the page,
