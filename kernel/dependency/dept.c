@@ -121,6 +121,8 @@ static int dept_per_cpu_ready;
 			WARN(1, "DEPT_STOP: " s);			\
 	})
 
+#define DEPT_INFO_ONCE(s...) pr_warn_once("DEPT_INFO_ONCE: " s)
+
 static arch_spinlock_t dept_spin = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
 
 /*
@@ -294,7 +296,7 @@ static void *from_pool(enum object_t t)
 			return p->spool + (idx * p->obj_sz);
 	}
 
-	DEPT_WARN_ONCE("Pool(%s) is empty.\n", p->name);
+	DEPT_INFO_ONCE("Pool(%s) is empty.\n", p->name);
 	return NULL;
 }
 
@@ -1574,12 +1576,7 @@ static int find_hist_pos(unsigned int wg)
 
 	oldest = hist_pos_next();
 	if (unlikely(good_hist(hist(oldest), wg))) {
-		static bool warned = false;
-
-		if (!warned) {
-			warned = true;
-			pr_warn("DEPT: Need to expand the ring buffer.\n");
-		}
+		DEPT_INFO_ONCE("Need to expand the ring buffer.\n");
 		return oldest;
 	}
 
