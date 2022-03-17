@@ -58,12 +58,6 @@ do {								\
 #define dept_seq_writeend(m, ip)	do { } while (0)
 #endif
 
-#ifdef CONFIG_DEPT
-#define SEQ_DMAP_INIT(lockname) .dmap = { .name = #lockname }
-#else
-#define SEQ_DMAP_INIT(lockname)
-#endif
-
 /*
  * Version using sequence counter only.
  * This can be used when code has its own mutex protecting the
@@ -90,7 +84,7 @@ static inline void __seqcount_init(seqcount_t *s, const char *name,
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define SEQCOUNT_DEP_MAP_INIT(lockname) \
 		.dep_map = { .name = #lockname, \
-			     SEQ_DMAP_INIT(lockname) }
+			     .dmap = DEPT_MAP_INITIALIZER(lockname) }
 
 # define seqcount_init(s)				\
 	do {						\

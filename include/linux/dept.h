@@ -362,6 +362,16 @@ struct dept_map {
 	bool				nocheck;
 };
 
+#define DEPT_MAP_INITIALIZER(n)						\
+{									\
+	.name = #n,							\
+	.keys = NULL,							\
+	.sub_usr = 0,							\
+	.keys_local = { .classes = { 0 } },				\
+	.wgen = 0U,							\
+	.nocheck = false,						\
+}
+
 struct dept_map_each {
 	/*
 	 * wait timestamp associated to this map
@@ -449,23 +459,25 @@ struct dept_task {
 	bool				softirqs_enabled;
 };
 
-#define DEPT_TASK_INITIALIZER(t)					\
-	.dept_task.wait_hist = { { .wait = NULL, } },			\
-	.dept_task.ecxt_held_pos = 0,					\
-	.dept_task.wait_hist_pos = 0,					\
-	.dept_task.cxt_id = { 0U },					\
-	.dept_task.wgen_enirq = { 0U },					\
-	.dept_task.enirq_ip = { 0UL },					\
-	.dept_task.eff_enirqf = 0UL,					\
-	.dept_task.stack = NULL,					\
-	.dept_task.recursive = 0,					\
-	.dept_task.stage_m = NULL,					\
-	.dept_task.stage_w_f = 0UL,					\
-	.dept_task.stage_w_fn = NULL,					\
-	.dept_task.stage_ne = 0,					\
-	.dept_task.missing_ecxt = 0,					\
-	.dept_task.hardirqs_enabled = false,				\
-	.dept_task.softirqs_enabled = false,
+#define DEPT_TASK_INITIALIZER(t)				\
+{								\
+	.wait_hist = { { .wait = NULL, } },			\
+	.ecxt_held_pos = 0,					\
+	.wait_hist_pos = 0,					\
+	.cxt_id = { 0U },					\
+	.wgen_enirq = { 0U },					\
+	.enirq_ip = { 0UL },					\
+	.eff_enirqf = 0UL,					\
+	.stack = NULL,						\
+	.recursive = 0,						\
+	.stage_m = NULL,					\
+	.stage_w_f = 0UL,					\
+	.stage_w_fn = NULL,					\
+	.stage_ne = 0,						\
+	.missing_ecxt = 0,					\
+	.hardirqs_enabled = false,				\
+	.softirqs_enabled = false,				\
+}
 
 extern void dept_on(void);
 extern void dept_off(void);
@@ -510,7 +522,8 @@ struct dept_map_each    { };
 struct dept_map_commmon { };
 struct dept_task { };
 
-#define DEPT_TASK_INITIALIZER(t)
+#define DEPT_MAP_INITIALIZER(n) { }
+#define DEPT_TASK_INITIALIZER(t) { }
 
 #define dept_on()					do { } while (0)
 #define dept_off()					do { } while (0)

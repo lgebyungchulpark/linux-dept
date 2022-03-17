@@ -56,7 +56,7 @@ struct task_struct;
 #define __WAIT_QUEUE_HEAD_INITIALIZER(name) {					\
 	.lock		= __SPIN_LOCK_UNLOCKED(name.lock),			\
 	.head		= { &(name).head, &(name).head },			\
-	.dmap		= DEPT_SDT_MAP_INIT(name) }
+	.dmap		= DEPT_MAP_INITIALIZER(name) }
 
 #define DECLARE_WAIT_QUEUE_HEAD(name) \
 	struct wait_queue_head name = __WAIT_QUEUE_HEAD_INITIALIZER(name)

@@ -51,12 +51,6 @@ do {									\
 #define dept_wfc_exit(m, ip)			do { } while (0)
 #endif
 
-#ifdef CONFIG_DEPT
-#define WFC_DEPT_MAP_INIT(work) .dmap = { .name = #work }
-#else
-#define WFC_DEPT_MAP_INIT(work)
-#endif
-
 #define init_completion_nocheck(x) __init_completion(x, NULL, #x, false)
 #define init_completion(x)					\
 	do {							\
@@ -71,7 +65,7 @@ static inline void complete_release(struct completion *x) {}
 
 #define COMPLETION_INITIALIZER(work) \
 	{ 0, __WAIT_QUEUE_HEAD_INITIALIZER((work).wait), \
-	WFC_DEPT_MAP_INIT(work) }
+	  .dmap = DEPT_MAP_INITIALIZER(work) }
 
 #define COMPLETION_INITIALIZER_ONSTACK_MAP(work, map) \
 	(*({ init_completion_map(&(work), &(map)); &(work); }))

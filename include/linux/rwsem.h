@@ -16,6 +16,7 @@
 #include <linux/spinlock.h>
 #include <linux/atomic.h>
 #include <linux/err.h>
+
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 #include <linux/osq_lock.h>
 #endif
@@ -95,15 +96,9 @@ static inline int rwsem_is_locked(struct rw_semaphore *sem)
 
 /* Common initializer macros and functions */
 
-#ifdef CONFIG_DEPT
-# define RWSEM_DMAP_INIT(lockname)	.dmap = { .name = #lockname },
-#else
-# define RWSEM_DMAP_INIT(lockname)
-#endif
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define __RWSEM_DEP_MAP_INIT(lockname) , .dep_map = { .name = #lockname, \
-						RWSEM_DMAP_INIT(lockname) }
+						       .dmap = DEPT_MAP_INITIALIZER(lockname) }
 #else
 # define __RWSEM_DEP_MAP_INIT(lockname)
 #endif

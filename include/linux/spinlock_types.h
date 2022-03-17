@@ -32,15 +32,9 @@ typedef struct raw_spinlock {
 
 #define SPINLOCK_OWNER_INIT	((void *)-1L)
 
-#ifdef CONFIG_DEPT
-# define SPIN_DMAP_INIT(lockname)	.dmap = { .name = #lockname },
-#else
-# define SPIN_DMAP_INIT(lockname)
-#endif
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define SPIN_DEP_MAP_INIT(lockname)	.dep_map = { .name = #lockname, \
-						     SPIN_DMAP_INIT(lockname) }
+						     .dmap = DEPT_MAP_INITIALIZER(lockname) }
 #else
 # define SPIN_DEP_MAP_INIT(lockname)
 #endif

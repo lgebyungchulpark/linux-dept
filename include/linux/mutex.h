@@ -133,16 +133,10 @@ do {									\
 	__mutex_init((mutex), #mutex, &__key);				\
 } while (0)
 
-#ifdef CONFIG_DEPT
-# define DMAP_MUTEX_INIT(lockname)	.dmap = { .name = #lockname },
-#else
-# define DMAP_MUTEX_INIT(lockname)
-#endif
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define __DEP_MAP_MUTEX_INITIALIZER(lockname) \
 		, .dep_map = { .name = #lockname, \
-			       DMAP_MUTEX_INIT(lockname) }
+			.dmap = DEPT_MAP_INITIALIZER(lockname) }
 #else
 # define __DEP_MAP_MUTEX_INITIALIZER(lockname)
 #endif
