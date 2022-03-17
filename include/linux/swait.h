@@ -63,7 +63,7 @@ struct swait_queue {
 #define __SWAIT_QUEUE_HEAD_INITIALIZER(name) {				\
 	.lock		= __RAW_SPIN_LOCK_UNLOCKED(name.lock),		\
 	.task_list	= LIST_HEAD_INIT((name).task_list),		\
-	.dmap		= DEPT_SDT_MAP_INIT(name),			\
+	.dmap		= DEPT_MAP_INITIALIZER(name),			\
 }
 
 #define DECLARE_SWAIT_QUEUE_HEAD(name)					\

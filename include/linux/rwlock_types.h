@@ -5,18 +5,12 @@
 # error "Do not include directly, include spinlock_types.h"
 #endif
 
-#ifdef CONFIG_DEPT
-# define RW_DMAP_INIT(lockname) .dmap = { .name = #lockname },
-#else
-# define RW_DMAP_INIT(lockname)
-#endif
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define RW_DEP_MAP_INIT(lockname)					\
 	.dep_map = {							\
 		.name = #lockname,					\
 		.wait_type_inner = LD_WAIT_CONFIG,			\
-		RW_DMAP_INIT(lockname)					\
+		.dmap = DEPT_MAP_INITIALIZER(lockname)			\
 	}
 #else
 # define RW_DEP_MAP_INIT(lockname)

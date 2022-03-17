@@ -16,18 +16,12 @@
 #include <linux/atomic.h>
 #include <linux/err.h>
 
-#ifdef CONFIG_DEPT
-# define RWSEM_DMAP_INIT(lockname)	.dmap = { .name = #lockname },
-#else
-# define RWSEM_DMAP_INIT(lockname)
-#endif
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define __RWSEM_DEP_MAP_INIT(lockname)			\
 	.dep_map = {					\
 		.name = #lockname,			\
 		.wait_type_inner = LD_WAIT_SLEEP,	\
-		RWSEM_DMAP_INIT(lockname)		\
+		.dmap = DEPT_MAP_INITIALIZER(lockname)	\
 	},
 #else
 # define __RWSEM_DEP_MAP_INIT(lockname)

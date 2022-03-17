@@ -480,28 +480,17 @@ enum xhlock_context_t {
 	XHLOCK_CTX_NR,
 };
 
-#ifdef CONFIG_DEPT
-/*
- * TODO: I found the case to use an address of other than a real key as
- * _key, for instance, in workqueue. So for now, we cannot use the
- * assignment like '.dmap.keys = &(_key)->dkey' unless it's fixed.
- */
-#define STATIC_DEPT_MAP_INIT(_name, _key) .dmap = {		\
-	.name = (_name),					\
-	.keys = NULL,						\
-	},
-#else
-#define STATIC_DEPT_MAP_INIT(_name, _key)
-#endif
-
 #define lockdep_init_map_crosslock(m, n, k, s) do {} while (0)
 /*
  * To initialize a lockdep_map statically use this macro.
  * Note that _name must not be NULL.
+ *
+ * TODO: I found the case to use an address of other than a real key as
+ * _key, for instance, in workqueue. We cannot use it as key in Dept.
  */
 #define STATIC_LOCKDEP_MAP_INIT(_name, _key) \
 	{ .name = (_name), .key = (void *)(_key), \
-	STATIC_DEPT_MAP_INIT(_name, _key) }
+	  .dmap = DEPT_MAP_INITIALIZER(_name) }
 
 static inline void lockdep_invariant_state(bool force) {}
 static inline void lockdep_free_task(struct task_struct *task) {}

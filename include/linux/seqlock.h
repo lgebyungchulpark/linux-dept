@@ -42,12 +42,6 @@ do {								\
 #define dept_seq_writeend(m, ip)	do { } while (0)
 #endif
 
-#ifdef CONFIG_DEPT
-#define SEQ_DMAP_INIT(lockname) .dmap = { .name = #lockname }
-#else
-#define SEQ_DMAP_INIT(lockname)
-#endif
-
 /*
  * The seqlock seqcount_t interface does not prescribe a precise sequence of
  * read begin/retry/end. For readers, typically there is a call to
@@ -108,7 +102,7 @@ static inline void __seqcount_init(seqcount_t *s, const char *name,
 
 # define SEQCOUNT_DEP_MAP_INIT(lockname)				\
 		.dep_map = { .name = #lockname, \
-			     SEQ_DMAP_INIT(lockname) }
+			     .dmap = DEPT_MAP_INITIALIZER(lockname) }
 
 /**
  * seqcount_init() - runtime initializer for seqcount_t

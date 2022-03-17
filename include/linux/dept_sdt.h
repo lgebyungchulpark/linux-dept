@@ -13,8 +13,6 @@
 #include <linux/dept.h>
 
 #ifdef CONFIG_DEPT
-#define DEPT_SDT_MAP_INIT(dname)	{ .name = #dname }
-
 /*
  * SDT(Single-event Dependency Tracker) APIs
  *
@@ -57,6 +55,6 @@
 #endif
 
 #define DEFINE_DEPT_SDT(x)		\
-	struct dept_map x = DEPT_SDT_MAP_INIT(x)
+	struct dept_map x = DEPT_MAP_INITIALIZER(x)
 
 #endif /* __LINUX_DEPT_SDT_H */
