@@ -7,7 +7,7 @@
  */
 
 OBJECT(dep, 1024 * 16)
-OBJECT(class, 1024 * 4)
+OBJECT(class, 1024 * 8)
 OBJECT(stack, 1024 * 32)
-OBJECT(ecxt, 1024 * 4)
+OBJECT(ecxt, 1024 * 16)
 OBJECT(wait, 1024 * 32)
