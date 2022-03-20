@@ -715,6 +715,13 @@ void __noreturn do_exit(long code)
 	int group_dead;
 
 	/*
+	 * dept_task_exit() requires might_sleep() because it needs to
+	 * wait on the grace period after cleaning the objects that have
+	 * been coupled with the current task_struct.
+	 */
+	dept_task_exit(tsk);
+
+	/*
 	 * We can get here from a kernel oops, sometimes with preemption off.
 	 * Start by checking for critical errors.
 	 * Then fix up important state like USER_DS and preemption.
@@ -857,7 +864,6 @@ void __noreturn do_exit(long code)
 	exit_tasks_rcu_finish();
 
 	lockdep_free_task(tsk);
-	dept_task_exit(tsk);
 	do_task_dead();
 }
 EXPORT_SYMBOL_GPL(do_exit);
