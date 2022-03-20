@@ -73,6 +73,7 @@
 #include <linux/hash.h>
 #include <linux/dept.h>
 #include <linux/utsname.h>
+#include <linux/sched/task_stack.h>
 #include "dept_internal.h"
 
 static int dept_stop;
@@ -523,12 +524,12 @@ static unsigned long key_dep(struct dept_dep *d)
 
 static bool cmp_class(struct dept_class *c1, struct dept_class *c2)
 {
-	return c1->key == c2->key;
+	return c1->key == c2->key && c1->key2 == c2->key2;
 }
 
 static unsigned long key_class(struct dept_class *c)
 {
-	return c->key;
+	return c->key2 ? mix(c->key, c->key2) : c->key;
 }
 
 #define HASH(id, bits)							\
@@ -571,11 +572,35 @@ static inline struct dept_dep *lookup_dep(struct dept_class *fc,
 	return hash_lookup_dep(&onetime_d);
 }
 
-static inline struct dept_class *lookup_class(unsigned long key)
+static inline struct dept_class *lookup_class(unsigned long key,
+					      unsigned long key2)
 {
-	struct dept_class onetime_c = { .key = key };
+	struct dept_class onetime_c = { .key = key, .key2 = key2 };
 
 	return hash_lookup_class(&onetime_c);
+}
+
+/*
+ * NOTE: Must be called with dept_lock held.
+ */
+static void obtain_classes_from_hlist(struct hlist_head *to,
+			bool (*cmp)(struct dept_class *c, void *data),
+			void *data)
+{
+	struct dept_class *c;
+	struct hlist_node *n;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(table_class); i++) {
+		struct hlist_head *h = table_class + i;
+
+		hlist_for_each_entry_safe(c, n, h, hash_node) {
+			if (cmp(c, data)) {
+				hlist_del_rcu(&c->hash_node);
+				hlist_add_head_rcu(&c->hash_node, to);
+			}
+		}
+	}
 }
 
 /*
@@ -1899,11 +1924,22 @@ void dept_map_init(struct dept_map *m, struct dept_key *k, int sub,
 		   const char *n)
 {
 	unsigned long flags;
+	bool onstack;
 
 	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
 	if (sub < 0 || sub >= DEPT_MAX_SUBCLASSES_USR) {
+		m->nocheck = true;
+		return;
+	}
+
+	onstack = object_is_on_stack(m);
+
+	/*
+	 * Require an explicit key for onstack maps.
+	 */
+	if (onstack && !k) {
 		m->nocheck = true;
 		return;
 	}
@@ -1917,6 +1953,7 @@ void dept_map_init(struct dept_map *m, struct dept_key *k, int sub,
 
 	m->sub_usr = sub;
 	m->keys = k;
+	m->key2 = onstack ? (unsigned long)current : 0UL;
 	m->name = n;
 	m->wgen = 0U;
 	m->nocheck = false;
@@ -2031,7 +2068,7 @@ static inline int map_sub(struct dept_map *m, int e)
 
 static struct dept_class *check_new_class(struct dept_key *local,
 					  struct dept_key *k, int sub,
-					  const char *n)
+					  unsigned long k2, const char *n)
 {
 	struct dept_class *c = NULL;
 
@@ -2047,14 +2084,14 @@ static struct dept_class *check_new_class(struct dept_key *local,
 	if (c)
 		return c;
 
-	c = lookup_class((unsigned long)k->subkeys + sub);
+	c = lookup_class((unsigned long)k->subkeys + sub, k2);
 	if (c)
 		goto caching;
 
 	if (unlikely(!dept_lock()))
 		return NULL;
 
-	c = lookup_class((unsigned long)k->subkeys + sub);
+	c = lookup_class((unsigned long)k->subkeys + sub, k2);
 	if (unlikely(c))
 		goto unlock;
 
@@ -2065,6 +2102,7 @@ static struct dept_class *check_new_class(struct dept_key *local,
 	c->name = n;
 	c->sub = sub;
 	c->key = (unsigned long)(k->subkeys + sub);
+	c->key2 = k2;
 	hash_add_class(c);
 	list_add(&c->all_node, &dept_classes);
 unlock:
@@ -2099,8 +2137,8 @@ static void __dept_wait(struct dept_map *m, unsigned long w_f,
 		struct dept_key *k;
 
 		k = m->keys ?: &m->keys_local;
-		c = check_new_class(&m->keys_local, k,
-				    map_sub(m, e), m->name);
+		c = check_new_class(&m->keys_local, k, map_sub(m, e),
+				    m->key2, m->name);
 		if (!c)
 			continue;
 
@@ -2298,7 +2336,8 @@ void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip,
 	DEPT_WARN_ON(1UL << e != e_f);
 
 	k = m->keys ?: &m->keys_local;
-	c = check_new_class(&m->keys_local, k, map_sub(m, e), m->name);
+	c = check_new_class(&m->keys_local, k, map_sub(m, e),
+			    m->key2, m->name);
 
 	if (c && add_ecxt((void *)m, c, ip, c_fn, e_fn, ne))
 		goto exit;
@@ -2376,7 +2415,8 @@ void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip,
 	DEPT_WARN_ON(1UL << e != e_f);
 
 	k = m->keys ?: &m->keys_local;
-	c = check_new_class(&m->keys_local, k, map_sub(m, e), m->name);
+	c = check_new_class(&m->keys_local, k, map_sub(m, e),
+			    m->key2, m->name);
 
 	if (c && add_ecxt((void *)m, c, 0UL, NULL, e_fn, 0)) {
 		do_event((void *)m, c, READ_ONCE(m->wgen), ip);
@@ -2427,7 +2467,8 @@ void dept_ecxt_exit(struct dept_map *m, unsigned long e_f,
 	DEPT_WARN_ON(1UL << e != e_f);
 
 	k = m->keys ?: &m->keys_local;
-	c = check_new_class(&m->keys_local, k, map_sub(m, e), m->name);
+	c = check_new_class(&m->keys_local, k, map_sub(m, e),
+			    m->key2, m->name);
 
 	if (c && pop_ecxt((void *)m, c))
 		goto exit;
@@ -2504,7 +2545,7 @@ void dept_wait_split_map(struct dept_map_each *me,
 	flags = dept_enter();
 
 	k = mc->keys ?: &mc->keys_local;
-	c = check_new_class(&mc->keys_local, k, 0, mc->name);
+	c = check_new_class(&mc->keys_local, k, 0, 0UL, mc->name);
 	if (c)
 		add_wait(c, ip, w_fn, ne);
 
@@ -2568,7 +2609,7 @@ void dept_event_split_map(struct dept_map_each *me,
 	flags = dept_enter();
 
 	k = mc->keys ?: &mc->keys_local;
-	c = check_new_class(&mc->keys_local, k, 0, mc->name);
+	c = check_new_class(&mc->keys_local, k, 0, 0UL, mc->name);
 
 	if (c && add_ecxt((void *)me, c, 0UL, NULL, e_fn, 0)) {
 		do_event((void *)me, c, READ_ONCE(me->wgen), ip);
@@ -2584,12 +2625,64 @@ void dept_event_split_map(struct dept_map_each *me,
 }
 EXPORT_SYMBOL_GPL(dept_event_split_map);
 
+static bool cmp_class_key2(struct dept_class *c, void *k2)
+{
+	return c->key2 == (unsigned long)k2;
+}
+
+static void per_task_key_destroy(void)
+{
+	struct dept_class *c;
+	struct hlist_node *n;
+	HLIST_HEAD(h);
+
+	/*
+	 * per_task_key_destroy() should not fail.
+	 *
+	 * FIXME: Should be fixed if per_task_key_destroy() causes
+	 * deadlock with dept_lock().
+	 */
+	while (unlikely(!dept_lock()))
+		cpu_relax();
+
+	obtain_classes_from_hlist(&h, cmp_class_key2, current);
+
+	hlist_for_each_entry_safe(c, n, &h, hash_node) {
+		hash_del_class(c);
+		disconnect_class(c);
+		list_del(&c->all_node);
+		inval_class(c);
+
+		/*
+		 * Actual deletion will happen on the rcu callback
+		 * that has been added in disconnect_class().
+		 */
+		del_class(c);
+	}
+
+	dept_unlock();
+}
+
 void dept_task_exit(struct task_struct *t)
 {
-	struct dept_task *dt = &t->dept_task;
+	struct dept_task *dt = dept_task();
+	unsigned long flags;
 	int i;
 
-	raw_local_irq_disable();
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	if (dt->recursive) {
+		DEPT_STOP("Entered task_exit() while Dept is working.\n");
+		return;
+	}
+
+	if (t != current) {
+		DEPT_STOP("Never expect task_exit() done by others.\n");
+		return;
+	}
+
+	flags = dept_enter();
 
 	if (dt->stack)
 		put_stack(dt->stack);
@@ -2601,9 +2694,17 @@ void dept_task_exit(struct task_struct *t)
 		if (dt->wait_hist[i].wait)
 			put_wait(dt->wait_hist[i].wait);
 
-	dept_off();
+	per_task_key_destroy();
 
-	raw_local_irq_enable();
+	dept_off();
+	dept_exit(flags);
+
+	/*
+	 * Wait until even lockless hash_lookup_class() for the class
+	 * returns NULL.
+	 */
+	might_sleep();
+	synchronize_rcu();
 }
 
 void dept_task_init(struct task_struct *t)
@@ -2611,10 +2712,18 @@ void dept_task_init(struct task_struct *t)
 	memset(&t->dept_task, 0x0, sizeof(struct dept_task));
 }
 
+static bool cmp_class_key1(struct dept_class *c, void *k1)
+{
+	return c->key == (unsigned long)k1;
+}
+
 void dept_key_init(struct dept_key *k)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
+	struct dept_class *c;
+	struct hlist_node *n;
+	HLIST_HEAD(h);
 	int sub;
 
 	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
@@ -2636,13 +2745,11 @@ void dept_key_init(struct dept_key *k)
 	while (unlikely(!dept_lock()))
 		cpu_relax();
 
-	for (sub = 0; sub < DEPT_MAX_SUBCLASSES; sub++) {
-		struct dept_class *c;
+	for (sub = 0; sub < DEPT_MAX_SUBCLASSES; sub++)
+		obtain_classes_from_hlist(&h, cmp_class_key1,
+					  k->subkeys + sub);
 
-		c = lookup_class((unsigned long)k->subkeys + sub);
-		if (!c)
-			continue;
-
+	hlist_for_each_entry_safe(c, n, &h, hash_node) {
 		DEPT_STOP("The class(%s/%d) has not been removed.\n",
 			  c->name, sub);
 		break;
@@ -2657,6 +2764,9 @@ void dept_key_destroy(struct dept_key *k)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
+	struct dept_class *c;
+	struct hlist_node *n;
+	HLIST_HEAD(h);
 	int sub;
 
 	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
@@ -2678,13 +2788,11 @@ void dept_key_destroy(struct dept_key *k)
 	while (unlikely(!dept_lock()))
 		cpu_relax();
 
-	for (sub = 0; sub < DEPT_MAX_SUBCLASSES; sub++) {
-		struct dept_class *c;
+	for (sub = 0; sub < DEPT_MAX_SUBCLASSES; sub++)
+		obtain_classes_from_hlist(&h, cmp_class_key1,
+					  k->subkeys + sub);
 
-		c = lookup_class((unsigned long)k->subkeys + sub);
-		if (!c)
-			continue;
-
+	hlist_for_each_entry_safe(c, n, &h, hash_node) {
 		hash_del_class(c);
 		disconnect_class(c);
 		list_del(&c->all_node);
