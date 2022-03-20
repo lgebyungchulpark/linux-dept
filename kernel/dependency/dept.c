@@ -1033,6 +1033,19 @@ static inline void dept_exit(unsigned long flags)
 	raw_local_irq_restore(flags);
 }
 
+static inline unsigned long dept_enter_recursive(void)
+{
+	unsigned long flags;
+
+	raw_local_irq_save(flags);
+	return flags;
+}
+
+static inline void dept_exit_recursive(unsigned long flags)
+{
+	raw_local_irq_restore(flags);
+}
+
 /*
  * NOTE: Must be called with dept_lock held.
  */
@@ -1790,7 +1803,15 @@ void dept_enable_softirq(unsigned long ip)
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	/*
+	 * IRQ ON/OFF transition might happen while Dept is working.
+	 * We cannot handle that recursive entrance. Just ingnore it.
+	 * Only transitions outside of Dept will be considered.
+	 */
+	if (dt->recursive)
 		return;
 
 	flags = dept_enter();
@@ -1815,7 +1836,15 @@ void dept_enable_hardirq(unsigned long ip)
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	/*
+	 * IRQ ON/OFF transition might happen while Dept is working.
+	 * We cannot handle that recursive entrance. Just ingnore it.
+	 * Only transitions outside of Dept will be considered.
+	 */
+	if (dt->recursive)
 		return;
 
 	flags = dept_enter();
@@ -1840,7 +1869,15 @@ void dept_disable_softirq(unsigned long ip)
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	/*
+	 * IRQ ON/OFF transition might happen while Dept is working.
+	 * We cannot handle that recursive entrance. Just ingnore it.
+	 * Only transitions outside of Dept will be considered.
+	 */
+	if (dt->recursive)
 		return;
 
 	flags = dept_enter();
@@ -1862,7 +1899,15 @@ void dept_disable_hardirq(unsigned long ip)
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	/*
+	 * IRQ ON/OFF transition might happen while Dept is working.
+	 * We cannot handle that recursive entrance. Just ingnore it.
+	 * Only transitions outside of Dept will be considered.
+	 */
+	if (dt->recursive)
 		return;
 
 	flags = dept_enter();
@@ -1930,65 +1975,70 @@ static inline void clean_classes_cache(struct dept_key *k)
 void dept_map_init(struct dept_map *m, struct dept_key *k, int sub,
 		   const char *n)
 {
-	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
-	flags = dept_enter();
-
-	if (DEPT_WARN_ON(sub < 0 || sub >= DEPT_MAX_SUBCLASSES_USR)) {
+	if (sub < 0 || sub >= DEPT_MAX_SUBCLASSES_USR) {
 		m->nocheck = true;
-		goto exit;
+		return;
 	}
 
-	if (m->keys != k)
-		m->keys = k;
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
+
 	clean_classes_cache(&m->keys_local);
 
 	m->sub_usr = sub;
+	m->keys = k;
 	m->name = n;
 	m->wgen = 0U;
 	m->nocheck = false;
-exit:
-	dept_exit(flags);
+
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_map_init);
 
 void dept_map_reinit(struct dept_map *m)
 {
-	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
 	if (m->nocheck)
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
 	clean_classes_cache(&m->keys_local);
 	m->wgen = 0U;
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_map_reinit);
 
 void dept_map_nocheck(struct dept_map *m)
 {
-	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
 	m->nocheck = true;
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_map_nocheck);
 
@@ -2005,8 +2055,13 @@ void dept_free_range(void *start, unsigned int sz)
 	struct dept_class *c, *n;
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
+
+	if (dt->recursive) {
+		DEPT_STOP("Should successfully free the objects.\n");
+		return;
+	}
 
 	flags = dept_enter();
 
@@ -2132,7 +2187,10 @@ void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	if (dt->recursive)
 		return;
 
 	if (m->nocheck)
@@ -2167,13 +2225,16 @@ void dept_stage_wait(struct dept_map *m, unsigned long w_f,
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
 	if (m->nocheck)
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
 	stage_map(dt, m);
 
@@ -2187,7 +2248,7 @@ void dept_stage_wait(struct dept_map *m, unsigned long w_f,
 	 */
 	WRITE_ONCE(m->wgen, 0U);
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_stage_wait);
 
@@ -2196,10 +2257,13 @@ void dept_clean_stage(void)
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
 	unstage_map(dt);
 
@@ -2207,7 +2271,7 @@ void dept_clean_stage(void)
 	dt->stage_w_fn = NULL;
 	dt->stage_ne = 0;
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_clean_stage);
 
@@ -2224,8 +2288,25 @@ void dept_ask_event_wait_commit(unsigned long ip)
 	const char *w_fn;
 	int ne;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
+
+	if (dt->recursive) {
+		flags = dept_enter_recursive();
+
+		/*
+		 * Dept won't work with this map even though anyway an
+		 * event context has been just asked. Don't make it
+		 * confused at that time handling the event. Disable it
+		 * until the next real case.
+		 */
+		m = staged_map(dt);
+		if (m)
+			WRITE_ONCE(m->wgen, 0U);
+
+		dept_exit_recursive(flags);
+		return;
+	}
 
 	flags = dept_enter();
 
@@ -2264,8 +2345,13 @@ void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip,
 	struct dept_key *k;
 	int e;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
+
+	if (dt->recursive) {
+		dt->missing_ecxt++;
+		return;
+	}
 
 	if (m->nocheck)
 		return;
@@ -2298,25 +2384,19 @@ EXPORT_SYMBOL_GPL(dept_ecxt_enter);
 
 void dept_ask_event(struct dept_map *m)
 {
-	struct dept_task *dt = dept_task();
 	unsigned long flags;
 	unsigned int wg;
 
-	if (READ_ONCE(dept_stop) || dt->recursive) {
-		/*
-		 * Dept won't work with this map even though anyway an
-		 * event context has been just asked. Don't make it
-		 * confused at that time handling the event. Disable it
-		 * until the next real case.
-		 */
-		WRITE_ONCE(m->wgen, 0U);
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
-	}
 
 	if (m->nocheck)
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
 	/*
 	 * Avoid zero wgen.
@@ -2324,7 +2404,7 @@ void dept_ask_event(struct dept_map *m)
 	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
 	WRITE_ONCE(m->wgen, wg);
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_ask_event);
 
@@ -2337,7 +2417,10 @@ void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip,
 	struct dept_key *k;
 	int e;
 
-	if (READ_ONCE(dept_stop) || dt->recursive) {
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	if (dt->recursive) {
 		/*
 		 * Dept won't work with this map even though anyway an
 		 * event has been just triggered. Don't make it confused
@@ -2391,8 +2474,13 @@ void dept_ecxt_exit(struct dept_map *m, unsigned long e_f,
 	struct dept_key *k;
 	int e;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
+
+	if (dt->recursive) {
+		dt->missing_ecxt--;
+		return;
+	}
 
 	if (m->nocheck)
 		return;
@@ -2425,43 +2513,46 @@ EXPORT_SYMBOL_GPL(dept_ecxt_exit);
 
 void dept_split_map_each_init(struct dept_map_each *me)
 {
-	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
 	me->wgen = 0U;
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_split_map_each_init);
 
 void dept_split_map_common_init(struct dept_map_common *mc,
 				struct dept_key *k, const char *n)
 {
-	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
-	if (mc->keys != k)
-		mc->keys = k;
 	clean_classes_cache(&mc->keys_local);
 
 	/*
 	 * sub_usr is not used with split map.
 	 */
 	mc->sub_usr = 0;
+	mc->keys = k;
 	mc->name = n;
 	mc->nocheck = false;
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_split_map_common_init);
 
@@ -2474,7 +2565,10 @@ void dept_wait_split_map(struct dept_map_each *me,
 	struct dept_key *k;
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
+		return;
+
+	if (dt->recursive)
 		return;
 
 	if (mc->nocheck)
@@ -2494,17 +2588,19 @@ EXPORT_SYMBOL_GPL(dept_wait_split_map);
 void dept_ask_event_split_map(struct dept_map_each *me,
 			      struct dept_map_common *mc)
 {
-	struct dept_task *dt = dept_task();
-	unsigned long flags;
 	unsigned int wg;
+	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
 
 	if (mc->nocheck)
 		return;
 
-	flags = dept_enter();
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
 
 	/*
 	 * Avoid zero wgen.
@@ -2512,7 +2608,7 @@ void dept_ask_event_split_map(struct dept_map_each *me,
 	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
 	WRITE_ONCE(me->wgen, wg);
 
-	dept_exit(flags);
+	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_ask_event_split_map);
 
@@ -2525,8 +2621,19 @@ void dept_event_split_map(struct dept_map_each *me,
 	struct dept_key *k;
 	unsigned long flags;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
+
+	if (dt->recursive) {
+		/*
+		 * Dept won't work with this map even though anyway an
+		 * event has been just triggered. Don't make it confused
+		 * at that time handling the next event. Disable it
+		 * until the next real case.
+		 */
+		WRITE_ONCE(me->wgen, 0U);
+		return;
+	}
 
 	if (mc->nocheck)
 		return;
@@ -2583,8 +2690,13 @@ void dept_key_init(struct dept_key *k)
 	unsigned long flags;
 	int sub;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
+
+	if (dt->recursive) {
+		DEPT_STOP("Key initialization fails.\n");
+		return;
+	}
 
 	flags = dept_enter();
 
@@ -2620,8 +2732,13 @@ void dept_key_destroy(struct dept_key *k)
 	unsigned long flags;
 	int sub;
 
-	if (READ_ONCE(dept_stop) || dt->recursive)
+	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
 		return;
+
+	if (dt->recursive) {
+		DEPT_STOP("Key destroying fails.\n");
+		return;
+	}
 
 	flags = dept_enter();
 
