@@ -72,6 +72,7 @@ struct dept_class {
 	 */
 	const char			*name;
 	unsigned long			key;
+	unsigned long			key2;
 	int				sub;
 
 	/*
@@ -343,6 +344,7 @@ struct dept_key {
 struct dept_map {
 	const char			*name;
 	struct dept_key			*keys;
+	unsigned long			key2;
 	int				sub_usr;
 
 	/*
@@ -366,6 +368,7 @@ struct dept_map {
 {									\
 	.name = #n,							\
 	.keys = NULL,							\
+	.key2 = 0UL,							\
 	.sub_usr = 0,							\
 	.keys_local = { .classes = { 0 } },				\
 	.wgen = 0U,							\
