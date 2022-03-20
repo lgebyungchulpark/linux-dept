@@ -2147,7 +2147,11 @@ static struct dept_class *check_new_class(struct dept_key *local,
 unlock:
 	dept_unlock();
 caching:
-	if (sub < DEPT_MAX_SUBCLASSES_CACHE && c)
+	/*
+	 * Should be cached even if c == NULL, to reflect the case that
+	 * the class has been deleted.
+	 */
+	if (sub < DEPT_MAX_SUBCLASSES_CACHE)
 		WRITE_ONCE(local->classes[sub], c);
 
 	return c;
