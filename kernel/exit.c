@@ -735,6 +735,13 @@ void __noreturn do_exit(long code)
 	struct task_struct *tsk = current;
 	int group_dead;
 
+	/*
+	 * dept_task_exit() requires might_sleep() because it needs to
+	 * wait on the grace period after cleaning the objects that have
+	 * been coupled with the current task_struct.
+	 */
+	dept_task_exit(tsk);
+
 	WARN_ON(blk_needs_flush_plug(tsk));
 
 	/*
@@ -854,7 +861,6 @@ void __noreturn do_exit(long code)
 	exit_tasks_rcu_finish();
 
 	lockdep_free_task(tsk);
-	dept_task_exit(tsk);
 	do_task_dead();
 }
 
