@@ -409,6 +409,7 @@ static void initialize_ecxt(struct dept_ecxt *e)
 	e->ecxt_ip = 0UL;
 	e->ecxt_stack = NULL;
 	e->enirqf = 0UL;
+	e->event_ip = 0UL;
 	e->event_stack = NULL;
 }
 SET_CONSTRUCTOR(ecxt, initialize_ecxt);
