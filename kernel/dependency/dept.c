@@ -1821,106 +1821,32 @@ static void enirq_update(unsigned long ip)
 	}
 }
 
-/*
- * Ensure it has been called on OFF -> ON transition.
- */
-void dept_enable_softirq(unsigned long ip)
+void dept_aware_softirqs_enable(void)
 {
-	struct dept_task *dt = dept_task();
-	unsigned long flags;
-
-	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
-		return;
-
-	/*
-	 * IRQ ON/OFF transition might happen while Dept is working.
-	 * We cannot handle that recursive entrance. Just ingnore it.
-	 * Only transitions outside of Dept will be considered.
-	 */
-	if (dt->recursive)
-		return;
-
-	flags = dept_enter();
-
-	if (DEPT_WARN_ON(early_boot_irqs_disabled))
-		goto exit;
-
-	if (DEPT_WARN_ON(!irqs_disabled()))
-		goto exit;
-
-	dt->softirqs_enabled = true;
-	enirq_update(ip);
-exit:
-	dept_exit(flags);
+	dept_task()->softirqs_enabled = true;
 }
 
-/*
- * Ensure it has been called on OFF -> ON transition.
- */
-void dept_enable_hardirq(unsigned long ip)
+void dept_aware_softirqs_disable(void)
 {
-	struct dept_task *dt = dept_task();
-	unsigned long flags;
-
-	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
-		return;
-
-	/*
-	 * IRQ ON/OFF transition might happen while Dept is working.
-	 * We cannot handle that recursive entrance. Just ingnore it.
-	 * Only transitions outside of Dept will be considered.
-	 */
-	if (dt->recursive)
-		return;
-
-	flags = dept_enter();
-
-	if (DEPT_WARN_ON(early_boot_irqs_disabled))
-		goto exit;
-
-	if (DEPT_WARN_ON(!irqs_disabled()))
-		goto exit;
-
-	dt->hardirqs_enabled = true;
-	enirq_update(ip);
-exit:
-	dept_exit(flags);
+	dept_task()->softirqs_enabled = false;
 }
 
-/*
- * Ensure it has been called on ON -> OFF transition.
- */
-void dept_disable_softirq(unsigned long ip)
+void dept_aware_hardirqs_enable(void)
 {
-	struct dept_task *dt = dept_task();
-	unsigned long flags;
-
-	if (unlikely(READ_ONCE(dept_stop) || in_nmi()))
-		return;
-
-	/*
-	 * IRQ ON/OFF transition might happen while Dept is working.
-	 * We cannot handle that recursive entrance. Just ingnore it.
-	 * Only transitions outside of Dept will be considered.
-	 */
-	if (dt->recursive)
-		return;
-
-	flags = dept_enter();
-
-	if (DEPT_WARN_ON(!irqs_disabled()))
-		goto exit;
-
-	dt->softirqs_enabled = false;
-	enirq_update(ip);
-exit:
-	dept_exit(flags);
+	dept_task()->hardirqs_enabled = true;
 }
+EXPORT_SYMBOL_GPL(dept_aware_hardirqs_enable);
+
+void dept_aware_hardirqs_disable(void)
+{
+	dept_task()->hardirqs_enabled = false;
+}
+EXPORT_SYMBOL_GPL(dept_aware_hardirqs_disable);
 
 /*
- * Ensure it has been called on ON -> OFF transition.
+ * Ensure it has been called on ON/OFF transition.
  */
-void dept_disable_hardirq(unsigned long ip)
+void dept_enirq_transition(unsigned long ip)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
@@ -1930,7 +1856,7 @@ void dept_disable_hardirq(unsigned long ip)
 
 	/*
 	 * IRQ ON/OFF transition might happen while Dept is working.
-	 * We cannot handle that recursive entrance. Just ingnore it.
+	 * We cannot handle recursive entrance. Just ingnore it.
 	 * Only transitions outside of Dept will be considered.
 	 */
 	if (dt->recursive)
@@ -1938,12 +1864,8 @@ void dept_disable_hardirq(unsigned long ip)
 
 	flags = dept_enter();
 
-	if (DEPT_WARN_ON(!irqs_disabled()))
-		goto exit;
-
-	dt->hardirqs_enabled = false;
 	enirq_update(ip);
-exit:
+
 	dept_exit(flags);
 }
 

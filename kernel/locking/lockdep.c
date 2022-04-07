@@ -3394,7 +3394,7 @@ static void __trace_hardirqs_on_caller(unsigned long ip)
 	debug_atomic_inc(hardirqs_on_events);
 }
 
-void lockdep_hardirqs_on(unsigned long ip)
+void _lockdep_hardirqs_on(unsigned long ip)
 {
 	if (unlikely(!debug_locks || current->lockdep_recursion))
 		return;
@@ -3434,12 +3434,12 @@ void lockdep_hardirqs_on(unsigned long ip)
 	__trace_hardirqs_on_caller(ip);
 	current->lockdep_recursion = 0;
 }
-NOKPROBE_SYMBOL(lockdep_hardirqs_on);
+NOKPROBE_SYMBOL(_lockdep_hardirqs_on);
 
 /*
  * Hardirqs were disabled:
  */
-void lockdep_hardirqs_off(unsigned long ip)
+void _lockdep_hardirqs_off(unsigned long ip)
 {
 	struct task_struct *curr = current;
 
@@ -3464,12 +3464,12 @@ void lockdep_hardirqs_off(unsigned long ip)
 	} else
 		debug_atomic_inc(redundant_hardirqs_off);
 }
-NOKPROBE_SYMBOL(lockdep_hardirqs_off);
+NOKPROBE_SYMBOL(_lockdep_hardirqs_off);
 
 /*
  * Softirqs will be enabled:
  */
-void lockdep_softirqs_on(unsigned long ip)
+void _lockdep_softirqs_on(unsigned long ip)
 {
 	struct task_struct *curr = current;
 
@@ -3509,7 +3509,7 @@ void lockdep_softirqs_on(unsigned long ip)
 /*
  * Softirqs were disabled:
  */
-void lockdep_softirqs_off(unsigned long ip)
+void _lockdep_softirqs_off(unsigned long ip)
 {
 	struct task_struct *curr = current;
 

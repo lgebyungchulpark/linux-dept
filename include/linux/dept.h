@@ -518,6 +518,14 @@ static inline void dept_ecxt_enter_nokeep(struct dept_map *m)
  */
 extern void dept_key_init(struct dept_key *k);
 extern void dept_key_destroy(struct dept_key *k);
+
+extern void dept_softirq_enter(void);
+extern void dept_hardirq_enter(void);
+extern void dept_aware_softirqs_enable(void);
+extern void dept_aware_hardirqs_enable(void);
+extern void dept_aware_softirqs_disable(void);
+extern void dept_aware_hardirqs_disable(void);
+extern void dept_enirq_transition(unsigned long ip);
 #else /* !CONFIG_DEPT */
 struct dept_key  { };
 struct dept_map  { };
@@ -556,5 +564,13 @@ struct dept_task { };
 #define dept_ecxt_enter_nokeep(m)			do { } while (0)
 #define dept_key_init(k)				do { (void)(k); } while (0)
 #define dept_key_destroy(k)				do { (void)(k); } while (0)
+
+#define dept_softirq_enter()				do { } while (0)
+#define dept_hardirq_enter()				do { } while (0)
+#define dept_aware_softirqs_enable()			do { } while (0)
+#define dept_aware_hardirqs_enable()			do { } while (0)
+#define dept_aware_softirqs_disable()			do { } while (0)
+#define dept_aware_hardirqs_disable()			do { } while (0)
+#define dept_enirq_transition(ip)			do { } while (0)
 #endif
 #endif /* __LINUX_DEPT_H */
