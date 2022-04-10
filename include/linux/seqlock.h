@@ -29,11 +29,9 @@
 #define dept_seq_writebegin(m, ip)				\
 do {								\
 	dept_ecxt_enter(m, 1UL, ip, __func__, "write_seqcount_end", 0);\
-	dept_ask_event(m);					\
 } while (0)
 #define dept_seq_writeend(m, ip)				\
 do {								\
-	dept_event(m, 1UL, ip, __func__);			\
 	dept_ecxt_exit(m, 1UL, ip);				\
 } while (0)
 #else
