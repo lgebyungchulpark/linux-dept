@@ -20,7 +20,7 @@ do {								\
 								\
 	if (likely(me))						\
 		dept_wait_split_map(me, &pglocked_mc, _RET_IP_, \
-				    __func__, 0);		\
+				    __func__, 0, true);		\
 } while (0)
 
 #define dept_pglocked_set_bit(p)				\
@@ -46,7 +46,7 @@ do {								\
 								\
 	if (likely(me))						\
 		dept_wait_split_map(me, &pgwriteback_mc, _RET_IP_,\
-				    __func__, 0);		\
+				    __func__, 0, true);		\
 } while (0)
 
 #define dept_pgwriteback_set_bit(p)				\

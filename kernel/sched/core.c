@@ -4003,6 +4003,7 @@ static void __sched notrace __schedule(bool preempt)
 	struct rq *rq;
 	int cpu;
 
+	dept_sched_enter();
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
@@ -4089,6 +4090,7 @@ static void __sched notrace __schedule(bool preempt)
 	}
 
 	balance_callback(rq);
+	dept_sched_exit();
 }
 
 void __noreturn do_task_dead(void)
