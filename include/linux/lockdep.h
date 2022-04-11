@@ -648,12 +648,12 @@ static inline void print_irqtrace_events(struct task_struct *curr)
 #define spin_acquire(l, s, t, i)					\
 do {									\
 	lock_acquire_exclusive(l, s, t, NULL, i);			\
-	dept_spin_lock(&(l)->dmap, s, t, NULL, "spin_unlock", i);	\
+	dept_spin_lock(&(l)->dmap, s, t, NULL, "spin_unlock", i, false);\
 } while (0)
 #define spin_acquire_nest(l, s, t, n, i)				\
 do {									\
 	lock_acquire_exclusive(l, s, t, n, i);				\
-	dept_spin_lock(&(l)->dmap, s, t, (n) ? &(n)->dmap : NULL, "spin_unlock", i); \
+	dept_spin_lock(&(l)->dmap, s, t, (n) ? &(n)->dmap : NULL, "spin_unlock", i, false); \
 } while (0)
 #define spin_release(l, n, i)						\
 do {									\
@@ -664,12 +664,12 @@ do {									\
 #define rwlock_acquire(l, s, t, i)					\
 do {									\
 	lock_acquire_exclusive(l, s, t, NULL, i);			\
-	dept_rwlock_wlock(&(l)->dmap, s, t, NULL, "write_unlock", i);	\
+	dept_rwlock_wlock(&(l)->dmap, s, t, NULL, "write_unlock", i, false);\
 } while (0)
 #define rwlock_acquire_read(l, s, t, i)					\
 do {									\
 	lock_acquire_shared_recursive(l, s, t, NULL, i);		\
-	dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 0); \
+	dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 0, false);\
 } while (0)
 #define rwlock_release(l, n, i)						\
 do {									\
