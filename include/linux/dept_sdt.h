@@ -29,7 +29,13 @@
 #define sdt_wait(m)							\
 	do {								\
 		dept_ask_event(m);					\
-		dept_wait(m, 1UL, _THIS_IP_, "wait", 0);		\
+		dept_wait(m, 1UL, _THIS_IP_, "wait", 0, true);		\
+	} while (0)
+
+#define sdt_wait_spin(m)						\
+	do {								\
+		dept_ask_event(m);					\
+		dept_wait(m, 1UL, _THIS_IP_, "wait", 0, false);		\
 	} while (0)
 /*
  * This will be committed in __schedule() when it actually gets to
@@ -47,6 +53,7 @@
 #define sdt_map_init(m)			do { } while (0)
 #define sdt_map_init_key(m, k)		do { (void)(k); } while (0)
 #define sdt_wait(m)			do { } while (0)
+#define sdt_wait_spin(m)		do { } while (0)
 #define sdt_wait_prepare(m)		do { } while (0)
 #define sdt_wait_finish()		do { } while (0)
 #define sdt_ecxt_enter(m)		do { } while (0)

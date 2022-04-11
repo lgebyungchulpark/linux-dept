@@ -92,14 +92,14 @@
 #endif
 
 #ifdef CONFIG_DEPT
-#define dept_spin_lock(m, ne, t, n, e_fn, ip)				\
+#define dept_spin_lock(m, ne, t, n, e_fn, ip, s)			\
 do {									\
 	if (t) {							\
 		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, ne);	\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
 	} else {							\
-		dept_wait(m, 1UL, ip, __func__, ne);			\
+		dept_wait(m, 1UL, ip, __func__, ne, s);			\
 		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, ne);	\
 	}								\
 } while (0)
@@ -108,8 +108,8 @@ do {									\
 	dept_ecxt_exit(m, 1UL, ip);					\
 } while (0)
 #else
-#define dept_spin_lock(m, ne, t, n, e_fn, ip)	do { } while (0)
-#define dept_spin_unlock(m, ip)			do { } while (0)
+#define dept_spin_lock(m, ne, t, n, e_fn, ip, s)	do { } while (0)
+#define dept_spin_unlock(m, ip)				do { } while (0)
 #endif
 
 #ifdef CONFIG_DEBUG_SPINLOCK
