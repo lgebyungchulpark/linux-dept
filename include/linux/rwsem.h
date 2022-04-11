@@ -26,19 +26,15 @@
 do {									\
 	if (t) {							\
 		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, ne);	\
-		dept_ask_event(m);					\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
-		dept_ask_event(m);					\
 	} else {							\
 		dept_wait(m, 1UL, ip, __func__, ne);			\
 		dept_ecxt_enter(m, 1UL, ip, __func__, e_fn, ne);	\
-		dept_ask_event(m);					\
 	}								\
 } while (0)
 #define dept_rwsem_unlock(m, ip)					\
 do {									\
-	dept_event(m, 1UL, ip, __func__);				\
 	dept_ecxt_exit(m, 1UL, ip);					\
 } while (0)
 #else

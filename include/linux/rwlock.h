@@ -37,38 +37,30 @@ do {								\
 do {									\
 	if (t) {							\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_W, ip, __func__, e_fn, ne);\
-		dept_ask_event(m);					\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
-		dept_ask_event(m);					\
 	} else {							\
 		dept_wait(m, DEPT_EVT_RWLOCK_RW, ip, __func__, ne);	\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_W, ip, __func__, e_fn, ne);\
-		dept_ask_event(m);					\
 	}								\
 } while (0)
 #define dept_rwlock_rlock(m, ne, t, n, e_fn, ip, q)			\
 do {									\
 	if (t) {							\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_R, ip, __func__, e_fn, ne);\
-		dept_ask_event(m);					\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
-		dept_ask_event(m);					\
 	} else {							\
 		dept_wait(m, (q) ? DEPT_EVT_RWLOCK_RW : DEPT_EVT_RWLOCK_W, ip, __func__, ne);\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_R, ip, __func__, e_fn, ne);\
-		dept_ask_event(m);					\
 	}								\
 } while (0)
 #define dept_rwlock_wunlock(m, ip)					\
 do {									\
-	dept_event(m, DEPT_EVT_RWLOCK_W, ip, __func__);			\
 	dept_ecxt_exit(m, DEPT_EVT_RWLOCK_W, ip);			\
 } while (0)
 #define dept_rwlock_runlock(m, ip)					\
 do {									\
-	dept_event(m, DEPT_EVT_RWLOCK_R, ip, __func__);			\
 	dept_ecxt_exit(m, DEPT_EVT_RWLOCK_R, ip);			\
 } while (0)
 #else
