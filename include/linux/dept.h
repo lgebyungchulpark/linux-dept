@@ -170,6 +170,11 @@ struct dept_ecxt {
 	 */
 	unsigned long			event_ip;
 	struct dept_stack		*event_stack;
+
+	/*
+	 * whether the event is triggered within __schedule()
+	 */
+	bool				in_sched;
 };
 
 struct dept_wait {
@@ -208,6 +213,11 @@ struct dept_wait {
 	 */
 	unsigned long			wait_ip;
 	struct dept_stack		*wait_stack;
+
+	/*
+	 * spin or sleep
+	 */
+	bool				sleep;
 };
 
 struct dept_dep {
@@ -460,6 +470,11 @@ struct dept_task {
 	 */
 	bool				hardirqs_enabled;
 	bool				softirqs_enabled;
+
+	/*
+	 * whether the current task is in __schedule()
+	 */
+	bool				in_sched;
 };
 
 #define DEPT_TASK_INITIALIZER(t)				\
@@ -480,6 +495,7 @@ struct dept_task {
 	.missing_ecxt = 0,					\
 	.hardirqs_enabled = false,				\
 	.softirqs_enabled = false,				\
+	.in_sched = false,					\
 }
 
 extern void dept_on(void);
@@ -492,7 +508,7 @@ extern void dept_map_init(struct dept_map *m, struct dept_key *k, int sub, const
 extern void dept_map_reinit(struct dept_map *m);
 extern void dept_map_nocheck(struct dept_map *m);
 
-extern void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip, const char *w_fn, int ne);
+extern void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip, const char *w_fn, int ne, bool sleep);
 extern void dept_stage_wait(struct dept_map *m, unsigned long w_f, const char *w_fn, int ne);
 extern void dept_ask_event_wait_commit(unsigned long ip);
 extern void dept_clean_stage(void);
@@ -502,11 +518,13 @@ extern void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip, 
 extern void dept_ecxt_exit(struct dept_map *m, unsigned long e_f, unsigned long ip);
 extern void dept_split_map_each_init(struct dept_map_each *me);
 extern void dept_split_map_common_init(struct dept_map_common *mc, struct dept_key *k, const char *n);
-extern void dept_wait_split_map(struct dept_map_each *me, struct dept_map_common *mc, unsigned long ip, const char *w_fn, int ne);
+extern void dept_wait_split_map(struct dept_map_each *me, struct dept_map_common *mc, unsigned long ip, const char *w_fn, int ne, bool sleep);
 extern void dept_event_split_map(struct dept_map_each *me, struct dept_map_common *mc, unsigned long ip, const char *e_fn);
 extern void dept_ask_event_split_map(struct dept_map_each *me, struct dept_map_common *mc);
 extern void dept_kernel_enter(void);
 extern void dept_work_enter(void);
+extern void dept_sched_enter(void);
+extern void dept_sched_exit(void);
 
 static inline void dept_ecxt_enter_nokeep(struct dept_map *m)
 {
@@ -546,7 +564,7 @@ struct dept_task { };
 #define dept_map_reinit(m)				do { } while (0)
 #define dept_map_nocheck(m)				do { } while (0)
 
-#define dept_wait(m, w_f, ip, w_fn, ne)			do { (void)(w_fn); } while (0)
+#define dept_wait(m, w_f, ip, w_fn, ne, s)		do { (void)(w_fn); } while (0)
 #define dept_stage_wait(m, w_f, w_fn, ne)		do { (void)(w_fn); } while (0)
 #define dept_ask_event_wait_commit(ip)			do { } while (0)
 #define dept_clean_stage()				do { } while (0)
@@ -556,11 +574,13 @@ struct dept_task { };
 #define dept_ecxt_exit(m, e_f, ip)			do { } while (0)
 #define dept_split_map_each_init(me)			do { } while (0)
 #define dept_split_map_common_init(mc, k, n)		do { (void)(n); (void)(k); } while (0)
-#define dept_wait_split_map(me, mc, ip, w_fn, ne)	do { } while (0)
+#define dept_wait_split_map(me, mc, ip, w_fn, ne, s)	do { } while (0)
 #define dept_event_split_map(me, mc, ip, e_fn)		do { } while (0)
 #define dept_ask_event_split_map(me, mc)		do { } while (0)
 #define dept_kernel_enter()				do { } while (0)
 #define dept_work_enter()				do { } while (0)
+#define dept_sched_enter()				do { } while (0)
+#define dept_sched_exit()				do { } while (0)
 #define dept_ecxt_enter_nokeep(m)			do { } while (0)
 #define dept_key_init(k)				do { (void)(k); } while (0)
 #define dept_key_destroy(k)				do { (void)(k); } while (0)
