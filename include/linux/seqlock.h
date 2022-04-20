@@ -29,7 +29,7 @@
  * to increment the sequence variables because an interrupt routine could
  * change the state of the data.
  *
- * Based on x86_64 vsyscall gettimeofday 
+ * Based on x86_64 vsyscall gettimeofday
  * by Keith Owens and Andrea Arcangeli
  */
 
@@ -38,6 +38,23 @@
 #include <linux/lockdep.h>
 #include <linux/compiler.h>
 #include <asm/processor.h>
+
+#ifdef CONFIG_DEPT
+#define DEPT_EVT_ALL		((1UL << DEPT_MAX_SUBCLASSES_EVT) - 1)
+#define dept_seq_wait(m, ip)	dept_wait(m, DEPT_EVT_ALL, ip, __func__, 0)
+#define dept_seq_writebegin(m, ip)				\
+do {								\
+	dept_ecxt_enter(m, 1UL, ip, __func__, "write_seqcount_end", 0);\
+} while (0)
+#define dept_seq_writeend(m, ip)				\
+do {								\
+	dept_ecxt_exit(m, 1UL, ip);				\
+} while (0)
+#else
+#define dept_seq_wait(m, ip)		do { } while (0)
+#define dept_seq_writebegin(m, ip)	do { } while (0)
+#define dept_seq_writeend(m, ip)	do { } while (0)
+#endif
 
 /*
  * Version using sequence counter only.
@@ -64,7 +81,8 @@ static inline void __seqcount_init(seqcount_t *s, const char *name,
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define SEQCOUNT_DEP_MAP_INIT(lockname) \
-		.dep_map = { .name = #lockname } \
+		.dep_map = { .name = #lockname, \
+			     .dmap = DEPT_MAP_INITIALIZER(lockname) }
 
 # define seqcount_init(s)				\
 	do {						\
@@ -78,6 +96,7 @@ static inline void seqcount_lockdep_reader_access(const seqcount_t *s)
 	unsigned long flags;
 
 	local_irq_save(flags);
+	dept_seq_wait(&l->dep_map.dmap, _RET_IP_);
 	seqcount_acquire_read(&l->dep_map, 0, 0, _RET_IP_);
 	seqcount_release(&l->dep_map, 1, _RET_IP_);
 	local_irq_restore(flags);
@@ -375,6 +394,7 @@ static inline void write_seqcount_begin_nested(seqcount_t *s, int subclass)
 {
 	raw_write_seqcount_begin(s);
 	seqcount_acquire(&s->dep_map, subclass, 0, _RET_IP_);
+	dept_seq_writebegin(&s->dep_map.dmap, _RET_IP_);
 }
 
 static inline void write_seqcount_begin(seqcount_t *s)
@@ -384,6 +404,7 @@ static inline void write_seqcount_begin(seqcount_t *s)
 
 static inline void write_seqcount_end(seqcount_t *s)
 {
+	dept_seq_writeend(&s->dep_map.dmap, _RET_IP_);
 	seqcount_release(&s->dep_map, 1, _RET_IP_);
 	raw_write_seqcount_end(s);
 }
@@ -425,11 +446,20 @@ typedef struct {
 #define DEFINE_SEQLOCK(x) \
 		seqlock_t x = __SEQLOCK_UNLOCKED(x)
 
+#ifdef CONFIG_DEPT
+#define dept_seqlock_wait(l, i) dept_seq_wait(&(l)->dep_map.dmap, i)
+#else
+#define dept_seqlock_wait(l, i) do { (void)(l); } while (0)
+#endif
+
 /*
  * Read side functions for starting and finalizing a read side section.
  */
 static inline unsigned read_seqbegin(const seqlock_t *sl)
 {
+	seqlock_t *l = (seqlock_t *)sl;
+
+	dept_seqlock_wait(&l->lock, _RET_IP_);
 	return read_seqcount_begin(&sl->seqcount);
 }
 
