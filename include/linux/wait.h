@@ -7,6 +7,7 @@
 #include <linux/list.h>
 #include <linux/stddef.h>
 #include <linux/spinlock.h>
+#include <linux/dept_sdt.h>
 
 #include <asm/current.h>
 #include <uapi/linux/wait.h>
@@ -34,6 +35,7 @@ struct wait_queue_entry {
 struct wait_queue_head {
 	spinlock_t		lock;
 	struct list_head	head;
+	struct dept_map		dmap;
 };
 typedef struct wait_queue_head wait_queue_head_t;
 
@@ -53,7 +55,8 @@ struct task_struct;
 
 #define __WAIT_QUEUE_HEAD_INITIALIZER(name) {					\
 	.lock		= __SPIN_LOCK_UNLOCKED(name.lock),			\
-	.head		= { &(name).head, &(name).head } }
+	.head		= { &(name).head, &(name).head },			\
+	.dmap		= DEPT_MAP_INITIALIZER(name) }
 
 #define DECLARE_WAIT_QUEUE_HEAD(name) \
 	struct wait_queue_head name = __WAIT_QUEUE_HEAD_INITIALIZER(name)
@@ -64,6 +67,7 @@ extern void __init_waitqueue_head(struct wait_queue_head *wq_head, const char *n
 	do {									\
 		static struct lock_class_key __key;				\
 										\
+		sdt_map_init(&(wq_head)->dmap);					\
 		__init_waitqueue_head((wq_head), #wq_head, &__key);		\
 	} while (0)
 
