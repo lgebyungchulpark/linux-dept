@@ -77,7 +77,8 @@ do { \
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 #define __DEP_MAP_RT_MUTEX_INITIALIZER(mutexname) \
-	, .dep_map = { .name = #mutexname }
+	, .dep_map = { .name = #mutexname, \
+		.dmap = DEPT_MAP_INITIALIZER(mutexname) }
 #else
 #define __DEP_MAP_RT_MUTEX_INITIALIZER(mutexname)
 #endif
