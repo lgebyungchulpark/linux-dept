@@ -13,20 +13,46 @@
 #define _LINUX_TRACE_IRQFLAGS_H
 
 #include <linux/typecheck.h>
+#include <linux/dept.h>
 #include <asm/irqflags.h>
 
 /* Currently trace_softirqs_on/off is used only by lockdep */
 #ifdef CONFIG_PROVE_LOCKING
-  extern void trace_softirqs_on(unsigned long ip);
-  extern void trace_softirqs_off(unsigned long ip);
-  extern void lockdep_hardirqs_on(unsigned long ip);
-  extern void lockdep_hardirqs_off(unsigned long ip);
+  extern void __trace_softriqs_on(unsigned long ip);
+  extern void __trace_softriqs_off(unsigned long ip);
+  extern void __lockdep_hardirqs_on(unsigned long ip);
+  extern void __lockdep_hardirqs_off(unsigned long ip);
 #else
-  static inline void trace_softirqs_on(unsigned long ip) { }
-  static inline void trace_softirqs_off(unsigned long ip) { }
-  static inline void lockdep_hardirqs_on(unsigned long ip) { }
-  static inline void lockdep_hardirqs_off(unsigned long ip) { }
+  static inline void __trace_softriqs_on(unsigned long ip) { }
+  static inline void __trace_softriqs_off(unsigned long ip) { }
+  static inline void __lockdep_hardirqs_on(unsigned long ip) { }
+  static inline void __lockdep_hardirqs_off(unsigned long ip) { }
 #endif
+
+static inline void trace_softirqs_on(unsigned long ip)
+{
+	__trace_softriqs_on(ip);
+	dept_aware_softirqs_enable();
+	dept_enirq_transition(ip);
+}
+static inline void trace_softirqs_off(unsigned long ip)
+{
+	__trace_softriqs_off(ip);
+	dept_aware_softirqs_disable();
+	dept_enirq_transition(ip);
+}
+static inline void lockdep_hardirqs_on(unsigned long ip)
+{
+	__lockdep_hardirqs_on(ip);
+	dept_aware_hardirqs_enable();
+	dept_enirq_transition(ip);
+}
+static inline void lockdep_hardirqs_off(unsigned long ip)
+{
+	__lockdep_hardirqs_off(ip);
+	dept_aware_hardirqs_disable();
+	dept_enirq_transition(ip);
+}
 
 #ifdef CONFIG_TRACE_IRQFLAGS
   extern void trace_hardirqs_on(void);
@@ -37,7 +63,8 @@
 # define trace_softirqs_enabled(p)	((p)->softirqs_enabled)
 # define trace_hardirq_enter()			\
 do {						\
-	current->hardirq_context++;		\
+	if (!current->hardirq_context++)	\
+		dept_hardirq_enter();		\
 } while (0)
 # define trace_hardirq_exit()			\
 do {						\
@@ -45,7 +72,8 @@ do {						\
 } while (0)
 # define lockdep_softirq_enter()		\
 do {						\
-	current->softirq_context++;		\
+	if (!current->softirq_context++)	\
+		dept_softirq_enter();		\
 } while (0)
 # define lockdep_softirq_exit()			\
 do {						\
@@ -76,16 +104,27 @@ do {						\
 /*
  * Wrap the arch provided IRQ routines to provide appropriate checks.
  */
-#define raw_local_irq_disable()		arch_local_irq_disable()
-#define raw_local_irq_enable()		arch_local_irq_enable()
+#define raw_local_irq_disable()				\
+	do {						\
+		arch_local_irq_disable();		\
+		dept_aware_hardirqs_disable();		\
+	} while (0)
+#define raw_local_irq_enable()				\
+	do {						\
+		dept_aware_hardirqs_enable();		\
+		arch_local_irq_enable();		\
+	} while (0)
 #define raw_local_irq_save(flags)			\
 	do {						\
 		typecheck(unsigned long, flags);	\
 		flags = arch_local_irq_save();		\
+		dept_aware_hardirqs_disable();		\
 	} while (0)
 #define raw_local_irq_restore(flags)			\
 	do {						\
 		typecheck(unsigned long, flags);	\
+		if (!arch_irqs_disabled_flags(flags))	\
+			dept_aware_hardirqs_enable();	\
 		arch_local_irq_restore(flags);		\
 	} while (0)
 #define raw_local_save_flags(flags)			\
