@@ -25,7 +25,7 @@
 
 #ifdef CONFIG_DEPT
 #define DEPT_EVT_ALL		((1UL << DEPT_MAX_SUBCLASSES_EVT) - 1)
-#define dept_seq_wait(m, ip)	dept_wait(m, DEPT_EVT_ALL, ip, __func__, 0)
+#define dept_seq_wait(m, ip)	dept_wait(m, DEPT_EVT_ALL, ip, __func__, 0, false)
 #define dept_seq_writebegin(m, ip)				\
 do {								\
 	dept_ecxt_enter(m, 1UL, ip, __func__, "write_seqcount_end", 0);\
