@@ -2196,6 +2196,21 @@ static void __dept_wait(struct dept_map *m, unsigned long w_f,
 	}
 }
 
+static inline void stage_map(struct dept_task *dt, struct dept_map *m)
+{
+	dt->stage_m = m;
+}
+
+static inline void unstage_map(struct dept_task *dt)
+{
+	dt->stage_m = NULL;
+}
+
+static inline struct dept_map *staged_map(struct dept_task *dt)
+{
+	return dt->stage_m;
+}
+
 void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
 	       const char *w_fn, int ne, bool sleep)
 {
@@ -2213,26 +2228,23 @@ void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
 
 	flags = dept_enter();
 
+	/*
+	 * There's no way to distinguish between a staged wait and this
+	 * one, in the middle of handling a wait that requires staging
+	 * and commit in __schedule().
+	 *
+	 * The wait that has been tagged dept_wait() with sleep == true
+	 * should ignore the staged wait in __schedule() if it exists,
+	 * to avoid the ambiguity. It can be done by unstaging it.
+	 */
+	if (sleep)
+		unstage_map(dt);
+
 	__dept_wait(m, w_f, ip, w_fn, ne, sleep);
 
 	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_wait);
-
-static inline void stage_map(struct dept_task *dt, struct dept_map *m)
-{
-	dt->stage_m = m;
-}
-
-static inline void unstage_map(struct dept_task *dt)
-{
-	dt->stage_m = NULL;
-}
-
-static inline struct dept_map *staged_map(struct dept_task *dt)
-{
-	return dt->stage_m;
-}
 
 void dept_stage_wait(struct dept_map *m, unsigned long w_f,
 		     const char *w_fn, int ne)
@@ -2596,6 +2608,19 @@ void dept_wait_split_map(struct dept_map_each *me,
 		return;
 
 	flags = dept_enter();
+
+	/*
+	 * There's no way to distinguish between a staged wait and this
+	 * one, in the middle of handling a wait that requires staging
+	 * and commit in __schedule().
+	 *
+	 * The wait that has been tagged dept_wait_split_map() with
+	 * sleep == true should ignore the staged wait in __schedule()
+	 * if it exists, to avoid the ambiguity. It can be done by
+	 * unstaging it.
+	 */
+	if (sleep)
+		unstage_map(dt);
 
 	k = mc->keys ?: &mc->keys_local;
 	c = check_new_class(&mc->keys_local, k, 0, 0UL, mc->name);
