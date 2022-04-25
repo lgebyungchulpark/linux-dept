@@ -36,7 +36,7 @@ struct completion {
 #define dept_wfc_wait(m, ip)						\
 do {									\
 	dept_ask_event(m);						\
-	dept_wait(m, 1UL, ip, __func__, 0);				\
+	dept_wait(m, 1UL, ip, __func__, 0, true);			\
 } while (0)
 #define dept_wfc_complete(m, ip)		dept_event(m, 1UL, ip, __func__)
 #define dept_wfc_enter(m, ip)			dept_ecxt_enter(m, 1UL, ip, "completion_context_enter", "complete", 0)

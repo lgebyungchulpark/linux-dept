@@ -4416,6 +4416,7 @@ static void __sched notrace __schedule(bool preempt)
 	struct rq *rq;
 	int cpu;
 
+	dept_sched_enter();
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
@@ -4601,6 +4602,7 @@ static void sched_update_worker(struct task_struct *tsk)
 		else
 			io_wq_worker_running(tsk);
 	}
+	dept_sched_exit();
 }
 
 asmlinkage __visible void __sched schedule(void)
