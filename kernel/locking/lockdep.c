@@ -1168,7 +1168,7 @@ static inline struct hlist_head *keyhashentry(const struct lock_class_key *key)
 }
 
 /* Register a dynamically allocated key. */
-void lockdep_register_key(struct lock_class_key *key)
+void __lockdep_register_key(struct lock_class_key *key)
 {
 	struct hlist_head *hash_head;
 	struct lock_class_key *k;
@@ -1191,7 +1191,7 @@ out_unlock:
 restore_irqs:
 	raw_local_irq_restore(flags);
 }
-EXPORT_SYMBOL_GPL(lockdep_register_key);
+EXPORT_SYMBOL_GPL(__lockdep_register_key);
 
 /* Check whether a key has been registered as a dynamic key. */
 static bool is_dynamic_key(const struct lock_class_key *key)
@@ -4047,7 +4047,7 @@ static void __trace_hardirqs_on_caller(void)
  * stops watching. After the RCU transition lockdep_hardirqs_on() has to be
  * invoked to set the final state.
  */
-void lockdep_hardirqs_on_prepare(unsigned long ip)
+void __lockdep_hardirqs_on_prepare(unsigned long ip)
 {
 	if (unlikely(!debug_locks))
 		return;
@@ -4098,9 +4098,9 @@ void lockdep_hardirqs_on_prepare(unsigned long ip)
 	__trace_hardirqs_on_caller();
 	lockdep_recursion_finish();
 }
-EXPORT_SYMBOL_GPL(lockdep_hardirqs_on_prepare);
+EXPORT_SYMBOL_GPL(__lockdep_hardirqs_on_prepare);
 
-void noinstr lockdep_hardirqs_on(unsigned long ip)
+void noinstr __lockdep_hardirqs_on(unsigned long ip)
 {
 	struct irqtrace_events *trace = &current->irqtrace;
 
@@ -4162,12 +4162,12 @@ skip_checks:
 	trace->hardirq_enable_event = ++trace->irq_events;
 	debug_atomic_inc(hardirqs_on_events);
 }
-EXPORT_SYMBOL_GPL(lockdep_hardirqs_on);
+EXPORT_SYMBOL_GPL(__lockdep_hardirqs_on);
 
 /*
  * Hardirqs were disabled:
  */
-void noinstr lockdep_hardirqs_off(unsigned long ip)
+void noinstr __lockdep_hardirqs_off(unsigned long ip)
 {
 	if (unlikely(!debug_locks))
 		return;
@@ -4204,12 +4204,12 @@ void noinstr lockdep_hardirqs_off(unsigned long ip)
 		debug_atomic_inc(redundant_hardirqs_off);
 	}
 }
-EXPORT_SYMBOL_GPL(lockdep_hardirqs_off);
+EXPORT_SYMBOL_GPL(__lockdep_hardirqs_off);
 
 /*
  * Softirqs will be enabled:
  */
-void lockdep_softirqs_on(unsigned long ip)
+void __lockdep_softirqs_on(unsigned long ip)
 {
 	struct irqtrace_events *trace = &current->irqtrace;
 
@@ -4249,7 +4249,7 @@ void lockdep_softirqs_on(unsigned long ip)
 /*
  * Softirqs were disabled:
  */
-void lockdep_softirqs_off(unsigned long ip)
+void __lockdep_softirqs_off(unsigned long ip)
 {
 	if (unlikely(!lockdep_enabled()))
 		return;
@@ -4577,7 +4577,7 @@ static inline int check_wait_context(struct task_struct *curr,
 /*
  * Initialize a lock instance's lock-class mapping info:
  */
-void lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
+void __lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
 			    struct lock_class_key *key, int subclass,
 			    short inner, short outer)
 {
@@ -4636,7 +4636,7 @@ void lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
 		raw_local_irq_restore(flags);
 	}
 }
-EXPORT_SYMBOL_GPL(lockdep_init_map_waits);
+EXPORT_SYMBOL_GPL(__lockdep_init_map_waits);
 
 struct lock_class_key __lockdep_no_validate__;
 EXPORT_SYMBOL_GPL(__lockdep_no_validate__);
@@ -6085,7 +6085,7 @@ void lockdep_reset_lock(struct lockdep_map *lock)
 }
 
 /* Unregister a dynamically allocated key. */
-void lockdep_unregister_key(struct lock_class_key *key)
+void __lockdep_unregister_key(struct lock_class_key *key)
 {
 	struct hlist_head *hash_head = keyhashentry(key);
 	struct lock_class_key *k;
@@ -6120,7 +6120,7 @@ out_irq:
 	/* Wait until is_dynamic_key() has finished accessing k->hash_entry. */
 	synchronize_rcu();
 }
-EXPORT_SYMBOL_GPL(lockdep_unregister_key);
+EXPORT_SYMBOL_GPL(__lockdep_unregister_key);
 
 void __init lockdep_init(void)
 {
