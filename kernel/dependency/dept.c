@@ -1877,6 +1877,7 @@ void dept_enirq_transition(unsigned long ip)
 
 	dept_exit(flags);
 }
+EXPORT_SYMBOL_GPL(dept_enirq_transition);
 
 /*
  * Assign a different context id to each work.
