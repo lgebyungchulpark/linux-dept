@@ -22,6 +22,19 @@
 
 #include <asm/processor.h>
 
+#ifdef CONFIG_DEPT
+#define dept_seq_wait(m, ip)						\
+	dept_wait(m, 1UL, ip,  __func__, 0)
+#define dept_seq_writebegin(m, ip)					\
+	dept_ecxt_enter(m, 1UL, ip, __func__, "write_seqcount_end", 0)
+#define dept_seq_writeend(m, ip)					\
+	dept_ecxt_exit(m, 1UL, ip)
+#else
+#define dept_seq_wait(m, ip)		do { } while (0)
+#define dept_seq_writebegin(m, ip)	do { } while (0)
+#define dept_seq_writeend(m, ip)	do { } while (0)
+#endif
+
 /*
  * The seqlock seqcount_t interface does not prescribe a precise sequence of
  * read begin/retry/end. For readers, typically there is a call to
@@ -99,6 +112,7 @@ static inline void seqcount_lockdep_reader_access(const seqcount_t *s)
 	unsigned long flags;
 
 	local_irq_save(flags);
+	dept_seq_wait(&l->dep_map.dmap, _RET_IP_);
 	seqcount_acquire_read(&l->dep_map, 0, 0, _RET_IP_);
 	seqcount_release(&l->dep_map, _RET_IP_);
 	local_irq_restore(flags);
@@ -513,6 +527,7 @@ do {									\
 static inline void do_write_seqcount_begin_nested(seqcount_t *s, int subclass)
 {
 	do_raw_write_seqcount_begin(s);
+	dept_seq_writebegin(&s->dep_map.dmap, _RET_IP_);
 	seqcount_acquire(&s->dep_map, subclass, 0, _RET_IP_);
 }
 
@@ -558,6 +573,7 @@ do {									\
 
 static inline void do_write_seqcount_end(seqcount_t *s)
 {
+	dept_seq_writeend(&s->dep_map.dmap, _RET_IP_);
 	seqcount_release(&s->dep_map, _RET_IP_);
 	do_raw_write_seqcount_end(s);
 }
