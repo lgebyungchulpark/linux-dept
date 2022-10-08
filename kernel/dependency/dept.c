@@ -1435,6 +1435,13 @@ static void add_dep(struct dept_ecxt *e, struct dept_wait *w)
 	struct dept_dep *d;
 	int i;
 
+	/*
+	 * It's meaningless to track dependencies between sleeps and
+	 * events triggered within __schedule().
+	 */
+	if (e->in_sched && w->sleep)
+		return;
+
 	if (lookup_dep(fc, tc))
 		return;
 
@@ -1479,7 +1486,7 @@ static void add_dep(struct dept_ecxt *e, struct dept_wait *w)
 static atomic_t wgen = ATOMIC_INIT(1);
 
 static void add_wait(struct dept_class *c, unsigned long ip,
-		     const char *w_fn, int ne)
+		     const char *w_fn, int ne, bool sleep)
 {
 	struct dept_task *dt = dept_task();
 	struct dept_wait *w;
@@ -1495,6 +1502,7 @@ static void add_wait(struct dept_class *c, unsigned long ip,
 	w->wait_ip = ip;
 	w->wait_fn = w_fn;
 	w->wait_stack = get_current_stack();
+	w->sleep = sleep;
 
 	cxt = cur_cxt();
 	if (cxt == DEPT_CXT_HIRQ || cxt == DEPT_CXT_SIRQ)
@@ -1548,6 +1556,7 @@ static bool add_ecxt(void *obj, struct dept_class *c, unsigned long ip,
 	e->ecxt_stack = ip && rich_stack ? get_current_stack() : NULL;
 	e->event_fn = e_fn;
 	e->ecxt_fn = c_fn;
+	e->in_sched = dt->in_sched;
 
 	eh = dt->ecxt_held + (dt->ecxt_held_pos++);
 	eh->ecxt = get_ecxt(e);
@@ -1917,6 +1926,16 @@ void dept_hardirq_enter(void)
 	dt->cxt_id[DEPT_CXT_HIRQ] += (1UL << DEPT_CXTS_NR);
 }
 
+void dept_sched_enter(void)
+{
+	dept_task()->in_sched = true;
+}
+
+void dept_sched_exit(void)
+{
+	dept_task()->in_sched = false;
+}
+
 /*
  * DEPT API
  * =====================================================================
@@ -2149,7 +2168,8 @@ caching:
 }
 
 static void __dept_wait(struct dept_map *m, unsigned long w_f,
-			unsigned long ip, const char *w_fn, int ne)
+			unsigned long ip, const char *w_fn, int ne,
+			bool sleep)
 {
 	int e;
 
@@ -2172,12 +2192,12 @@ static void __dept_wait(struct dept_map *m, unsigned long w_f,
 		if (!c)
 			continue;
 
-		add_wait(c, ip, w_fn, ne);
+		add_wait(c, ip, w_fn, ne, sleep);
 	}
 }
 
 void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
-	       const char *w_fn, int ne)
+	       const char *w_fn, int ne, bool sleep)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
@@ -2193,7 +2213,7 @@ void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
 
 	flags = dept_enter();
 
-	__dept_wait(m, w_f, ip, w_fn, ne);
+	__dept_wait(m, w_f, ip, w_fn, ne, sleep);
 
 	dept_exit(flags);
 }
@@ -2326,7 +2346,7 @@ void dept_ask_event_wait_commit(unsigned long ip)
 	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
 	WRITE_ONCE(m->wgen, wg);
 
-	__dept_wait(m, w_f, ip, w_fn, ne);
+	__dept_wait(m, w_f, ip, w_fn, ne, true);
 exit:
 	dept_exit(flags);
 }
@@ -2558,7 +2578,8 @@ EXPORT_SYMBOL_GPL(dept_split_map_common_init);
 
 void dept_wait_split_map(struct dept_map_each *me,
 			 struct dept_map_common *mc,
-			 unsigned long ip, const char *w_fn, int ne)
+			 unsigned long ip, const char *w_fn, int ne,
+			 bool sleep)
 {
 	struct dept_task *dt = dept_task();
 	struct dept_class *c;
@@ -2579,7 +2600,7 @@ void dept_wait_split_map(struct dept_map_each *me,
 	k = mc->keys ?: &mc->keys_local;
 	c = check_new_class(&mc->keys_local, k, 0, 0UL, mc->name);
 	if (c)
-		add_wait(c, ip, w_fn, ne);
+		add_wait(c, ip, w_fn, ne, sleep);
 
 	dept_exit(flags);
 }

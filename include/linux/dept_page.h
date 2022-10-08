@@ -22,7 +22,7 @@ do {								\
 	struct dept_map_each *me = get_pglocked_me(&(f)->page, &cookie);\
 								\
 	if (likely(me))						\
-		dept_wait_split_map(me, &pglocked_mc, _RET_IP_, __func__, 0);\
+		dept_wait_split_map(me, &pglocked_mc, _RET_IP_, __func__, 0, true);\
 								\
 	put_pglocked_me(cookie);				\
 } while (0)
@@ -55,7 +55,7 @@ do {								\
 	struct dept_map_each *me = get_pgwriteback_me(&(f)->page, &cookie);\
 								\
 	if (likely(me))						\
-		dept_wait_split_map(me, &pgwriteback_mc, _RET_IP_, __func__, 0);\
+		dept_wait_split_map(me, &pgwriteback_mc, _RET_IP_, __func__, 0, true);\
 								\
 	put_pgwriteback_me(cookie);				\
 } while (0)
