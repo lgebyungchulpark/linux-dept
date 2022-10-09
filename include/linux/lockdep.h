@@ -39,6 +39,8 @@ static inline void lockdep_copy_map(struct lockdep_map *to,
 	 */
 	for (i = 0; i < NR_LOCKDEP_CACHING_CLASSES; i++)
 		to->class_cache[i] = NULL;
+
+	dept_map_copy(&to->dmap, &from->dmap);
 }
 
 /*
@@ -172,8 +174,19 @@ do {							\
 	current->lockdep_recursion -= LOCKDEP_OFF;	\
 } while (0)
 
-extern void lockdep_register_key(struct lock_class_key *key);
-extern void lockdep_unregister_key(struct lock_class_key *key);
+extern void lockdep_internal_register_key(struct lock_class_key *key);
+extern void lockdep_internal_unregister_key(struct lock_class_key *key);
+
+#define lockdep_register_key(k)				\
+do {							\
+	lockdep_internal_register_key(k);		\
+	dept_key_init(&(k)->dkey);			\
+} while (0)
+#define lockdep_unregister_key(k)			\
+do {							\
+	lockdep_internal_unregister_key(k);		\
+	dept_key_destroy(&(k)->dkey);			\
+} while (0)
 
 /*
  * These methods are used by specific locking variants (spinlocks,
@@ -181,8 +194,17 @@ extern void lockdep_unregister_key(struct lock_class_key *key);
  * to lockdep:
  */
 
-extern void lockdep_init_map_type(struct lockdep_map *lock, const char *name,
+extern void lockdep_internal_init_map_type(struct lockdep_map *lock, const char *name,
 	struct lock_class_key *key, int subclass, u8 inner, u8 outer, u8 lock_type);
+
+#define lockdep_init_map_type(l, n, k, s, i, o, t)		\
+do {								\
+	lockdep_internal_init_map_type(l, n, k, s, i, o, t);	\
+	if ((k) == &__lockdep_no_validate__)			\
+		dept_map_nocheck(&(l)->dmap);			\
+	else							\
+		dept_map_init(&(l)->dmap, &(k)->dkey, s, n);	\
+} while (0)
 
 static inline void
 lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
@@ -439,9 +461,13 @@ enum xhlock_context_t {
 /*
  * To initialize a lockdep_map statically use this macro.
  * Note that _name must not be NULL.
+ *
+ * TODO: I found the case to use an address of other than a real key as
+ * _key, for instance, in workqueue. We cannot use it as key in Dept.
  */
 #define STATIC_LOCKDEP_MAP_INIT(_name, _key) \
-	{ .name = (_name), .key = (void *)(_key), }
+	{ .name = (_name), .key = (void *)(_key), \
+	  .dmap = DEPT_MAP_INITIALIZER(_name) }
 
 static inline void lockdep_invariant_state(bool force) {}
 static inline void lockdep_free_task(struct task_struct *task) {}

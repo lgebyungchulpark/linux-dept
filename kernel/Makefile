@@ -53,6 +53,7 @@ obj-y += livepatch/
 obj-y += dma/
 obj-y += entry/
 obj-$(CONFIG_MODULES) += module/
+obj-y += dependency/
 
 obj-$(CONFIG_KCMP) += kcmp.o
 obj-$(CONFIG_FREEZER) += freezer.o
