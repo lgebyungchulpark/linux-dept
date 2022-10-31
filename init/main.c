@@ -103,6 +103,7 @@
 #include <linux/stackdepot.h>
 #include <linux/randomize_kstack.h>
 #include <net/net_namespace.h>
+#include <linux/pagemap.h>
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -1078,6 +1079,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 
 	lockdep_init();
 	dept_init();
+	dept_page_init();
 
 	/*
 	 * Need to run this when irqs are enabled, because it wants
