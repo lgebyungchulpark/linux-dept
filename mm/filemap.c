@@ -1132,6 +1132,11 @@ static void folio_wake_bit(struct folio *folio, int bit_nr)
 	unsigned long flags;
 	wait_queue_entry_t bookmark;
 
+	if (bit_nr == PG_locked)
+		dept_pglocked_event(folio);
+	else if (bit_nr == PG_writeback)
+		dept_pgwriteback_event(folio);
+
 	key.folio = folio;
 	key.bit_nr = bit_nr;
 	key.page_match = 0;
@@ -1204,6 +1209,10 @@ static inline bool folio_trylock_flag(struct folio *folio, int bit_nr,
 	if (wait->flags & WQ_FLAG_EXCLUSIVE) {
 		if (test_and_set_bit(bit_nr, &folio->flags))
 			return false;
+		else if (bit_nr == PG_locked)
+			dept_pglocked_set_bit(folio);
+		else if (bit_nr == PG_writeback)
+			dept_pgwriteback_set_bit(folio);
 	} else if (test_bit(bit_nr, &folio->flags))
 		return false;
 
@@ -1224,6 +1233,11 @@ static inline int folio_wait_bit_common(struct folio *folio, int bit_nr,
 	bool thrashing = false;
 	unsigned long pflags;
 	bool in_thrashing;
+
+	if (bit_nr == PG_locked)
+		dept_pglocked_wait(folio);
+	else if (bit_nr == PG_writeback)
+		dept_pgwriteback_wait(folio);
 
 	if (bit_nr == PG_locked &&
 	    !folio_test_uptodate(folio) && folio_test_workingset(folio)) {
@@ -1313,6 +1327,11 @@ repeat:
 		 */
 		if (unlikely(test_and_set_bit(bit_nr, folio_flags(folio, 0))))
 			goto repeat;
+
+		if (bit_nr == PG_locked)
+			dept_pglocked_set_bit(folio);
+		else if (bit_nr == PG_writeback)
+			dept_pgwriteback_set_bit(folio);
 
 		wait->flags |= WQ_FLAG_DONE;
 		break;
@@ -3949,3 +3968,70 @@ bool filemap_release_folio(struct folio *folio, gfp_t gfp)
 	return try_to_free_buffers(folio);
 }
 EXPORT_SYMBOL(filemap_release_folio);
+
+#ifdef CONFIG_DEPT
+static bool need_dept_pglocked(void)
+{
+	return true;
+}
+
+struct page_ext_operations dept_pglocked_ops = {
+	.size = sizeof(struct dept_map_each),
+	.need = need_dept_pglocked,
+};
+
+struct dept_map_each *get_pglocked_me(struct page *p, void **cookie)
+{
+	struct page_ext *e = page_ext_get(p);
+
+	*cookie = (void *)e;
+
+	return e ? (void *)e + dept_pglocked_ops.offset : NULL;
+}
+EXPORT_SYMBOL(get_pglocked_me);
+
+void put_pglocked_me(void *cookie)
+{
+	if (cookie)
+		page_ext_put((struct page_ext *)cookie);
+}
+EXPORT_SYMBOL(put_pglocked_me);
+
+static bool need_dept_pgwriteback(void)
+{
+	return true;
+}
+
+struct page_ext_operations dept_pgwriteback_ops = {
+	.size = sizeof(struct dept_map_each),
+	.need = need_dept_pgwriteback,
+};
+
+struct dept_map_each *get_pgwriteback_me(struct page *p, void **cookie)
+{
+	struct page_ext *e = page_ext_get(p);
+
+	*cookie = (void *)e;
+
+	return e ? (void *)e + dept_pgwriteback_ops.offset : NULL;
+}
+EXPORT_SYMBOL(get_pgwriteback_me);
+
+void put_pgwriteback_me(void *cookie)
+{
+	if (cookie)
+		page_ext_put((struct page_ext *)cookie);
+}
+EXPORT_SYMBOL(put_pgwriteback_me);
+
+struct dept_map_common pglocked_mc;
+EXPORT_SYMBOL(pglocked_mc);
+struct dept_map_common pgwriteback_mc;
+EXPORT_SYMBOL(pgwriteback_mc);
+
+void dept_page_init(void)
+{
+	dept_split_map_common_init(&pglocked_mc, NULL, "pglocked");
+	dept_split_map_common_init(&pgwriteback_mc, NULL, "pgwriteback");
+}
+#endif
