@@ -16,6 +16,7 @@
 #include <linux/dma-fence.h>
 #include <linux/sched/signal.h>
 #include <linux/seq_file.h>
+#include <linux/dept_sdt.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/dma_fence.h>
@@ -24,6 +25,7 @@ EXPORT_TRACEPOINT_SYMBOL(dma_fence_emit);
 EXPORT_TRACEPOINT_SYMBOL(dma_fence_enable_signal);
 EXPORT_TRACEPOINT_SYMBOL(dma_fence_signaled);
 
+static DEFINE_DEPT_SDT(dma_fence_default_sdt);
 static DEFINE_SPINLOCK(dma_fence_stub_lock);
 static struct dma_fence dma_fence_stub;
 
@@ -741,6 +743,7 @@ dma_fence_default_wait_cb(struct dma_fence *fence, struct dma_fence_cb *cb)
 	struct default_wait_cb *wait =
 		container_of(cb, struct default_wait_cb, base);
 
+	sdt_event(&dma_fence_default_sdt);
 	wake_up_state(wait->task, TASK_NORMAL);
 }
 
@@ -789,6 +792,7 @@ dma_fence_default_wait(struct dma_fence *fence, bool intr, signed long timeout)
 			__set_current_state(TASK_UNINTERRUPTIBLE);
 		spin_unlock_irqrestore(fence->lock, flags);
 
+		sdt_wait(&dma_fence_default_sdt);
 		ret = schedule_timeout(ret);
 
 		spin_lock_irqsave(fence->lock, flags);
