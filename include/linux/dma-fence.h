@@ -21,6 +21,7 @@
 #include <linux/sched.h>
 #include <linux/printk.h>
 #include <linux/rcupdate.h>
+#include <linux/dept.h>
 
 struct dma_fence;
 struct dma_fence_ops;
@@ -93,6 +94,7 @@ struct dma_fence {
 	unsigned long flags;
 	struct kref refcount;
 	int error;
+	struct dept_map dmap;
 };
 
 enum dma_fence_flag_bits {
