@@ -33,25 +33,25 @@ do {								\
 #define DEPT_EVT_RWLOCK_W		(1UL << 1)
 #define DEPT_EVT_RWLOCK_RW		(DEPT_EVT_RWLOCK_R | DEPT_EVT_RWLOCK_W)
 
-#define dept_rwlock_wlock(m, ne, t, n, e_fn, ip)			\
+#define dept_rwlock_wlock(m, ne, t, n, e_fn, ip, s)			\
 do {									\
 	if (t) {							\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_W, ip, __func__, e_fn, ne);\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
 	} else {							\
-		dept_wait(m, DEPT_EVT_RWLOCK_RW, ip, __func__, ne);	\
+		dept_wait(m, DEPT_EVT_RWLOCK_RW, ip, __func__, ne, s);	\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_W, ip, __func__, e_fn, ne);\
 	}								\
 } while (0)
-#define dept_rwlock_rlock(m, ne, t, n, e_fn, ip, q)			\
+#define dept_rwlock_rlock(m, ne, t, n, e_fn, ip, q, s)			\
 do {									\
 	if (t) {							\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_R, ip, __func__, e_fn, ne);\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
 	} else {							\
-		dept_wait(m, (q) ? DEPT_EVT_RWLOCK_RW : DEPT_EVT_RWLOCK_W, ip, __func__, ne);\
+		dept_wait(m, (q) ? DEPT_EVT_RWLOCK_RW : DEPT_EVT_RWLOCK_W, ip, __func__, ne, s);\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_R, ip, __func__, e_fn, ne);\
 	}								\
 } while (0)
@@ -64,8 +64,8 @@ do {									\
 	dept_ecxt_exit(m, DEPT_EVT_RWLOCK_R, ip);			\
 } while (0)
 #else
-#define dept_rwlock_wlock(m, ne, t, n, e_fn, ip)	do { } while (0)
-#define dept_rwlock_rlock(m, ne, t, n, e_fn, ip, q)	do { } while (0)
+#define dept_rwlock_wlock(m, ne, t, n, e_fn, ip, s)	do { } while (0)
+#define dept_rwlock_rlock(m, ne, t, n, e_fn, ip, q, s)	do { } while (0)
 #define dept_rwlock_wunlock(m, ip)			do { } while (0)
 #define dept_rwlock_runlock(m, ip)			do { } while (0)
 #endif

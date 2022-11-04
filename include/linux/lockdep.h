@@ -552,12 +552,12 @@ extern bool read_lock_is_recursive(void);
 #define spin_acquire(l, s, t, i)					\
 do {									\
 	lock_acquire_exclusive(l, s, t, NULL, i);			\
-	dept_spin_lock(&(l)->dmap, s, t, NULL, "spin_unlock", i);	\
+	dept_spin_lock(&(l)->dmap, s, t, NULL, "spin_unlock", i, false);\
 } while (0)
 #define spin_acquire_nest(l, s, t, n, i)				\
 do {									\
 	lock_acquire_exclusive(l, s, t, n, i);				\
-	dept_spin_lock(&(l)->dmap, s, t, (n) ? &(n)->dmap : NULL, "spin_unlock", i); \
+	dept_spin_lock(&(l)->dmap, s, t, (n) ? &(n)->dmap : NULL, "spin_unlock", i, false); \
 } while (0)
 #define spin_release(l, i)						\
 do {									\
@@ -568,16 +568,16 @@ do {									\
 #define rwlock_acquire(l, s, t, i)					\
 do {									\
 	lock_acquire_exclusive(l, s, t, NULL, i);			\
-	dept_rwlock_wlock(&(l)->dmap, s, t, NULL, "write_unlock", i);	\
+	dept_rwlock_wlock(&(l)->dmap, s, t, NULL, "write_unlock", i, false);\
 } while (0)
 #define rwlock_acquire_read(l, s, t, i)					\
 do {									\
 	if (read_lock_is_recursive()) {				\
 		lock_acquire_shared_recursive(l, s, t, NULL, i);	\
-		dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 0);\
+		dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 0, false);\
 	} else {							\
 		lock_acquire_shared(l, s, t, NULL, i);			\
-		dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 1);\
+		dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 1, false);\
 	}								\
 } while (0)
 #define rwlock_release(l, i)						\
@@ -586,6 +586,48 @@ do {									\
 	dept_rwlock_wunlock(&(l)->dmap, i);				\
 } while (0)
 #define rwlock_release_read(l, i)					\
+do {									\
+	lock_release(l, i);						\
+	dept_rwlock_runlock(&(l)->dmap, i);				\
+} while (0)
+
+#define rt_spin_acquire(l, s, t, i)					\
+do {									\
+	lock_acquire_exclusive(l, s, t, NULL, i);			\
+	dept_spin_lock(&(l)->dmap, s, t, NULL, "spin_unlock", i, true);	\
+} while (0)
+#define rt_spin_acquire_nest(l, s, t, n, i)				\
+do {									\
+	lock_acquire_exclusive(l, s, t, n, i);				\
+	dept_spin_lock(&(l)->dmap, s, t, (n) ? &(n)->dmap : NULL, "spin_unlock", i, true);\
+} while (0)
+#define rt_spin_release(l, i)						\
+do {									\
+	lock_release(l, i);						\
+	dept_spin_unlock(&(l)->dmap, i);				\
+} while (0)
+
+#define rt_rwlock_acquire(l, s, t, i)					\
+do {									\
+	lock_acquire_exclusive(l, s, t, NULL, i);			\
+	dept_rwlock_wlock(&(l)->dmap, s, t, NULL, "write_unlock", i, true);\
+} while (0)
+#define rt_rwlock_acquire_read(l, s, t, i)					\
+do {									\
+	if (read_lock_is_recursive()) {				\
+		lock_acquire_shared_recursive(l, s, t, NULL, i);	\
+		dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 0, true);\
+	} else {							\
+		lock_acquire_shared(l, s, t, NULL, i);			\
+		dept_rwlock_rlock(&(l)->dmap, s, t, NULL, "read_unlock", i, 1, true);\
+	}								\
+} while (0)
+#define rt_rwlock_release(l, i)						\
+do {									\
+	lock_release(l, i);						\
+	dept_rwlock_wunlock(&(l)->dmap, i);				\
+} while (0)
+#define rt_rwlock_release_read(l, i)					\
 do {									\
 	lock_release(l, i);						\
 	dept_rwlock_runlock(&(l)->dmap, i);				\
