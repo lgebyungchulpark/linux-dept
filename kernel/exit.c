@@ -762,6 +762,13 @@ void __noreturn do_exit(long code)
 
 	synchronize_group_exit(tsk, code);
 
+	/*
+	 * dept_task_exit() requires might_sleep() because it needs to
+	 * wait on the grace period after cleaning the objects that have
+	 * been coupled with the current task_struct.
+	 */
+	dept_task_exit(tsk);
+
 	WARN_ON(tsk->plug);
 
 	kcov_task_exit(tsk);
@@ -869,7 +876,6 @@ void __noreturn do_exit(long code)
 	exit_tasks_rcu_finish();
 
 	lockdep_free_task(tsk);
-	dept_task_exit(tsk);
 	do_task_dead();
 }
 
