@@ -13,23 +13,52 @@
 #define _LINUX_TRACE_IRQFLAGS_H
 
 #include <linux/typecheck.h>
+#include <linux/dept.h>
 #include <asm/irqflags.h>
 #include <asm/percpu.h>
 
 /* Currently lockdep_softirqs_on/off is used only by lockdep */
 #ifdef CONFIG_PROVE_LOCKING
-  extern void lockdep_softirqs_on(unsigned long ip);
-  extern void lockdep_softirqs_off(unsigned long ip);
-  extern void lockdep_hardirqs_on_prepare(void);
-  extern void lockdep_hardirqs_on(unsigned long ip);
-  extern void lockdep_hardirqs_off(unsigned long ip);
+  extern void lockdep_internal_softirqs_on(unsigned long ip);
+  extern void lockdep_internal_softirqs_off(unsigned long ip);
+  extern void lockdep_internal_hardirqs_on_prepare(void);
+  extern void lockdep_internal_hardirqs_on(unsigned long ip);
+  extern void lockdep_internal_hardirqs_off(unsigned long ip);
 #else
-  static inline void lockdep_softirqs_on(unsigned long ip) { }
-  static inline void lockdep_softirqs_off(unsigned long ip) { }
-  static inline void lockdep_hardirqs_on_prepare(void) { }
-  static inline void lockdep_hardirqs_on(unsigned long ip) { }
-  static inline void lockdep_hardirqs_off(unsigned long ip) { }
+  static inline void lockdep_internal_softirqs_on(unsigned long ip) { }
+  static inline void lockdep_internal_softirqs_off(unsigned long ip) { }
+  static inline void lockdep_internal_hardirqs_on_prepare(void) { }
+  static inline void lockdep_internal_hardirqs_on(unsigned long ip) { }
+  static inline void lockdep_internal_hardirqs_off(unsigned long ip) { }
 #endif
+static inline void lockdep_softirqs_on(unsigned long ip)
+{
+	lockdep_internal_softirqs_on(ip);
+	dept_aware_softirqs_enable();
+	dept_enirq_transition(ip);
+}
+static inline void lockdep_softirqs_off(unsigned long ip)
+{
+	lockdep_internal_softirqs_off(ip);
+	dept_aware_softirqs_disable();
+	dept_enirq_transition(ip);
+}
+static inline void lockdep_hardirqs_on_prepare(void)
+{
+	lockdep_internal_hardirqs_on_prepare();
+	dept_aware_hardirqs_enable();
+	dept_enirq_transition(_RET_IP_);
+}
+static inline void lockdep_hardirqs_on(unsigned long ip)
+{
+	lockdep_internal_hardirqs_on(ip);
+}
+static inline void lockdep_hardirqs_off(unsigned long ip)
+{
+	lockdep_internal_hardirqs_off(ip);
+	dept_aware_hardirqs_disable();
+	dept_enirq_transition(ip);
+}
 
 #ifdef CONFIG_TRACE_IRQFLAGS
 
@@ -60,8 +89,10 @@ extern void trace_hardirqs_off(void);
 # define lockdep_softirqs_enabled(p)	((p)->softirqs_enabled)
 # define lockdep_hardirq_enter()			\
 do {							\
-	if (__this_cpu_inc_return(hardirq_context) == 1)\
+	if (__this_cpu_inc_return(hardirq_context) == 1) {\
 		current->hardirq_threaded = 0;		\
+		dept_hardirq_enter();			\
+	}						\
 } while (0)
 # define lockdep_hardirq_threaded()		\
 do {						\
@@ -135,7 +166,8 @@ do {						\
 #if defined(CONFIG_TRACE_IRQFLAGS) && !defined(CONFIG_PREEMPT_RT)
 # define lockdep_softirq_enter()		\
 do {						\
-	current->softirq_context++;		\
+	if (!current->softirq_context++)	\
+		dept_softirq_enter();		\
 } while (0)
 # define lockdep_softirq_exit()			\
 do {						\
@@ -170,17 +202,28 @@ extern void warn_bogus_irq_restore(void);
 /*
  * Wrap the arch provided IRQ routines to provide appropriate checks.
  */
-#define raw_local_irq_disable()		arch_local_irq_disable()
-#define raw_local_irq_enable()		arch_local_irq_enable()
+#define raw_local_irq_disable()				\
+	do {						\
+		arch_local_irq_disable();		\
+		dept_aware_hardirqs_disable();		\
+	} while (0)
+#define raw_local_irq_enable()				\
+	do {						\
+		dept_aware_hardirqs_enable();		\
+		arch_local_irq_enable();		\
+	} while (0)
 #define raw_local_irq_save(flags)			\
 	do {						\
 		typecheck(unsigned long, flags);	\
 		flags = arch_local_irq_save();		\
+		dept_aware_hardirqs_disable();		\
 	} while (0)
 #define raw_local_irq_restore(flags)			\
 	do {						\
 		typecheck(unsigned long, flags);	\
 		raw_check_bogus_irq_restore();		\
+		if (!arch_irqs_disabled_flags(flags))	\
+			dept_aware_hardirqs_enable();	\
 		arch_local_irq_restore(flags);		\
 	} while (0)
 #define raw_local_save_flags(flags)			\

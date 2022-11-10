@@ -1,0 +1,536 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * DEPT(DEPendency Tracker) - runtime dependency tracker
+ *
+ * Started by Byungchul Park <max.byungchul.park@gmail.com>:
+ *
+ *  Copyright (c) 2020 LG Electronics, Inc., Byungchul Park
+ */
+
+#ifndef __LINUX_DEPT_H
+#define __LINUX_DEPT_H
+
+#ifdef CONFIG_DEPT
+
+#include <linux/types.h>
+
+struct task_struct;
+
+#define DEPT_MAX_STACK_ENTRY		16
+#define DEPT_MAX_WAIT_HIST		64
+#define DEPT_MAX_ECXT_HELD		48
+
+#define DEPT_MAX_SUBCLASSES		16
+#define DEPT_MAX_SUBCLASSES_EVT		2
+#define DEPT_MAX_SUBCLASSES_USR		(DEPT_MAX_SUBCLASSES / DEPT_MAX_SUBCLASSES_EVT)
+#define DEPT_MAX_SUBCLASSES_CACHE	2
+
+#define DEPT_SIRQ			0
+#define DEPT_HIRQ			1
+#define DEPT_IRQS_NR			2
+#define DEPT_SIRQF			(1UL << DEPT_SIRQ)
+#define DEPT_HIRQF			(1UL << DEPT_HIRQ)
+
+struct dept_ecxt;
+struct dept_iecxt {
+	struct dept_ecxt		*ecxt;
+	int				enirq;
+	/*
+	 * for preventing to add a new ecxt
+	 */
+	bool				staled;
+};
+
+struct dept_wait;
+struct dept_iwait {
+	struct dept_wait		*wait;
+	int				irq;
+	/*
+	 * for preventing to add a new wait
+	 */
+	bool				staled;
+	bool				touched;
+};
+
+struct dept_class {
+	union {
+		struct llist_node	pool_node;
+
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t		ref;
+	};
+
+	/*
+	 * unique information about the class
+	 */
+	const char			*name;
+	unsigned long			key;
+	int				sub;
+
+	/*
+	 * for BFS
+	 */
+	unsigned int			bfs_gen;
+	int				bfs_dist;
+	struct dept_class		*bfs_parent;
+
+	/*
+	 * for hashing this object
+	 */
+	struct hlist_node		hash_node;
+
+	/*
+	 * for linking all classes
+	 */
+	struct list_head		all_node;
+
+	/*
+	 * for associating its dependencies
+	 */
+	struct list_head		dep_head;
+	struct list_head		dep_rev_head;
+
+	/*
+	 * for tracking IRQ dependencies
+	 */
+	struct dept_iecxt		iecxt[DEPT_IRQS_NR];
+	struct dept_iwait		iwait[DEPT_IRQS_NR];
+};
+
+struct dept_stack {
+	union {
+		struct llist_node	pool_node;
+
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t		ref;
+	};
+
+	/*
+	 * backtrace entries
+	 */
+	unsigned long			raw[DEPT_MAX_STACK_ENTRY];
+	int nr;
+};
+
+struct dept_ecxt {
+	union {
+		struct llist_node	pool_node;
+
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t		ref;
+	};
+
+	/*
+	 * function that entered to this ecxt
+	 */
+	const char			*ecxt_fn;
+
+	/*
+	 * event function
+	 */
+	const char			*event_fn;
+
+	/*
+	 * associated class
+	 */
+	struct dept_class		*class;
+
+	/*
+	 * flag indicating which IRQ has been
+	 * enabled within the event context
+	 */
+	unsigned long			enirqf;
+
+	/*
+	 * where the IRQ-enabled happened
+	 */
+	unsigned long			enirq_ip[DEPT_IRQS_NR];
+	struct dept_stack		*enirq_stack[DEPT_IRQS_NR];
+
+	/*
+	 * where the event context started
+	 */
+	unsigned long			ecxt_ip;
+	struct dept_stack		*ecxt_stack;
+
+	/*
+	 * where the event triggered
+	 */
+	unsigned long			event_ip;
+	struct dept_stack		*event_stack;
+};
+
+struct dept_wait {
+	union {
+		struct llist_node	pool_node;
+
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t		ref;
+	};
+
+	/*
+	 * function causing this wait
+	 */
+	const char			*wait_fn;
+
+	/*
+	 * the associated class
+	 */
+	struct dept_class		*class;
+
+	/*
+	 * which IRQ the wait was placed in
+	 */
+	unsigned long			irqf;
+
+	/*
+	 * where the IRQ wait happened
+	 */
+	unsigned long			irq_ip[DEPT_IRQS_NR];
+	struct dept_stack		*irq_stack[DEPT_IRQS_NR];
+
+	/*
+	 * where the wait happened
+	 */
+	unsigned long			wait_ip;
+	struct dept_stack		*wait_stack;
+};
+
+struct dept_dep {
+	union {
+		struct llist_node	pool_node;
+
+		/*
+		 * reference counter for object management
+		 */
+		atomic_t		ref;
+	};
+
+	/*
+	 * key data of dependency
+	 */
+	struct dept_ecxt		*ecxt;
+	struct dept_wait		*wait;
+
+	/*
+	 * This object can be referred without dept_lock
+	 * held but with IRQ disabled, e.g. for hash
+	 * lookup. So deferred deletion is needed.
+	 */
+	struct rcu_head			rh;
+
+	/*
+	 * for BFS
+	 */
+	struct list_head		bfs_node;
+
+	/*
+	 * for hashing this object
+	 */
+	struct hlist_node		hash_node;
+
+	/*
+	 * for linking to a class object
+	 */
+	struct list_head		dep_node;
+	struct list_head		dep_rev_node;
+};
+
+struct dept_hash {
+	/*
+	 * hash table
+	 */
+	struct hlist_head		*table;
+
+	/*
+	 * size of the table e.i. 2^bits
+	 */
+	int				bits;
+};
+
+struct dept_pool {
+	const char			*name;
+
+	/*
+	 * object size
+	 */
+	size_t				obj_sz;
+
+	/*
+	 * the number of the static array
+	 */
+	atomic_t			obj_nr;
+
+	/*
+	 * offset of ->pool_node
+	 */
+	size_t				node_off;
+
+	/*
+	 * pointer to the pool
+	 */
+	void				*spool;
+	struct llist_head		boot_pool;
+	struct llist_head __percpu	*lpool;
+};
+
+struct dept_ecxt_held {
+	/*
+	 * associated event context
+	 */
+	struct dept_ecxt		*ecxt;
+
+	/*
+	 * unique key for this dept_ecxt_held
+	 */
+	unsigned long			key;
+
+	/*
+	 * the wgen when the event context started
+	 */
+	unsigned int			wgen;
+
+	/*
+	 * for allowing user aware nesting
+	 */
+	int				nest;
+};
+
+struct dept_wait_hist {
+	/*
+	 * associated wait
+	 */
+	struct dept_wait		*wait;
+
+	/*
+	 * unique id of all waits system-wise until wrapped
+	 */
+	unsigned int			wgen;
+
+	/*
+	 * local context id to identify IRQ context
+	 */
+	unsigned int			ctxt_id;
+};
+
+struct dept_key {
+	union {
+		/*
+		 * Each byte-wise address will be used as its key.
+		 */
+		char			subkeys[DEPT_MAX_SUBCLASSES];
+
+		/*
+		 * for caching the main class pointer
+		 */
+		struct dept_class	*classes[DEPT_MAX_SUBCLASSES_CACHE];
+	};
+};
+
+struct dept_map {
+	const char			*name;
+	struct dept_key			*keys;
+	int				sub_usr;
+
+	/*
+	 * It's local copy for fast acces to the associated classes. And
+	 * Also used for dept_key instance for statically defined map.
+	 */
+	struct dept_key			keys_local;
+
+	/*
+	 * wait timestamp associated to this map
+	 */
+	unsigned int			wgen;
+
+	/*
+	 * whether this map should be going to be checked or not
+	 */
+	bool				nocheck;
+};
+
+#define DEPT_MAP_INITIALIZER(n)						\
+{									\
+	.name = #n,							\
+	.keys = NULL,							\
+	.sub_usr = 0,							\
+	.keys_local = { .classes = { 0 } },				\
+	.wgen = 0U,							\
+	.nocheck = false,						\
+}
+
+struct dept_task {
+	/*
+	 * all event contexts that have entered and before exiting
+	 */
+	struct dept_ecxt_held		ecxt_held[DEPT_MAX_ECXT_HELD];
+	int				ecxt_held_pos;
+
+	/*
+	 * ring buffer holding all waits that have happened
+	 */
+	struct dept_wait_hist		wait_hist[DEPT_MAX_WAIT_HIST];
+	int				wait_hist_pos;
+
+	/*
+	 * sequential id to identify each IRQ context
+	 */
+	unsigned int			irq_id[DEPT_IRQS_NR];
+
+	/*
+	 * for tracking IRQ-enabled points with cross-event
+	 */
+	unsigned int			wgen_enirq[DEPT_IRQS_NR];
+
+	/*
+	 * for keeping up-to-date IRQ-enabled points
+	 */
+	unsigned long			enirq_ip[DEPT_IRQS_NR];
+
+	/*
+	 * current effective IRQ-enabled flag
+	 */
+	unsigned long			eff_enirqf;
+
+	/*
+	 * for reserving a current stack instance at each operation
+	 */
+	struct dept_stack		*stack;
+
+	/*
+	 * for preventing recursive call into DEPT engine
+	 */
+	int				recursive;
+
+	/*
+	 * for staging data to commit a wait
+	 */
+	struct dept_map			*stage_m;
+	unsigned long			stage_w_f;
+	const char			*stage_w_fn;
+	int				stage_ne;
+
+	/*
+	 * the number of missing ecxts
+	 */
+	int				missing_ecxt;
+
+	/*
+	 * for tracking IRQ-enable state
+	 */
+	bool				hardirqs_enabled;
+	bool				softirqs_enabled;
+
+	/*
+	 * whether the current is on do_exit()
+	 */
+	bool				task_exit;
+};
+
+#define DEPT_TASK_INITIALIZER(t)				\
+{								\
+	.wait_hist = { { .wait = NULL, } },			\
+	.ecxt_held_pos = 0,					\
+	.wait_hist_pos = 0,					\
+	.irq_id = { 0U },					\
+	.wgen_enirq = { 0U },					\
+	.enirq_ip = { 0UL },					\
+	.eff_enirqf = 0UL,					\
+	.stack = NULL,						\
+	.recursive = 0,						\
+	.stage_m = NULL,					\
+	.stage_w_f = 0UL,					\
+	.stage_w_fn = NULL,					\
+	.stage_ne = 0,						\
+	.missing_ecxt = 0,					\
+	.hardirqs_enabled = false,				\
+	.softirqs_enabled = false,				\
+	.task_exit = false,					\
+}
+
+extern void dept_on(void);
+extern void dept_off(void);
+extern void dept_init(void);
+extern void dept_task_init(struct task_struct *t);
+extern void dept_task_exit(struct task_struct *t);
+extern void dept_free_range(void *start, unsigned int sz);
+extern void dept_map_init(struct dept_map *m, struct dept_key *k, int sub, const char *n);
+extern void dept_map_reinit(struct dept_map *m);
+extern void dept_map_nocheck(struct dept_map *m);
+extern void dept_map_copy(struct dept_map *to, struct dept_map *from);
+
+extern void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip, const char *w_fn, int ne);
+extern void dept_stage_wait(struct dept_map *m, unsigned long w_f, const char *w_fn, int ne);
+extern void dept_ask_event_wait_commit(unsigned long ip);
+extern void dept_clean_stage(void);
+extern void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip, const char *c_fn, const char *e_fn, int ne);
+extern void dept_ask_event(struct dept_map *m);
+extern void dept_event(struct dept_map *m, unsigned long e_f, unsigned long ip, const char *e_fn);
+extern void dept_ecxt_exit(struct dept_map *m, unsigned long e_f, unsigned long ip);
+
+static inline void dept_ecxt_enter_nokeep(struct dept_map *m)
+{
+	dept_ecxt_enter(m, 0UL, 0UL, NULL, NULL, 0);
+}
+
+/*
+ * for users who want to manage external keys
+ */
+extern void dept_key_init(struct dept_key *k);
+extern void dept_key_destroy(struct dept_key *k);
+
+extern void dept_softirq_enter(void);
+extern void dept_hardirq_enter(void);
+extern void dept_aware_softirqs_enable(void);
+extern void dept_aware_hardirqs_enable(void);
+extern void dept_aware_softirqs_disable(void);
+extern void dept_aware_hardirqs_disable(void);
+extern void dept_enirq_transition(unsigned long ip);
+#else /* !CONFIG_DEPT */
+struct dept_key  { };
+struct dept_map  { };
+struct dept_task { };
+
+#define DEPT_MAP_INITIALIZER(n) { }
+#define DEPT_TASK_INITIALIZER(t) { }
+
+#define dept_on()					do { } while (0)
+#define dept_off()					do { } while (0)
+#define dept_init()					do { } while (0)
+#define dept_task_init(t)				do { } while (0)
+#define dept_task_exit(t)				do { } while (0)
+#define dept_free_range(s, sz)				do { } while (0)
+#define dept_map_init(m, k, s, n)			do { (void)(n); (void)(k); } while (0)
+#define dept_map_reinit(m)				do { } while (0)
+#define dept_map_nocheck(m)				do { } while (0)
+#define dept_map_copy(t, f)				do { } while (0)
+
+#define dept_wait(m, w_f, ip, w_fn, ne)			do { (void)(w_fn); } while (0)
+#define dept_stage_wait(m, w_f, w_fn, ne)		do { (void)(w_fn); } while (0)
+#define dept_ask_event_wait_commit(ip)			do { } while (0)
+#define dept_clean_stage()				do { } while (0)
+#define dept_ecxt_enter(m, e_f, ip, c_fn, e_fn, ne)	do { (void)(c_fn); (void)(e_fn); } while (0)
+#define dept_ask_event(m)				do { } while (0)
+#define dept_event(m, e_f, ip, e_fn)			do { (void)(e_fn); } while (0)
+#define dept_ecxt_exit(m, e_f, ip)			do { } while (0)
+#define dept_ecxt_enter_nokeep(m)			do { } while (0)
+#define dept_key_init(k)				do { (void)(k); } while (0)
+#define dept_key_destroy(k)				do { (void)(k); } while (0)
+
+#define dept_softirq_enter()				do { } while (0)
+#define dept_hardirq_enter()				do { } while (0)
+#define dept_aware_softirqs_enable()			do { } while (0)
+#define dept_aware_hardirqs_enable()			do { } while (0)
+#define dept_aware_softirqs_disable()			do { } while (0)
+#define dept_aware_hardirqs_disable()			do { } while (0)
+#define dept_enirq_transition(ip)			do { } while (0)
+#endif
+#endif /* __LINUX_DEPT_H */
