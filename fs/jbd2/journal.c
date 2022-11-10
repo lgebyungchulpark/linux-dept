@@ -1387,6 +1387,7 @@ static journal_t *journal_init_common(struct block_device *bdev,
 
 	lockdep_init_map(&journal->j_trans_commit_map, "jbd2_handle",
 			 &jbd2_trans_commit_key, 0);
+	dept_map_nocheck(&journal->j_trans_commit_map.dmap);
 
 	/* journal descriptor can store up to n blocks -bzzz */
 	journal->j_blocksize = blocksize;
