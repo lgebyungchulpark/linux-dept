@@ -126,10 +126,22 @@ _wait_for_common_io(struct completion *x, long timeout, int state)
 }
 
 #define wait_for_common(x, t, s)					\
-({ dept_wfc_wait(&(x)->dmap, _RET_IP_); _wait_for_common(x, t, s); })
+({									\
+	if ((t) == MAX_SCHEDULE_TIMEOUT)				\
+		dept_wfc_wait(&(x)->dmap, _RET_IP_);			\
+	else								\
+		dept_wfc_wait_timeout(&(x)->dmap, _RET_IP_);		\
+	_wait_for_common(x, t, s);					\
+})
 
 #define wait_for_common_io(x, t, s)					\
-({ dept_wfc_wait(&(x)->dmap, _RET_IP_); _wait_for_common_io(x, t, s); })
+({									\
+	if ((t) == MAX_SCHEDULE_TIMEOUT)				\
+		dept_wfc_wait(&(x)->dmap, _RET_IP_);			\
+	else								\
+		dept_wfc_wait_timeout(&(x)->dmap, _RET_IP_);		\
+	_wait_for_common_io(x, t, s);					\
+})
 
 /**
  * wait_for_completion: - waits for completion of a task

@@ -38,6 +38,11 @@ do {									\
 	dept_ask_event(m);						\
 	dept_wait(m, 1UL, ip, __func__, 0, true, false);		\
 } while (0)
+#define dept_wfc_wait_timeout(m, ip)					\
+do {									\
+	dept_ask_event(m);						\
+	dept_wait(m, 1UL, ip, __func__, 0, true, true);			\
+} while (0)
 #define dept_wfc_complete(m, ip)		dept_event(m, 1UL, ip, __func__)
 #define dept_wfc_enter(m, ip)			dept_ecxt_enter(m, 1UL, ip, "completion_context_enter", "complete", 0)
 #define dept_wfc_exit(m, ip)			dept_ecxt_exit(m, 1UL, ip)
@@ -46,6 +51,7 @@ do {									\
 #define dept_wfc_init(m, k, s, n)		do { (void)(n); (void)(k); } while (0)
 #define dept_wfc_reinit(m)			do { } while (0)
 #define dept_wfc_wait(m, ip)			do { } while (0)
+#define dept_wfc_wait_timeout(m, ip)		do { } while (0)
 #define dept_wfc_complete(m, ip)		do { } while (0)
 #define dept_wfc_enter(m, ip)			do { } while (0)
 #define dept_wfc_exit(m, ip)			do { } while (0)
