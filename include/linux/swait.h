@@ -169,6 +169,9 @@ extern void finish_swait(struct swait_queue_head *q, struct swait_queue *wait);
 	for (;;) {							\
 		long __int = prepare_to_swait_event(&wq, &__wait, state);\
 									\
+		if (!__int && (state) & TASK_NORMAL && (ret))		\
+			sdt_wait_prepare_timeout(&(wq).dmap);		\
+									\
 		if (condition)						\
 			break;						\
 									\
