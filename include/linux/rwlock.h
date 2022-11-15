@@ -40,7 +40,7 @@ do {									\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
 	} else {							\
-		dept_wait(m, DEPT_EVT_RWLOCK_RW, ip, __func__, ne, s);	\
+		dept_wait(m, DEPT_EVT_RWLOCK_RW, ip, __func__, ne, s, false);\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_W, ip, __func__, e_fn, ne);\
 	}								\
 } while (0)
@@ -51,7 +51,7 @@ do {									\
 	} else if (n) {							\
 		dept_ecxt_enter_nokeep(m);				\
 	} else {							\
-		dept_wait(m, (q) ? DEPT_EVT_RWLOCK_RW : DEPT_EVT_RWLOCK_W, ip, __func__, ne, s);\
+		dept_wait(m, (q) ? DEPT_EVT_RWLOCK_RW : DEPT_EVT_RWLOCK_W, ip, __func__, ne, s, false);\
 		dept_ecxt_enter(m, DEPT_EVT_RWLOCK_R, ip, __func__, e_fn, ne);\
 	}								\
 } while (0)

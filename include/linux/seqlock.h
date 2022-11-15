@@ -24,7 +24,7 @@
 
 #ifdef CONFIG_DEPT
 #define dept_seq_wait(m, ip)						\
-	dept_wait(m, 1UL, ip,  __func__, 0, false)
+	dept_wait(m, 1UL, ip,  __func__, 0, false, false)
 #define dept_seq_writebegin(m, ip)					\
 	dept_ecxt_enter(m, 1UL, ip, __func__, "write_seqcount_end", 0)
 #define dept_seq_writeend(m, ip)					\

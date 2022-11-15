@@ -29,20 +29,27 @@
 #define sdt_wait(m)							\
 	do {								\
 		dept_ask_event(m);					\
-		dept_wait(m, 1UL, _THIS_IP_, "wait", 0, true);		\
+		dept_wait(m, 1UL, _THIS_IP_, "wait", 0, true, false);	\
+	} while (0)
+
+#define sdt_wait_timeout(m)						\
+	do {								\
+		dept_ask_event(m);					\
+		dept_wait(m, 1UL, _THIS_IP_, "wait", 0, true, true);	\
 	} while (0)
 
 #define sdt_wait_spin(m)						\
 	do {								\
 		dept_ask_event(m);					\
-		dept_wait(m, 1UL, _THIS_IP_, "wait", 0, false);		\
+		dept_wait(m, 1UL, _THIS_IP_, "wait", 0, false, false);	\
 	} while (0)
 /*
  * This will be committed in __schedule() when it actually gets to
  * __schedule(). Both dept_ask_event() and dept_wait() will be performed
  * on the commit in __schedule().
  */
-#define sdt_wait_prepare(m)		dept_stage_wait(m, 1UL, "wait", 0)
+#define sdt_wait_prepare(m)		dept_stage_wait(m, 1UL, "wait", 0, false)
+#define sdt_wait_prepare_timeout(m)	dept_stage_wait(m, 1UL, "wait", 0, true)
 #define sdt_wait_finish()		dept_clean_stage()
 #define sdt_ecxt_enter(m)		dept_ecxt_enter(m, 1UL, _THIS_IP_, "start", "event", 0)
 #define sdt_event(m)			dept_event(m, 1UL, _THIS_IP_, "event")
@@ -53,8 +60,10 @@
 #define sdt_map_init(m)			do { } while (0)
 #define sdt_map_init_key(m, k)		do { (void)(k); } while (0)
 #define sdt_wait(m)			do { } while (0)
+#define sdt_wait_timeout(m)		do { } while (0)
 #define sdt_wait_spin(m)		do { } while (0)
 #define sdt_wait_prepare(m)		do { } while (0)
+#define sdt_wait_prepare_timeout(m)	do { } while (0)
 #define sdt_wait_finish()		do { } while (0)
 #define sdt_ecxt_enter(m)		do { } while (0)
 #define sdt_event(m)			do { } while (0)

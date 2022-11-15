@@ -740,6 +740,8 @@ static void print_diagram(struct dept_dep *d)
 	if (!irqf) {
 		print_spc(spc, "[S] %s(%s:%d)\n", c_fn, fc->name, fc->sub);
 		print_spc(spc, "[W] %s(%s:%d)\n", w_fn, tc->name, tc->sub);
+		if (w->timeout)
+			print_spc(spc, "--------------- >8 timeout ---------------\n");
 		print_spc(spc, "[E] %s(%s:%d)\n", e_fn, fc->name, fc->sub);
 	}
 }
@@ -791,6 +793,24 @@ static void print_dep(struct dept_dep *d)
 
 static void save_current_stack(int skip);
 
+static bool is_timeout_wait_circle(struct dept_class *c)
+{
+	struct dept_class *fc = c->bfs_parent;
+	struct dept_class *tc = c;
+
+	do {
+		struct dept_dep *d = lookup_dep(fc, tc);
+
+		if (d->wait->timeout)
+			return true;
+
+		tc = fc;
+		fc = fc->bfs_parent;
+	} while (tc != c);
+
+	return false;
+}
+
 /*
  * Print all classes in a circle.
  */
@@ -813,10 +833,14 @@ static void print_circle(struct dept_class *c)
 	pr_warn("summary\n");
 	pr_warn("---------------------------------------------------\n");
 
-	if (fc == tc)
+	if (is_timeout_wait_circle(c)) {
+		pr_warn("NOT A DEADLOCK BUT A CIRCULAR DEPENDENCY\n");
+		pr_warn("CHECK IF THE TIMEOUT IS INTENDED\n\n");
+	} else if (fc == tc) {
 		pr_warn("*** AA DEADLOCK ***\n\n");
-	else
+	} else {
 		pr_warn("*** DEADLOCK ***\n\n");
+	}
 
 	i = 0;
 	do {
@@ -1560,7 +1584,7 @@ static void add_dep(struct dept_ecxt *e, struct dept_wait *w)
 static atomic_t wgen = ATOMIC_INIT(1);
 
 static void add_wait(struct dept_class *c, unsigned long ip,
-		     const char *w_fn, int ne, bool sleep)
+		     const char *w_fn, int ne, bool sleep, bool timeout)
 {
 	struct dept_task *dt = dept_task();
 	struct dept_wait *w;
@@ -1577,6 +1601,7 @@ static void add_wait(struct dept_class *c, unsigned long ip,
 	w->wait_fn = w_fn;
 	w->wait_stack = get_current_stack();
 	w->sleep = sleep;
+	w->timeout = timeout;
 
 	cxt = cur_cxt();
 	if (cxt == DEPT_CXT_HIRQ || cxt == DEPT_CXT_SIRQ)
@@ -2243,7 +2268,7 @@ caching:
 
 static void __dept_wait(struct dept_map *m, unsigned long w_f,
 			unsigned long ip, const char *w_fn, int ne,
-			bool sleep)
+			bool sleep, bool timeout)
 {
 	int e;
 
@@ -2266,7 +2291,7 @@ static void __dept_wait(struct dept_map *m, unsigned long w_f,
 		if (!c)
 			continue;
 
-		add_wait(c, ip, w_fn, ne, sleep);
+		add_wait(c, ip, w_fn, ne, sleep, timeout);
 	}
 }
 
@@ -2286,13 +2311,18 @@ static inline struct dept_map *staged_map(struct dept_task *dt)
 }
 
 void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
-	       const char *w_fn, int ne, bool sleep)
+	       const char *w_fn, int ne, bool sleep, bool timeout)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
 	if (unlikely(!dept_working()))
 		return;
+
+#if !defined(CONFIG_DEPT_AGGRESSIVE_TIMEOUT_WAIT)
+	if (timeout)
+		return;
+#endif
 
 	if (dt->recursive)
 		return;
@@ -2314,20 +2344,25 @@ void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
 	if (sleep)
 		unstage_map(dt);
 
-	__dept_wait(m, w_f, ip, w_fn, ne, sleep);
+	__dept_wait(m, w_f, ip, w_fn, ne, sleep, timeout);
 
 	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_wait);
 
 void dept_stage_wait(struct dept_map *m, unsigned long w_f,
-		     const char *w_fn, int ne)
+		     const char *w_fn, int ne, bool timeout)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
 	if (unlikely(!dept_working()))
 		return;
+
+#if !defined(CONFIG_DEPT_AGGRESSIVE_TIMEOUT_WAIT)
+	if (timeout)
+		return;
+#endif
 
 	if (m->nocheck)
 		return;
@@ -2342,6 +2377,7 @@ void dept_stage_wait(struct dept_map *m, unsigned long w_f,
 	dt->stage_w_f = w_f;
 	dt->stage_w_fn = w_fn;
 	dt->stage_ne = ne;
+	dt->stage_timeout = timeout;
 
 	/*
 	 * Disable the map just in case real sleep won't happen. This
@@ -2371,6 +2407,7 @@ void dept_clean_stage(void)
 	dt->stage_w_f = 0UL;
 	dt->stage_w_fn = NULL;
 	dt->stage_ne = 0;
+	dt->stage_timeout = false;
 
 	dept_exit_recursive(flags);
 }
@@ -2388,6 +2425,7 @@ void dept_ask_event_wait_commit(unsigned long ip)
 	unsigned long w_f;
 	const char *w_fn;
 	int ne;
+	bool timeout;
 
 	if (unlikely(!dept_working()))
 		return;
@@ -2425,6 +2463,7 @@ void dept_ask_event_wait_commit(unsigned long ip)
 	w_f = dt->stage_w_f;
 	w_fn = dt->stage_w_fn;
 	ne = dt->stage_ne;
+	timeout = dt->stage_timeout;
 
 	/*
 	 * Avoid zero wgen.
@@ -2432,7 +2471,7 @@ void dept_ask_event_wait_commit(unsigned long ip)
 	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
 	WRITE_ONCE(m->wgen, wg);
 
-	__dept_wait(m, w_f, ip, w_fn, ne, true);
+	__dept_wait(m, w_f, ip, w_fn, ne, true, timeout);
 exit:
 	dept_exit(flags);
 }
@@ -2665,7 +2704,7 @@ EXPORT_SYMBOL_GPL(dept_split_map_common_init);
 void dept_wait_split_map(struct dept_map_each *me,
 			 struct dept_map_common *mc,
 			 unsigned long ip, const char *w_fn, int ne,
-			 bool sleep)
+			 bool sleep, bool timeout)
 {
 	struct dept_task *dt = dept_task();
 	struct dept_class *c;
@@ -2674,6 +2713,11 @@ void dept_wait_split_map(struct dept_map_each *me,
 
 	if (unlikely(!dept_working()))
 		return;
+
+#if !defined(CONFIG_DEPT_AGGRESSIVE_TIMEOUT_WAIT)
+	if (timeout)
+		return;
+#endif
 
 	if (dt->recursive)
 		return;
@@ -2699,7 +2743,7 @@ void dept_wait_split_map(struct dept_map_each *me,
 	k = mc->keys ?: &mc->keys_local;
 	c = check_new_class(&mc->keys_local, k, 0, 0UL, mc->name);
 	if (c)
-		add_wait(c, ip, w_fn, ne, sleep);
+		add_wait(c, ip, w_fn, ne, sleep, timeout);
 
 	dept_exit(flags);
 }
