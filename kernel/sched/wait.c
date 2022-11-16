@@ -104,7 +104,7 @@ static int __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
 		if (flags & WQ_FLAG_BOOKMARK)
 			continue;
 
-		sdt_event(&wq_head->dmap);
+		sdt_event_split_map(&cur->dmap);
 		ret = curr->func(curr, mode, wake_flags, key);
 		if (ret < 0)
 			break;
@@ -270,7 +270,7 @@ prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_ent
 	spin_unlock_irqrestore(&wq_head->lock, flags);
 
 	if (state & TASK_NORMAL)
-		sdt_wait_prepare(&wq_head->dmap);
+		sdt_wait_before_sched(&wq_head->dmap);
 }
 EXPORT_SYMBOL(prepare_to_wait);
 
@@ -291,7 +291,7 @@ prepare_to_wait_exclusive(struct wait_queue_head *wq_head, struct wait_queue_ent
 	spin_unlock_irqrestore(&wq_head->lock, flags);
 
 	if (state & TASK_NORMAL)
-		sdt_wait_prepare(&wq_head->dmap);
+		sdt_wait_before_sched(&wq_head->dmap);
 
 	return was_empty;
 }
@@ -339,7 +339,7 @@ long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_en
 	spin_unlock_irqrestore(&wq_head->lock, flags);
 
 	if (!ret && state & TASK_NORMAL)
-		sdt_wait_prepare(&wq_head->dmap);
+		sdt_wait_before_sched(&wq_head->dmap);
 
 	return ret;
 }
@@ -362,9 +362,9 @@ int do_wait_intr(wait_queue_head_t *wq, wait_queue_entry_t *wait)
 		return -ERESTARTSYS;
 
 	spin_unlock(&wq->lock);
-	sdt_wait_prepare(&wq->dmap);
+	sdt_wait_before_sched(&wq->dmap);
 	schedule();
-	sdt_wait_finish();
+	sdt_wait_after_sched();
 	spin_lock(&wq->lock);
 
 	return 0;
@@ -381,9 +381,9 @@ int do_wait_intr_irq(wait_queue_head_t *wq, wait_queue_entry_t *wait)
 		return -ERESTARTSYS;
 
 	spin_unlock_irq(&wq->lock);
-	sdt_wait_prepare(&wq->dmap);
+	sdt_wait_before_sched(&wq->dmap);
 	schedule();
-	sdt_wait_finish();
+	sdt_wait_after_sched();
 	spin_lock_irq(&wq->lock);
 
 	return 0;
@@ -403,7 +403,7 @@ void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_en
 {
 	unsigned long flags;
 
-	sdt_wait_finish();
+	sdt_wait_after_sched();
 	__set_current_state(TASK_RUNNING);
 	/*
 	 * We can check for list emptiness outside the lock

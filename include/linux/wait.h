@@ -183,6 +183,7 @@ static inline void __add_wait_queue(struct wait_queue_head *wq_head, struct wait
 		head = &wq->entry;
 	}
 	list_add(&wq_entry->entry, head);
+	sdt_wait_ready_split_map(&wq_entry->dmap, &wq_head->dmap);
 }
 
 /*
@@ -198,6 +199,7 @@ __add_wait_queue_exclusive(struct wait_queue_head *wq_head, struct wait_queue_en
 static inline void __add_wait_queue_entry_tail(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
 	list_add_tail(&wq_entry->entry, &wq_head->head);
+	sdt_wait_ready_split_map(&wq_entry->dmap, &wq_head->dmap);
 }
 
 static inline void
@@ -211,6 +213,7 @@ static inline void
 __remove_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
 	list_del(&wq_entry->entry);
+	sdt_wait_cancel();
 }
 
 void __wake_up(struct wait_queue_head *wq_head, unsigned int mode, int nr, void *key);

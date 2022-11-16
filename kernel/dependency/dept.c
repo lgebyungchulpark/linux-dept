@@ -2311,18 +2311,13 @@ static inline struct dept_map *staged_map(struct dept_task *dt)
 }
 
 void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
-	       const char *w_fn, int ne, bool sleep, bool timeout)
+	       const char *w_fn, int ne, bool sleep)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
 	if (unlikely(!dept_working()))
 		return;
-
-#if !defined(CONFIG_DEPT_AGGRESSIVE_TIMEOUT_WAIT)
-	if (timeout)
-		return;
-#endif
 
 	if (dt->recursive)
 		return;
@@ -2344,25 +2339,20 @@ void dept_wait(struct dept_map *m, unsigned long w_f, unsigned long ip,
 	if (sleep)
 		unstage_map(dt);
 
-	__dept_wait(m, w_f, ip, w_fn, ne, sleep, timeout);
+	__dept_wait(m, w_f, ip, w_fn, ne, sleep, false);
 
 	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_wait);
 
 void dept_stage_wait(struct dept_map *m, unsigned long w_f,
-		     const char *w_fn, int ne, bool timeout)
+		     const char *w_fn, int ne)
 {
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 
 	if (unlikely(!dept_working()))
 		return;
-
-#if !defined(CONFIG_DEPT_AGGRESSIVE_TIMEOUT_WAIT)
-	if (timeout)
-		return;
-#endif
 
 	if (m->nocheck)
 		return;
@@ -2377,7 +2367,7 @@ void dept_stage_wait(struct dept_map *m, unsigned long w_f,
 	dt->stage_w_f = w_f;
 	dt->stage_w_fn = w_fn;
 	dt->stage_ne = ne;
-	dt->stage_timeout = timeout;
+	dt->stage_timeout = false;
 
 	/*
 	 * Disable the map just in case real sleep won't happen. This
@@ -2412,6 +2402,26 @@ void dept_clean_stage(void)
 	dept_exit_recursive(flags);
 }
 EXPORT_SYMBOL_GPL(dept_clean_stage);
+
+void dept_stage_mark_timeout(void)
+{
+	struct dept_task *dt = dept_task();
+	unsigned long flags;
+
+	if (unlikely(!dept_working()))
+		return;
+
+	/*
+	 * Allow recursive entrance.
+	 */
+	flags = dept_enter_recursive();
+
+	if (staged_map(dt))
+		dt->stage_timeout = true;
+
+	dept_exit_recursive(flags);
+}
+EXPORT_SYMBOL_GPL(dept_stage_mark_timeout);
 
 /*
  * Always called from __schedule().
@@ -2464,6 +2474,11 @@ void dept_ask_event_wait_commit(unsigned long ip)
 	w_fn = dt->stage_w_fn;
 	ne = dt->stage_ne;
 	timeout = dt->stage_timeout;
+
+#if !defined(CONFIG_DEPT_AGGRESSIVE_TIMEOUT_WAIT)
+	if (timeout)
+		goto exit;
+#endif
 
 	/*
 	 * Avoid zero wgen.
@@ -2704,7 +2719,7 @@ EXPORT_SYMBOL_GPL(dept_split_map_common_init);
 void dept_wait_split_map(struct dept_map_each *me,
 			 struct dept_map_common *mc,
 			 unsigned long ip, const char *w_fn, int ne,
-			 bool sleep, bool timeout)
+			 bool sleep)
 {
 	struct dept_task *dt = dept_task();
 	struct dept_class *c;
@@ -2713,11 +2728,6 @@ void dept_wait_split_map(struct dept_map_each *me,
 
 	if (unlikely(!dept_working()))
 		return;
-
-#if !defined(CONFIG_DEPT_AGGRESSIVE_TIMEOUT_WAIT)
-	if (timeout)
-		return;
-#endif
 
 	if (dt->recursive)
 		return;
@@ -2743,7 +2753,7 @@ void dept_wait_split_map(struct dept_map_each *me,
 	k = mc->keys ?: &mc->keys_local;
 	c = check_new_class(&mc->keys_local, k, 0, 0UL, mc->name);
 	if (c)
-		add_wait(c, ip, w_fn, ne, sleep, timeout);
+		add_wait(c, ip, w_fn, ne, sleep, false);
 
 	dept_exit(flags);
 }

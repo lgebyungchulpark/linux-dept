@@ -45,6 +45,7 @@
 #include <linux/compat.h>
 #include <linux/random.h>
 #include <linux/sysctl.h>
+#include <linux/dept.h>
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
@@ -1897,6 +1898,9 @@ signed long __sched schedule_timeout(signed long timeout)
 {
 	struct process_timer timer;
 	unsigned long expire;
+
+	if (timeout != MAX_SCHEDULE_TIMEOUT)
+		dept_stage_mark_timeout();
 
 	switch (timeout)
 	{

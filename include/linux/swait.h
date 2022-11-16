@@ -79,6 +79,13 @@ extern void __init_swait_queue_head(struct swait_queue_head *q, const char *name
 		__init_swait_queue_head((q), #q, &__key);	\
 	} while (0)
 
+#define init_swait_queue_head_nocheck(q)			\
+	do {							\
+		static struct lock_class_key __key;		\
+		sdt_map_init_nocheck(&(q)->dmap);		\
+		__init_swait_queue_head((q), #q, &__key);	\
+	} while (0)
+
 #ifdef CONFIG_LOCKDEP
 # define __SWAIT_QUEUE_HEAD_INIT_ONSTACK(name)			\
 	({ init_swait_queue_head(&name); name; })
@@ -168,9 +175,6 @@ extern void finish_swait(struct swait_queue_head *q, struct swait_queue *wait);
 	INIT_LIST_HEAD(&__wait.task_list);				\
 	for (;;) {							\
 		long __int = prepare_to_swait_event(&wq, &__wait, state);\
-									\
-		if (!__int && (state) & TASK_NORMAL && (ret))		\
-			sdt_wait_prepare_timeout(&(wq).dmap);		\
 									\
 		if (condition)						\
 			break;						\

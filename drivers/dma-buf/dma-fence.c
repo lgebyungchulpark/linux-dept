@@ -791,8 +791,9 @@ dma_fence_default_wait(struct dma_fence *fence, bool intr, signed long timeout)
 			__set_current_state(TASK_UNINTERRUPTIBLE);
 		spin_unlock_irqrestore(fence->lock, flags);
 
-		sdt_wait(&fence->dmap);
+		sdt_wait_ready(&fence->dmap);
 		ret = schedule_timeout(ret);
+		sdt_wait_done();
 
 		spin_lock_irqsave(fence->lock, flags);
 		if (ret > 0 && intr && signal_pending(current))

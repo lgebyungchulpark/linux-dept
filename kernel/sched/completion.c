@@ -29,7 +29,6 @@ void complete(struct completion *x)
 {
 	unsigned long flags;
 
-	dept_wfc_complete(&x->dmap, _RET_IP_);
 	raw_spin_lock_irqsave(&x->wait.lock, flags);
 
 	if (x->done != UINT_MAX)
@@ -59,7 +58,6 @@ void complete_all(struct completion *x)
 {
 	unsigned long flags;
 
-	dept_wfc_complete(&x->dmap, _RET_IP_);
 	lockdep_assert_RT_in_threaded_ctx();
 
 	raw_spin_lock_irqsave(&x->wait.lock, flags);
@@ -114,34 +112,16 @@ __wait_for_common(struct completion *x,
 }
 
 static long __sched
-_wait_for_common(struct completion *x, long timeout, int state)
+wait_for_common(struct completion *x, long timeout, int state)
 {
 	return __wait_for_common(x, schedule_timeout, timeout, state);
 }
 
 static long __sched
-_wait_for_common_io(struct completion *x, long timeout, int state)
+wait_for_common_io(struct completion *x, long timeout, int state)
 {
 	return __wait_for_common(x, io_schedule_timeout, timeout, state);
 }
-
-#define wait_for_common(x, t, s)					\
-({									\
-	if ((t) == MAX_SCHEDULE_TIMEOUT)				\
-		dept_wfc_wait(&(x)->dmap, _RET_IP_);			\
-	else								\
-		dept_wfc_wait_timeout(&(x)->dmap, _RET_IP_);		\
-	_wait_for_common(x, t, s);					\
-})
-
-#define wait_for_common_io(x, t, s)					\
-({									\
-	if ((t) == MAX_SCHEDULE_TIMEOUT)				\
-		dept_wfc_wait(&(x)->dmap, _RET_IP_);			\
-	else								\
-		dept_wfc_wait_timeout(&(x)->dmap, _RET_IP_);		\
-	_wait_for_common_io(x, t, s);					\
-})
 
 /**
  * wait_for_completion: - waits for completion of a task
