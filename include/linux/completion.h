@@ -10,6 +10,7 @@
  */
 
 #include <linux/swait.h>
+#include <linux/dept_sdt.h>
 
 /*
  * struct completion - structure used to maintain state for a "completion"
@@ -99,19 +100,89 @@ static inline void reinit_completion(struct completion *x)
 	x->done = 0;
 }
 
-extern void wait_for_completion(struct completion *);
-extern void wait_for_completion_io(struct completion *);
-extern int wait_for_completion_interruptible(struct completion *x);
-extern int wait_for_completion_killable(struct completion *x);
-extern int wait_for_completion_state(struct completion *x, unsigned int state);
-extern unsigned long wait_for_completion_timeout(struct completion *x,
+extern void raw_wait_for_completion(struct completion *);
+extern void raw_wait_for_completion_io(struct completion *);
+extern int raw_wait_for_completion_interruptible(struct completion *x);
+extern int raw_wait_for_completion_killable(struct completion *x);
+extern int raw_wait_for_completion_state(struct completion *x, unsigned int state);
+extern unsigned long raw_wait_for_completion_timeout(struct completion *x,
 						   unsigned long timeout);
-extern unsigned long wait_for_completion_io_timeout(struct completion *x,
+extern unsigned long raw_wait_for_completion_io_timeout(struct completion *x,
 						    unsigned long timeout);
-extern long wait_for_completion_interruptible_timeout(
+extern long raw_wait_for_completion_interruptible_timeout(
 	struct completion *x, unsigned long timeout);
-extern long wait_for_completion_killable_timeout(
+extern long raw_wait_for_completion_killable_timeout(
 	struct completion *x, unsigned long timeout);
+
+#define wait_for_completion(x)					\
+({								\
+	sdt_might_sleep_strong(NULL);				\
+	raw_wait_for_completion(x);				\
+	sdt_might_sleep_finish();				\
+})
+#define wait_for_completion_io(x)				\
+({								\
+	sdt_might_sleep_strong(NULL);				\
+	raw_wait_for_completion_io(x);				\
+	sdt_might_sleep_finish();				\
+})
+#define wait_for_completion_interruptible(x)			\
+({								\
+	int __ret;						\
+	sdt_might_sleep_strong(NULL);				\
+	__ret = raw_wait_for_completion_interruptible(x);	\
+	sdt_might_sleep_finish();				\
+	__ret;							\
+})
+#define wait_for_completion_killable(x)				\
+({								\
+	int __ret;						\
+	sdt_might_sleep_strong(NULL);				\
+	__ret = raw_wait_for_completion_killable(x);		\
+	sdt_might_sleep_finish();				\
+	__ret;							\
+})
+#define wait_for_completion_state(x, s)				\
+({								\
+	int __ret;						\
+	sdt_might_sleep_strong(NULL);				\
+	__ret = raw_wait_for_completion_state(x, s);		\
+	sdt_might_sleep_finish();				\
+	__ret;							\
+})
+#define wait_for_completion_timeout(x, t)			\
+({								\
+	unsigned long __ret;					\
+	sdt_might_sleep_strong(NULL);				\
+	__ret = raw_wait_for_completion_timeout(x, t);		\
+	sdt_might_sleep_finish();				\
+	__ret;							\
+})
+#define wait_for_completion_io_timeout(x, t)			\
+({								\
+	unsigned long __ret;					\
+	sdt_might_sleep_strong(NULL);				\
+	__ret = raw_wait_for_completion_io_timeout(x, t);	\
+	sdt_might_sleep_finish();				\
+	__ret;							\
+})
+#define wait_for_completion_interruptible_timeout(x, t)		\
+({								\
+	long __ret;						\
+	sdt_might_sleep_strong(NULL);				\
+	__ret = raw_wait_for_completion_interruptible_timeout(x, t);\
+	sdt_might_sleep_finish();				\
+	__ret;							\
+})
+#define wait_for_completion_killable_timeout(x, t)		\
+({								\
+	long __ret;						\
+	sdt_might_sleep_strong(NULL);				\
+	__ret = raw_wait_for_completion_killable_timeout(x, t);	\
+	sdt_might_sleep_finish();				\
+	__ret;							\
+})
+
 extern bool try_wait_for_completion(struct completion *x);
 extern bool completion_done(struct completion *x);
 
