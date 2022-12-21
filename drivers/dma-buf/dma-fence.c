@@ -783,7 +783,10 @@ dma_fence_default_wait(struct dma_fence *fence, bool intr, signed long timeout)
 	cb.task = current;
 	list_add(&cb.base.node, &fence->cb_list);
 
-	sdt_might_sleep_strong(NULL);
+	if (timeout == MAX_SCHEDULE_TIMEOUT)
+		sdt_might_sleep_strong(NULL);
+	else
+		sdt_might_sleep_strong_timeout(NULL);
 	while (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags) && ret > 0) {
 		if (intr)
 			__set_current_state(TASK_INTERRUPTIBLE);
@@ -887,7 +890,10 @@ dma_fence_wait_any_timeout(struct dma_fence **fences, uint32_t count,
 		}
 	}
 
-	sdt_might_sleep_strong(NULL);
+	if (timeout == MAX_SCHEDULE_TIMEOUT)
+		sdt_might_sleep_strong(NULL);
+	else
+		sdt_might_sleep_strong_timeout(NULL);
 	while (ret > 0) {
 		if (intr)
 			set_current_state(TASK_INTERRUPTIBLE);
