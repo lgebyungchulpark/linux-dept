@@ -11,6 +11,7 @@
 
 #include <linux/swait.h>
 #include <linux/dept_sdt.h>
+#include <linux/sched.h>
 
 /*
  * struct completion - structure used to maintain state for a "completion"
@@ -153,7 +154,10 @@ extern long raw_wait_for_completion_killable_timeout(
 #define wait_for_completion_timeout(x, t)			\
 ({								\
 	unsigned long __ret;					\
-	sdt_might_sleep_strong(NULL);				\
+	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
+		sdt_might_sleep_strong(NULL);			\
+	else							\
+		sdt_might_sleep_strong_timeout(NULL);		\
 	__ret = raw_wait_for_completion_timeout(x, t);		\
 	sdt_might_sleep_finish();				\
 	__ret;							\
@@ -161,7 +165,10 @@ extern long raw_wait_for_completion_killable_timeout(
 #define wait_for_completion_io_timeout(x, t)			\
 ({								\
 	unsigned long __ret;					\
-	sdt_might_sleep_strong(NULL);				\
+	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
+		sdt_might_sleep_strong(NULL);			\
+	else							\
+		sdt_might_sleep_strong_timeout(NULL);		\
 	__ret = raw_wait_for_completion_io_timeout(x, t);	\
 	sdt_might_sleep_finish();				\
 	__ret;							\
@@ -169,7 +176,10 @@ extern long raw_wait_for_completion_killable_timeout(
 #define wait_for_completion_interruptible_timeout(x, t)		\
 ({								\
 	long __ret;						\
-	sdt_might_sleep_strong(NULL);				\
+	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
+		sdt_might_sleep_strong(NULL);			\
+	else							\
+		sdt_might_sleep_strong_timeout(NULL);		\
 	__ret = raw_wait_for_completion_interruptible_timeout(x, t);\
 	sdt_might_sleep_finish();				\
 	__ret;							\
@@ -177,7 +187,10 @@ extern long raw_wait_for_completion_killable_timeout(
 #define wait_for_completion_killable_timeout(x, t)		\
 ({								\
 	long __ret;						\
-	sdt_might_sleep_strong(NULL);				\
+	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
+		sdt_might_sleep_strong(NULL);			\
+	else							\
+		sdt_might_sleep_strong_timeout(NULL);		\
 	__ret = raw_wait_for_completion_killable_timeout(x, t);	\
 	sdt_might_sleep_finish();				\
 	__ret;							\
