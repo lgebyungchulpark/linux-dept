@@ -247,7 +247,10 @@ extern wait_queue_head_t *__var_waitqueue(void *p);
 	struct wait_bit_queue_entry __wbq_entry;			\
 	long __ret = ret; /* explicit shadow */				\
 									\
-	sdt_might_sleep_weak(NULL);					\
+	if (!__ret || __ret == MAX_SCHEDULE_TIMEOUT)			\
+		sdt_might_sleep_weak(NULL);				\
+	else								\
+		sdt_might_sleep_weak_timeout(NULL);			\
 	init_wait_var_entry(&__wbq_entry, var,				\
 			    exclusive ? WQ_FLAG_EXCLUSIVE : 0);		\
 	for (;;) {							\
