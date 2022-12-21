@@ -162,7 +162,10 @@ extern void finish_swait(struct swait_queue_head *q, struct swait_queue *wait);
 	struct swait_queue __wait;					\
 	long __ret = ret;						\
 									\
-	sdt_might_sleep_weak(NULL);					\
+	if (!__ret || __ret == MAX_SCHEDULE_TIMEOUT)			\
+		sdt_might_sleep_weak(NULL);				\
+	else								\
+		sdt_might_sleep_weak_timeout(NULL);			\
 	INIT_LIST_HEAD(&__wait.task_list);				\
 	for (;;) {							\
 		long __int = prepare_to_swait_event(&wq, &__wait, state);\
