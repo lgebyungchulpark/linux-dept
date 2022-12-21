@@ -304,7 +304,10 @@ extern void init_wait_entry(struct wait_queue_entry *wq_entry, int flags);
 	struct wait_queue_entry __wq_entry;					\
 	long __ret = ret;	/* explicit shadow */				\
 										\
-	sdt_might_sleep_weak(NULL);						\
+	if (!__ret || __ret == MAX_SCHEDULE_TIMEOUT)				\
+		sdt_might_sleep_weak(NULL);					\
+	else									\
+		sdt_might_sleep_weak_timeout(NULL);				\
 	init_wait_entry(&__wq_entry, exclusive ? WQ_FLAG_EXCLUSIVE : 0);	\
 	for (;;) {								\
 		long __int = prepare_to_wait_event(&wq_head, &__wq_entry, state);\
