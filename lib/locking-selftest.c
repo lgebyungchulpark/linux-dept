@@ -1398,6 +1398,8 @@ static void reset_locks(void)
 	local_irq_disable();
 	lockdep_free_key_range(&ww_lockdep.acquire_key, 1);
 	lockdep_free_key_range(&ww_lockdep.mutex_key, 1);
+	dept_free_range(&ww_lockdep.acquire_key, 1);
+	dept_free_range(&ww_lockdep.mutex_key, 1);
 
 	I1(A); I1(B); I1(C); I1(D);
 	I1(X1); I1(X2); I1(Y1); I1(Y2); I1(Z1); I1(Z2);
