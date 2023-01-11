@@ -13,6 +13,7 @@
 #define _LINUX_TRACE_IRQFLAGS_H
 
 #include <linux/typecheck.h>
+#include <linux/kernel.h>
 #include <linux/dept.h>
 #include <asm/irqflags.h>
 #include <asm/percpu.h>

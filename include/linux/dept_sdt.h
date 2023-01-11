@@ -10,6 +10,7 @@
 #ifndef __LINUX_DEPT_SDT_H
 #define __LINUX_DEPT_SDT_H
 
+#include <linux/kernel.h>
 #include <linux/dept.h>
 
 #ifdef CONFIG_DEPT
@@ -42,42 +43,46 @@
 /*
  * Use the code location as the class key if an explicit map is not used.
  */
-#define sdt_might_sleep_strong(m)					\
+#define sdt_might_sleep_strong_ip(m, i)					\
 	do {								\
 		struct dept_map *__m = m;				\
 		static struct dept_key __key;				\
-		dept_stage_wait(__m, __m ? NULL : &__key, _THIS_IP_, __func__, true, false);\
+		dept_stage_wait(__m, __m ? NULL : &__key, i, __func__, true, false);\
 	} while (0)
+#define sdt_might_sleep_strong(m) sdt_might_sleep_strong_ip(m, _THIS_IP_)
 
 /*
  * Use the code location as the class key if an explicit map is not used.
  */
-#define sdt_might_sleep_strong_timeout(m)				\
+#define sdt_might_sleep_strong_timeout_ip(m, i)				\
 	do {								\
 		struct dept_map *__m = m;				\
 		static struct dept_key __key;				\
-		dept_stage_wait(__m, __m ? NULL : &__key, _THIS_IP_, __func__, true, true);\
+		dept_stage_wait(__m, __m ? NULL : &__key, i, __func__, true, true);\
 	} while (0)
+#define sdt_might_sleep_strong_timeout(m) sdt_might_sleep_strong_timeout_ip(m, _THIS_IP_)
 
 /*
  * Use the code location as the class key if an explicit map is not used.
  */
-#define sdt_might_sleep_weak(m)						\
+#define sdt_might_sleep_weak_ip(m, i)					\
 	do {								\
 		struct dept_map *__m = m;				\
 		static struct dept_key __key;				\
-		dept_stage_wait(__m, __m ? NULL : &__key, _THIS_IP_, __func__, false, false);\
+		dept_stage_wait(__m, __m ? NULL : &__key, i, __func__, false, false);\
 	} while (0)
+#define sdt_might_sleep_weak(m) sdt_might_sleep_weak_ip(m, _THIS_IP_)
 
 /*
  * Use the code location as the class key if an explicit map is not used.
  */
-#define sdt_might_sleep_weak_timeout(m)					\
+#define sdt_might_sleep_weak_timeout_ip(m, i)				\
 	do {								\
 		struct dept_map *__m = m;				\
 		static struct dept_key __key;				\
-		dept_stage_wait(__m, __m ? NULL : &__key, _THIS_IP_, __func__, false, true);\
+		dept_stage_wait(__m, __m ? NULL : &__key, i, __func__, false, true);\
 	} while (0)
+#define sdt_might_sleep_weak_timeout(m) sdt_might_sleep_weak_timeout_ip(m, _THIS_IP_)
 
 #define sdt_might_sleep_finish()	dept_clean_stage()
 

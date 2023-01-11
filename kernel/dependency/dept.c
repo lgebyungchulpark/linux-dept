@@ -636,7 +636,7 @@ static unsigned long key_class(struct dept_class *c)
 }
 
 #define HASH(id, bits)							\
-static struct hlist_head table_##id[1UL << bits];			\
+static struct hlist_head table_##id[1 << (bits)];			\
 									\
 static inline struct hlist_head *head_##id(struct dept_##id *a)		\
 {									\
@@ -3093,10 +3093,13 @@ void __init dept_init(void)
 	migrate_per_cpu_pool();
 	local_irq_enable();
 
+#define HASH(id, bits) BUILD_BUG_ON(1 << (bits) <= 0);
+	#include "dept_hash.h"
+#undef  HASH
 #define OBJECT(id, nr) mem_total += sizeof(struct dept_##id) * nr;
 	#include "dept_object.h"
 #undef  OBJECT
-#define HASH(id, bits) mem_total += sizeof(struct hlist_head) * (1UL << bits);
+#define HASH(id, bits) mem_total += sizeof(struct hlist_head) * (1 << (bits));
 	#include "dept_hash.h"
 #undef  HASH
 
@@ -3112,7 +3115,7 @@ void __init dept_init(void)
 #undef  OBJECT
 #define HASH(id, bits)							\
 	pr_info("... hash list head used by %s: %zu KB\n",		\
-	       #id, B2KB(sizeof(struct hlist_head) * (1UL << bits)));
+	       #id, B2KB(sizeof(struct hlist_head) * (1 << (bits))));
 	#include "dept_hash.h"
 #undef  HASH
 	pr_info("... total memory initially used by objects and hashs: %zu KB\n", B2KB(mem_total));

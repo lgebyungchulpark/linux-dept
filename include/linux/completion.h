@@ -115,86 +115,108 @@ extern long raw_wait_for_completion_interruptible_timeout(
 extern long raw_wait_for_completion_killable_timeout(
 	struct completion *x, unsigned long timeout);
 
-#define wait_for_completion(x)					\
-({								\
-	sdt_might_sleep_strong(NULL);				\
-	raw_wait_for_completion(x);				\
-	sdt_might_sleep_finish();				\
-})
-#define wait_for_completion_io(x)				\
-({								\
-	sdt_might_sleep_strong(NULL);				\
-	raw_wait_for_completion_io(x);				\
-	sdt_might_sleep_finish();				\
-})
-#define wait_for_completion_interruptible(x)			\
-({								\
-	int __ret;						\
-	sdt_might_sleep_strong(NULL);				\
-	__ret = raw_wait_for_completion_interruptible(x);	\
-	sdt_might_sleep_finish();				\
-	__ret;							\
-})
-#define wait_for_completion_killable(x)				\
-({								\
-	int __ret;						\
-	sdt_might_sleep_strong(NULL);				\
-	__ret = raw_wait_for_completion_killable(x);		\
-	sdt_might_sleep_finish();				\
-	__ret;							\
-})
-#define wait_for_completion_state(x, s)				\
-({								\
-	int __ret;						\
-	sdt_might_sleep_strong(NULL);				\
-	__ret = raw_wait_for_completion_state(x, s);		\
-	sdt_might_sleep_finish();				\
-	__ret;							\
-})
-#define wait_for_completion_timeout(x, t)			\
-({								\
-	unsigned long __ret;					\
-	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
-		sdt_might_sleep_strong(NULL);			\
-	else							\
-		sdt_might_sleep_strong_timeout(NULL);		\
-	__ret = raw_wait_for_completion_timeout(x, t);		\
-	sdt_might_sleep_finish();				\
-	__ret;							\
-})
-#define wait_for_completion_io_timeout(x, t)			\
-({								\
-	unsigned long __ret;					\
-	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
-		sdt_might_sleep_strong(NULL);			\
-	else							\
-		sdt_might_sleep_strong_timeout(NULL);		\
-	__ret = raw_wait_for_completion_io_timeout(x, t);	\
-	sdt_might_sleep_finish();				\
-	__ret;							\
-})
-#define wait_for_completion_interruptible_timeout(x, t)		\
-({								\
-	long __ret;						\
-	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
-		sdt_might_sleep_strong(NULL);			\
-	else							\
-		sdt_might_sleep_strong_timeout(NULL);		\
-	__ret = raw_wait_for_completion_interruptible_timeout(x, t);\
-	sdt_might_sleep_finish();				\
-	__ret;							\
-})
-#define wait_for_completion_killable_timeout(x, t)		\
-({								\
-	long __ret;						\
-	if ((t) == MAX_SCHEDULE_TIMEOUT)			\
-		sdt_might_sleep_strong(NULL);			\
-	else							\
-		sdt_might_sleep_strong_timeout(NULL);		\
-	__ret = raw_wait_for_completion_killable_timeout(x, t);	\
-	sdt_might_sleep_finish();				\
-	__ret;							\
-})
+static inline void wait_for_completion(struct completion *x)
+{
+	sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	raw_wait_for_completion(x);
+	sdt_might_sleep_finish();
+}
+
+static inline void wait_for_completion_io(struct completion *x)
+{
+	sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	raw_wait_for_completion_io(x);
+	sdt_might_sleep_finish();
+}
+
+static inline int wait_for_completion_interruptible(struct completion *x)
+{
+	int ret;
+
+	sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	ret = raw_wait_for_completion_interruptible(x);
+	sdt_might_sleep_finish();
+
+	return ret;
+}
+
+static inline int wait_for_completion_killable(struct completion *x)
+{
+	int ret;
+
+	sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	ret = raw_wait_for_completion_killable(x);
+	sdt_might_sleep_finish();
+
+	return ret;
+}
+
+static inline int wait_for_completion_state(struct completion *x, unsigned int state)
+{
+	int ret;
+
+	sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	ret = raw_wait_for_completion_state(x, state);
+	sdt_might_sleep_finish();
+
+	return ret;
+}
+
+static inline unsigned long wait_for_completion_timeout(struct completion *x, unsigned long timeout)
+{
+	unsigned long ret;
+
+	if (timeout == MAX_SCHEDULE_TIMEOUT)
+		sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	else
+		sdt_might_sleep_strong_timeout_ip(NULL, _RET_IP_);
+	ret = raw_wait_for_completion_timeout(x, timeout);
+	sdt_might_sleep_finish();
+
+	return ret;
+}
+
+static inline unsigned long wait_for_completion_io_timeout(struct completion *x, unsigned long timeout)
+{
+	unsigned long ret;
+
+	if (timeout == MAX_SCHEDULE_TIMEOUT)
+		sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	else
+		sdt_might_sleep_strong_timeout_ip(NULL, _RET_IP_);
+	ret = raw_wait_for_completion_io_timeout(x, timeout);
+	sdt_might_sleep_finish();
+
+	return ret;
+}
+
+static inline long wait_for_completion_interruptible_timeout(struct completion *x, unsigned long timeout)
+{
+	long ret;
+
+	if (timeout == MAX_SCHEDULE_TIMEOUT)
+		sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	else
+		sdt_might_sleep_strong_timeout_ip(NULL, _RET_IP_);
+	ret = raw_wait_for_completion_interruptible_timeout(x, timeout);
+	sdt_might_sleep_finish();
+
+	return ret;
+}
+
+static inline long wait_for_completion_killable_timeout(struct completion *x, unsigned long timeout)
+{
+	long ret;
+
+	if (timeout == MAX_SCHEDULE_TIMEOUT)
+		sdt_might_sleep_strong_ip(NULL, _RET_IP_);
+	else
+		sdt_might_sleep_strong_timeout_ip(NULL, _RET_IP_);
+	ret = raw_wait_for_completion_killable_timeout(x, timeout);
+	sdt_might_sleep_finish();
+
+	return ret;
+}
 
 extern bool try_wait_for_completion(struct completion *x);
 extern bool completion_done(struct completion *x);
