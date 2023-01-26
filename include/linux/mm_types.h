@@ -19,6 +19,7 @@
 #include <linux/workqueue.h>
 #include <linux/seqlock.h>
 #include <linux/percpu_counter.h>
+#include <linux/dept.h>
 
 #include <asm/mmu.h>
 
@@ -252,6 +253,8 @@ struct page {
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 	int _last_cpupid;
 #endif
+	struct dept_ext_wgen PG_locked_wgen;
+	struct dept_ext_wgen PG_writeback_wgen;
 } _struct_page_alignment;
 
 /*
