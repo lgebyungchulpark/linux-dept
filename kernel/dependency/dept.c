@@ -129,6 +129,7 @@ static int dept_per_cpu_ready;
 #define DEPT_INFO(s...)		pr_warn("DEPT_INFO: " s)
 
 static arch_spinlock_t dept_spin = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
+static arch_spinlock_t dept_req_spin = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
 static arch_spinlock_t dept_pool_spin = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
 
 /*
@@ -1669,7 +1670,8 @@ static void add_wait(struct dept_class *c, unsigned long ip,
 
 static bool add_ecxt(struct dept_map *m, struct dept_class *c,
 		     unsigned long ip, const char *c_fn,
-		     const char *e_fn, int sub_l)
+		     const char *e_fn, int sub_l,
+		     struct dept_stack *req_stack)
 {
 	struct dept_task *dt = dept_task();
 	struct dept_ecxt_held *eh;
@@ -1700,9 +1702,15 @@ static bool add_ecxt(struct dept_map *m, struct dept_class *c,
 
 	e->class = get_class(c);
 	e->ecxt_ip = ip;
-	e->ecxt_stack = ip && rich_stack ? get_current_stack() : NULL;
 	e->event_fn = e_fn;
 	e->ecxt_fn = c_fn;
+
+	if (req_stack)
+		e->ecxt_stack = get_stack(req_stack);
+	else if (ip && rich_stack)
+		e->ecxt_stack = get_current_stack();
+	else
+		e->ecxt_stack = NULL;
 
 	eh = dt->ecxt_held + (dt->ecxt_held_pos++);
 	eh->ecxt = get_ecxt(e);
@@ -2147,6 +2155,7 @@ void dept_map_init(struct dept_map *m, struct dept_key *k, int sub_u,
 	m->sub_u = sub_u;
 	m->name = n;
 	m->wgen = 0U;
+	m->req_stack = NULL;
 	m->nocheck = !valid_key(k);
 
 	dept_exit_recursive(flags);
@@ -2181,6 +2190,7 @@ void dept_map_reinit(struct dept_map *m, struct dept_key *k, int sub_u,
 		m->name = n;
 
 	m->wgen = 0U;
+	m->req_stack = NULL;
 
 	dept_exit_recursive(flags);
 }
@@ -2189,6 +2199,7 @@ EXPORT_SYMBOL_GPL(dept_map_reinit);
 void dept_ext_wgen_init(struct dept_ext_wgen *ewg)
 {
 	ewg->wgen = 0U;
+	ewg->req_stack = NULL;
 }
 
 void dept_map_copy(struct dept_map *to, struct dept_map *from)
@@ -2376,7 +2387,8 @@ static void __dept_wait(struct dept_map *m, unsigned long w_f,
  */
 static void __dept_event(struct dept_map *m, unsigned long e_f,
 			 unsigned long ip, const char *e_fn,
-			 bool sched_map, unsigned int wg)
+			 bool sched_map, unsigned int wg,
+			 struct dept_stack *req_stack)
 {
 	struct dept_class *c;
 	struct dept_key *k;
@@ -2397,7 +2409,7 @@ static void __dept_event(struct dept_map *m, unsigned long e_f,
 	k = m->keys ?: &m->map_key;
 	c = check_new_class(&m->map_key, k, sub_id(m, e), m->name, sched_map);
 
-	if (c && add_ecxt(m, c, 0UL, NULL, e_fn, 0)) {
+	if (c && add_ecxt(m, c, 0UL, "(event requestor)", e_fn, 0, req_stack)) {
 		do_event(m, c, wg, ip);
 		pop_ecxt(m, c);
 	}
@@ -2506,6 +2518,8 @@ EXPORT_SYMBOL_GPL(dept_stage_wait);
 
 static void __dept_clean_stage(struct dept_task *dt)
 {
+	if (dt->stage_m.req_stack)
+		put_stack(dt->stage_m.req_stack);
 	memset(&dt->stage_m, 0x0, sizeof(struct dept_map));
 	dt->stage_sched_map = false;
 	dt->stage_w_fn = NULL;
@@ -2571,6 +2585,7 @@ void dept_request_event_wait_commit(void)
 	 */
 	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
 	WRITE_ONCE(dt->stage_m.wgen, wg);
+	dt->stage_m.req_stack = get_current_stack();
 
 	__dept_wait(&dt->stage_m, 1UL, ip, w_fn, 0, true, sched_map, timeout);
 exit:
@@ -2602,6 +2617,8 @@ void dept_stage_event(struct task_struct *requestor, unsigned long ip)
 	 */
 	m = dt_req->stage_m;
 	sched_map = dt_req->stage_sched_map;
+	if (m.req_stack)
+		get_stack(m.req_stack);
 	__dept_clean_stage(dt_req);
 
 	/*
@@ -2611,8 +2628,12 @@ void dept_stage_event(struct task_struct *requestor, unsigned long ip)
 	if (!m.keys)
 		goto exit;
 
-	__dept_event(&m, 1UL, ip, "try_to_wake_up", sched_map, m.wgen);
+	__dept_event(&m, 1UL, ip, "try_to_wake_up", sched_map, m.wgen,
+		     m.req_stack);
 exit:
+	if (m.req_stack)
+		put_stack(m.req_stack);
+
 	dept_exit(flags);
 }
 
@@ -2692,7 +2713,7 @@ void dept_map_ecxt_modify(struct dept_map *m, unsigned long e_f,
 	k = m->keys ?: &m->map_key;
 	c = check_new_class(&m->map_key, k, sub_id(m, new_e), m->name, false);
 
-	if (c && add_ecxt(m, c, new_ip, new_c_fn, new_e_fn, new_sub_l))
+	if (c && add_ecxt(m, c, new_ip, new_c_fn, new_e_fn, new_sub_l, NULL))
 		goto exit;
 
 	/*
@@ -2744,7 +2765,7 @@ void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip,
 	k = m->keys ?: &m->map_key;
 	c = check_new_class(&m->map_key, k, sub_id(m, e), m->name, false);
 
-	if (c && add_ecxt(m, c, ip, c_fn, e_fn, sub_l))
+	if (c && add_ecxt(m, c, ip, c_fn, e_fn, sub_l, NULL))
 		goto exit;
 missing_ecxt:
 	dt->missing_ecxt++;
@@ -2792,9 +2813,11 @@ EXPORT_SYMBOL_GPL(dept_ecxt_holding);
 
 void dept_request_event(struct dept_map *m, struct dept_ext_wgen *ewg)
 {
+	struct dept_task *dt = dept_task();
 	unsigned long flags;
 	unsigned int wg;
 	unsigned int *wg_p;
+	struct dept_stack **req_stack_p;
 
 	if (unlikely(!dept_working()))
 		return;
@@ -2802,12 +2825,18 @@ void dept_request_event(struct dept_map *m, struct dept_ext_wgen *ewg)
 	if (m->nocheck)
 		return;
 
-	/*
-	 * Allow recursive entrance.
-	 */
-	flags = dept_enter_recursive();
+	if (dt->recursive)
+		return;
 
-	wg_p = ewg ? &ewg->wgen : &m->wgen;
+	flags = dept_enter();
+
+	if (ewg) {
+		wg_p = &ewg->wgen;
+		req_stack_p = &ewg->req_stack;
+	} else {
+		wg_p = &m->wgen;
+		req_stack_p = &m->req_stack;
+	}
 
 	/*
 	 * Avoid zero wgen.
@@ -2815,7 +2844,13 @@ void dept_request_event(struct dept_map *m, struct dept_ext_wgen *ewg)
 	wg = atomic_inc_return(&wgen) ?: atomic_inc_return(&wgen);
 	WRITE_ONCE(*wg_p, wg);
 
-	dept_exit_recursive(flags);
+	arch_spin_lock(&dept_req_spin);
+	if (*req_stack_p)
+		put_stack(*req_stack_p);
+	*req_stack_p = get_current_stack();
+	arch_spin_unlock(&dept_req_spin);
+
+	dept_exit(flags);
 }
 EXPORT_SYMBOL_GPL(dept_request_event);
 
@@ -2826,6 +2861,8 @@ void dept_event(struct dept_map *m, unsigned long e_f,
 	struct dept_task *dt = dept_task();
 	unsigned long flags;
 	unsigned int *wg_p;
+	struct dept_stack **req_stack_p;
+	struct dept_stack *req_stack;
 
 	if (unlikely(!dept_working()))
 		return;
@@ -2833,7 +2870,18 @@ void dept_event(struct dept_map *m, unsigned long e_f,
 	if (m->nocheck)
 		return;
 
-	wg_p = ewg ? &ewg->wgen : &m->wgen;
+	if (ewg) {
+		wg_p = &ewg->wgen;
+		req_stack_p = &ewg->req_stack;
+	} else {
+		wg_p = &m->wgen;
+		req_stack_p = &m->req_stack;
+	}
+
+	arch_spin_lock(&dept_req_spin);
+	req_stack = *req_stack_p;
+	*req_stack_p = NULL;
+	arch_spin_unlock(&dept_req_spin);
 
 	if (dt->recursive) {
 		/*
@@ -2842,17 +2890,20 @@ void dept_event(struct dept_map *m, unsigned long e_f,
 		 * handling the event. Disable it until the next.
 		 */
 		WRITE_ONCE(*wg_p, 0U);
+		if (req_stack)
+			put_stack(req_stack);
 		return;
 	}
 
 	flags = dept_enter();
-
-	__dept_event(m, e_f, ip, e_fn, false, READ_ONCE(*wg_p));
+	__dept_event(m, e_f, ip, e_fn, false, READ_ONCE(*wg_p), req_stack);
 
 	/*
 	 * Keep the map diabled until the next sleep.
 	 */
 	WRITE_ONCE(*wg_p, 0U);
+	if (req_stack)
+		put_stack(req_stack);
 
 	dept_exit(flags);
 }

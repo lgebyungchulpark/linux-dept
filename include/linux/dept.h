@@ -146,6 +146,11 @@ struct dept_map {
 	unsigned int			wgen;
 
 	/*
+	 * requestor for the event context to run
+	 */
+	struct dept_stack		*req_stack;
+
+	/*
 	 * whether this map should be going to be checked or not
 	 */
 	bool				nocheck;
@@ -486,7 +491,15 @@ struct dept_task {
  * for subsystems that requires compact use of memory e.g. struct page
  */
 struct dept_ext_wgen{
+	/*
+	 * wait timestamp associated to this map
+	 */
 	unsigned int wgen;
+
+	/*
+	 * requestor for the event context to run
+	 */
+	struct dept_stack		*req_stack;
 };
 
 #define DEPT_TASK_INITIALIZER(t)				\
