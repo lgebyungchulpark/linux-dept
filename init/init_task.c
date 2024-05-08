@@ -14,6 +14,7 @@
 #include <linux/numa.h>
 #include <linux/scs.h>
 #include <linux/plist.h>
+#include <linux/dept.h>
 
 #include <linux/uaccess.h>
 
@@ -204,6 +205,7 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
 	.curr_chain_key = INITIAL_CHAIN_KEY,
 	.lockdep_recursion = 0,
 #endif
+	.dept_task = DEPT_TASK_INITIALIZER(init_task),
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	.ret_stack		= NULL,
 	.tracing_graph_pause	= ATOMIC_INIT(0),

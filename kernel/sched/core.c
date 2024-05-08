@@ -66,6 +66,7 @@
 #include <linux/vtime.h>
 #include <linux/wait_api.h>
 #include <linux/workqueue_api.h>
+#include <linux/dept.h>
 
 #ifdef CONFIG_PREEMPT_DYNAMIC
 # ifdef CONFIG_GENERIC_ENTRY
@@ -4179,6 +4180,8 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 
 	wake_flags |= WF_TTWU;
 
+	dept_stage_event(p, _RET_IP_);
+
 	if (p == current) {
 		/*
 		 * We're waking current, this means 'p->on_rq' and 'task_cpu(p)
@@ -6659,6 +6662,12 @@ static void __sched notrace __schedule(int sched_mode)
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
 
+	prev_state = READ_ONCE(prev->__state);
+	if (sched_mode != SM_PREEMPT && prev_state & TASK_NORMAL)
+		dept_request_event_wait_commit();
+
+	dept_sched_enter();
+
 	schedule_debug(prev, preempt);
 
 	if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
@@ -6767,6 +6776,7 @@ picked:
 		__balance_callbacks(rq);
 		raw_spin_rq_unlock_irq(rq);
 	}
+	dept_sched_exit();
 }
 
 void __noreturn do_task_dead(void)
