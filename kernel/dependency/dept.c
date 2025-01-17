@@ -293,6 +293,7 @@ struct dept_pool dept_pool[OBJECT_NR] = {
 static void dept_wq_work_fn(struct work_struct *work)
 {
 	int i;
+	unsigned long flags;
 
 	for (i = 0; i < OBJECT_NR; i++) {
 		struct dept_pool *p = dept_pool + i;
@@ -300,9 +301,11 @@ static void dept_wq_work_fn(struct work_struct *work)
 		void *rpool;
 		bool need;
 
+		flags = arch_local_irq_save();
 		arch_spin_lock(&dept_pool_spin);
 		need = !p->rpool;
 		arch_spin_unlock(&dept_pool_spin);
+		arch_local_irq_restore(flags);
 
 		if (!need)
 			continue;
@@ -314,6 +317,7 @@ static void dept_wq_work_fn(struct work_struct *work)
 			break;
 		}
 
+		flags = arch_local_irq_save();
 		arch_spin_lock(&dept_pool_spin);
 		if (!p->rpool) {
 			p->rpool = rpool;
@@ -321,6 +325,7 @@ static void dept_wq_work_fn(struct work_struct *work)
 			atomic_add(sz, &p->acc_sz);
 		}
 		arch_spin_unlock(&dept_pool_spin);
+		arch_local_irq_restore(flags);
 
 		if (rpool)
 			vfree(rpool);
