@@ -126,6 +126,7 @@ static int dept_per_cpu_ready;
 	})
 
 #define DEPT_INFO_ONCE(s...)	pr_warn_once("DEPT_INFO_ONCE: " s)
+
 #define DEPT_INFO(s...)		pr_warn("DEPT_INFO: " s)
 
 static arch_spinlock_t dept_spin = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
@@ -1563,6 +1564,9 @@ static void add_dep(struct dept_ecxt *e, struct dept_wait *w)
 	struct dept_dep *d;
 	int i;
 
+	if (!valid_class(fc) || !valid_class(tc))
+		return;
+
 	if (lookup_dep(fc, tc))
 		return;
 
@@ -2129,11 +2133,6 @@ void dept_map_init(struct dept_map *m, struct dept_key *k, int sub_u,
 {
 	unsigned long flags;
 
-	if (unlikely(!dept_working())) {
-		m->nocheck = true;
-		return;
-	}
-
 	if (DEPT_WARN_ON(sub_u < 0)) {
 		m->nocheck = true;
 		return;
@@ -2166,11 +2165,6 @@ void dept_map_reinit(struct dept_map *m, struct dept_key *k, int sub_u,
 		     const char *n)
 {
 	unsigned long flags;
-
-	if (unlikely(!dept_working())) {
-		m->nocheck = true;
-		return;
-	}
 
 	/*
 	 * Allow recursive entrance.
@@ -2269,10 +2263,10 @@ void dept_free_range(void *start, unsigned int sz)
 		    !within(c->name, start, sz))
 			continue;
 
+		invalidate_class(c);
+		list_del(&c->all_node);
 		hash_del_class(c);
 		disconnect_class(c);
-		list_del(&c->all_node);
-		invalidate_class(c);
 
 		/*
 		 * Actual deletion will happen on the rcu callback
@@ -2280,6 +2274,7 @@ void dept_free_range(void *start, unsigned int sz)
 		 */
 		del_class(c);
 	}
+
 	dept_unlock();
 	dept_exit(flags);
 
@@ -2308,24 +2303,20 @@ static struct dept_class *check_new_class(struct dept_key *local,
 	if (DEPT_WARN_ON(!k))
 		return NULL;
 
+	if (unlikely(!dept_lock()))
+		return NULL;
+
 	/*
 	 * XXX: Assume that users prevent the map from using if any of
 	 * the cached keys has been invalidated. If not, the cache,
 	 * local->classes should not be used because it would be racy
 	 * with class deletion.
 	 */
-	if (local && sub_id < DEPT_MAX_SUBCLASSES_CACHE)
+	if (local == k && sub_id < DEPT_MAX_SUBCLASSES_CACHE)
 		c = READ_ONCE(local->classes[sub_id]);
 
 	if (c)
-		return c;
-
-	c = lookup_class((unsigned long)k->base + sub_id);
-	if (c)
-		goto caching;
-
-	if (unlikely(!dept_lock()))
-		return NULL;
+		goto unlock;
 
 	c = lookup_class((unsigned long)k->base + sub_id);
 	if (unlikely(c))
@@ -2341,12 +2332,11 @@ static struct dept_class *check_new_class(struct dept_key *local,
 	c->key = (unsigned long)(k->base + sub_id);
 	hash_add_class(c);
 	list_add(&c->all_node, &dept_classes);
-unlock:
-	dept_unlock();
-caching:
-	if (local && sub_id < DEPT_MAX_SUBCLASSES_CACHE)
+	if (local == k && sub_id < DEPT_MAX_SUBCLASSES_CACHE)
 		WRITE_ONCE(local->classes[sub_id], c);
 
+unlock:
+	dept_unlock();
 	return c;
 }
 
@@ -2737,6 +2727,9 @@ void dept_ecxt_enter(struct dept_map *m, unsigned long e_f, unsigned long ip,
 	if (unlikely(!dept_working()))
 		return;
 
+	if (m->nocheck)
+		return;
+
 	if (dt->recursive) {
 		dt->missing_ecxt++;
 		return;
@@ -2870,6 +2863,8 @@ void dept_event(struct dept_map *m, unsigned long e_f,
 	if (m->nocheck)
 		return;
 
+	flags = dept_enter();
+
 	if (ewg) {
 		wg_p = &ewg->wgen;
 		req_stack_p = &ewg->req_stack;
@@ -2889,19 +2884,18 @@ void dept_event(struct dept_map *m, unsigned long e_f,
 		 * context has been asked. Don't make it confused at
 		 * handling the event. Disable it until the next.
 		 */
-		WRITE_ONCE(*wg_p, 0U);
-		if (req_stack)
-			put_stack(req_stack);
-		return;
+		goto out;
 	}
 
-	flags = dept_enter();
 	__dept_event(m, e_f, ip, e_fn, false, READ_ONCE(*wg_p), req_stack);
 
 	/*
 	 * Keep the map diabled until the next sleep.
 	 */
+
+out:
 	WRITE_ONCE(*wg_p, 0U);
+
 	if (req_stack)
 		put_stack(req_stack);
 
@@ -2917,6 +2911,9 @@ void dept_ecxt_exit(struct dept_map *m, unsigned long e_f,
 	int e;
 
 	if (unlikely(!dept_working()))
+		return;
+
+	if (m->nocheck)
 		return;
 
 	if (dt->recursive) {
@@ -3073,10 +3070,10 @@ void dept_key_destroy(struct dept_key *k)
 		if (!c)
 			continue;
 
+		invalidate_class(c);
+		list_del(&c->all_node);
 		hash_del_class(c);
 		disconnect_class(c);
-		list_del(&c->all_node);
-		invalidate_class(c);
 
 		/*
 		 * Actual deletion will happen on the rcu callback
@@ -3084,6 +3081,8 @@ void dept_key_destroy(struct dept_key *k)
 		 */
 		del_class(c);
 	}
+
+	clean_classes_cache(k);
 
 	dept_unlock();
 	dept_exit(flags);
