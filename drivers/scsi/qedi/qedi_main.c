@@ -69,6 +69,7 @@ static struct nvm_iscsi_block *qedi_get_nvram_block(struct qedi_ctx *qedi);
 static void qedi_recovery_handler(struct work_struct *work);
 static void qedi_schedule_hw_err_handler(void *dev,
 					 enum qed_hw_err_type err_type);
+static int qedi_suspend(struct pci_dev *pdev, pm_message_t state);
 
 static int qedi_iscsi_event_cb(void *context, u8 fw_event_code, void *fw_handle)
 {
@@ -368,6 +369,7 @@ static int qedi_alloc_and_init_sb(struct qedi_ctx *qedi,
 	ret = qedi_ops->common->sb_init(qedi->cdev, sb_info, sb_virt, sb_phys,
 				       sb_id, QED_SB_TYPE_STORAGE);
 	if (ret) {
+		dma_free_coherent(&qedi->pdev->dev, sizeof(*sb_virt), sb_virt, sb_phys);
 		QEDI_ERR(&qedi->dbg_ctx,
 			 "Status block initialization failed for id = %d.\n",
 			  sb_id);
@@ -618,7 +620,7 @@ static int qedi_cm_alloc_mem(struct qedi_ctx *qedi)
 				sizeof(struct qedi_endpoint *)), GFP_KERNEL);
 	if (!qedi->ep_tbl)
 		return -ENOMEM;
-	port_id = prandom_u32() % QEDI_LOCAL_PORT_RANGE;
+	port_id = get_random_u32_below(QEDI_LOCAL_PORT_RANGE);
 	if (qedi_init_id_tbl(&qedi->lcl_port_tbl, QEDI_LOCAL_PORT_RANGE,
 			     QEDI_LOCAL_PORT_MIN, port_id)) {
 		qedi_cm_free_mem(qedi);
@@ -1959,13 +1961,11 @@ static int qedi_cpu_online(unsigned int cpu)
 	struct qedi_percpu_s *p = this_cpu_ptr(&qedi_percpu);
 	struct task_struct *thread;
 
-	thread = kthread_create_on_node(qedi_percpu_io_thread, (void *)p,
-					cpu_to_node(cpu),
-					"qedi_thread/%d", cpu);
+	thread = kthread_create_on_cpu(qedi_percpu_io_thread, (void *)p,
+				       cpu, "qedi_thread/%d");
 	if (IS_ERR(thread))
 		return PTR_ERR(thread);
 
-	kthread_bind(thread, cpu);
 	p->iothread = thread;
 	wake_up_process(thread);
 	return 0;
@@ -1976,8 +1976,9 @@ static int qedi_cpu_offline(unsigned int cpu)
 	struct qedi_percpu_s *p = this_cpu_ptr(&qedi_percpu);
 	struct qedi_work *work, *tmp;
 	struct task_struct *thread;
+	unsigned long flags;
 
-	spin_lock_bh(&p->p_work_lock);
+	spin_lock_irqsave(&p->p_work_lock, flags);
 	thread = p->iothread;
 	p->iothread = NULL;
 
@@ -1988,7 +1989,7 @@ static int qedi_cpu_offline(unsigned int cpu)
 			kfree(work);
 	}
 
-	spin_unlock_bh(&p->p_work_lock);
+	spin_unlock_irqrestore(&p->p_work_lock, flags);
 	if (thread)
 		kthread_stop(thread);
 	return 0;
@@ -2414,17 +2415,18 @@ static void __qedi_remove(struct pci_dev *pdev, int mode)
 	int rval;
 	u16 retry = 10;
 
-	if (mode == QEDI_MODE_NORMAL || mode == QEDI_MODE_SHUTDOWN) {
-		iscsi_host_remove(qedi->shost);
+	if (mode == QEDI_MODE_NORMAL)
+		iscsi_host_remove(qedi->shost, false);
+	else if (mode == QEDI_MODE_SHUTDOWN)
+		iscsi_host_remove(qedi->shost, true);
 
+	if (mode == QEDI_MODE_NORMAL || mode == QEDI_MODE_SHUTDOWN) {
 		if (qedi->tmf_thread) {
-			flush_workqueue(qedi->tmf_thread);
 			destroy_workqueue(qedi->tmf_thread);
 			qedi->tmf_thread = NULL;
 		}
 
 		if (qedi->offload_thread) {
-			flush_workqueue(qedi->offload_thread);
 			destroy_workqueue(qedi->offload_thread);
 			qedi->offload_thread = NULL;
 		}
@@ -2448,6 +2450,9 @@ static void __qedi_remove(struct pci_dev *pdev, int mode)
 		}
 		qedi_ops->ll2->stop(qedi->cdev);
 	}
+
+	cancel_delayed_work_sync(&qedi->recovery_work);
+	cancel_delayed_work_sync(&qedi->board_disable_work);
 
 	qedi_free_iscsi_pf_param(qedi);
 
@@ -2493,7 +2498,7 @@ static void qedi_board_disable_work(struct work_struct *work)
 	if (test_and_set_bit(QEDI_IN_SHUTDOWN, &qedi->flags))
 		return;
 
-	__qedi_remove(qedi->pdev, QEDI_MODE_SHUTDOWN);
+	__qedi_remove(qedi->pdev, QEDI_MODE_NORMAL);
 }
 
 static void qedi_shutdown(struct pci_dev *pdev)
@@ -2504,6 +2509,22 @@ static void qedi_shutdown(struct pci_dev *pdev)
 	if (test_and_set_bit(QEDI_IN_SHUTDOWN, &qedi->flags))
 		return;
 	__qedi_remove(pdev, QEDI_MODE_SHUTDOWN);
+}
+
+static int qedi_suspend(struct pci_dev *pdev, pm_message_t state)
+{
+	struct qedi_ctx *qedi;
+
+	if (!pdev) {
+		QEDI_ERR(NULL, "pdev is NULL.\n");
+		return -ENODEV;
+	}
+
+	qedi = pci_get_drvdata(pdev);
+
+	QEDI_ERR(&qedi->dbg_ctx, "%s: Device does not support suspend operation\n", __func__);
+
+	return -EPERM;
 }
 
 static int __qedi_probe(struct pci_dev *pdev, int mode)
@@ -2589,7 +2610,7 @@ retry_probe:
 	sp_params.drv_minor = QEDI_DRIVER_MINOR_VER;
 	sp_params.drv_rev = QEDI_DRIVER_REV_VER;
 	sp_params.drv_eng = QEDI_DRIVER_ENG_VER;
-	strlcpy(sp_params.name, "qedi iSCSI", QED_DRV_VER_STR_SIZE);
+	strscpy(sp_params.name, "qedi iSCSI", QED_DRV_VER_STR_SIZE);
 	rc = qedi_ops->common->slowpath_start(qedi->cdev, &sp_params);
 	if (rc) {
 		QEDI_ERR(&qedi->dbg_ctx, "Cannot start slowpath\n");
@@ -2745,7 +2766,8 @@ retry_probe:
 		}
 
 		sprintf(host_buf, "host_%d", qedi->shost->host_no);
-		qedi->tmf_thread = create_singlethread_workqueue(host_buf);
+		qedi->tmf_thread =
+			alloc_ordered_workqueue("%s", WQ_MEM_RECLAIM, host_buf);
 		if (!qedi->tmf_thread) {
 			QEDI_ERR(&qedi->dbg_ctx,
 				 "Unable to start tmf thread!\n");
@@ -2753,8 +2775,9 @@ retry_probe:
 			goto free_cid_que;
 		}
 
-		sprintf(host_buf, "qedi_ofld%d", qedi->shost->host_no);
-		qedi->offload_thread = create_workqueue(host_buf);
+		qedi->offload_thread = alloc_workqueue("qedi_ofld%d",
+						       WQ_MEM_RECLAIM,
+						       1, qedi->shost->host_no);
 		if (!qedi->offload_thread) {
 			QEDI_ERR(&qedi->dbg_ctx,
 				 "Unable to start offload thread!\n");
@@ -2793,7 +2816,7 @@ remove_host:
 #ifdef CONFIG_DEBUG_FS
 	qedi_dbg_host_exit(&qedi->dbg_ctx);
 #endif
-	iscsi_host_remove(qedi->shost);
+	iscsi_host_remove(qedi->shost, false);
 stop_iscsi_func:
 	qedi_ops->stop(qedi->cdev);
 stop_slowpath:
@@ -2844,7 +2867,7 @@ static void qedi_remove(struct pci_dev *pdev)
 	__qedi_remove(pdev, QEDI_MODE_NORMAL);
 }
 
-static struct pci_device_id qedi_pci_tbl[] = {
+static const struct pci_device_id qedi_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, 0x165E) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, 0x8084) },
 	{ 0 },
@@ -2864,6 +2887,7 @@ static struct pci_driver qedi_pci_driver = {
 	.remove = qedi_remove,
 	.shutdown = qedi_shutdown,
 	.err_handler = &qedi_err_handler,
+	.suspend = qedi_suspend,
 };
 
 static int __init qedi_init(void)

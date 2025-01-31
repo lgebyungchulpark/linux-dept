@@ -5,9 +5,8 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/i2c.h>
-#include <linux/of_gpio.h>
 #include <linux/clk.h>
 #include <sound/soc.h>
 #include <sound/pcm_params.h>
@@ -17,12 +16,16 @@
 
 #include "fsl_sai.h"
 
+#define IMX_CARD_MCLK_22P5792MHZ  22579200
+#define IMX_CARD_MCLK_24P576MHZ   24576000
+
 enum codec_type {
 	CODEC_DUMMY = 0,
 	CODEC_AK5558 = 1,
 	CODEC_AK4458,
 	CODEC_AK4497,
 	CODEC_AK5552,
+	CODEC_CS42888,
 };
 
 /*
@@ -115,7 +118,7 @@ struct imx_card_data {
 	struct snd_soc_card card;
 	int num_dapm_routes;
 	u32 asrc_rate;
-	u32 asrc_format;
+	snd_pcm_format_t asrc_format;
 };
 
 static struct imx_akcodec_fs_mul ak4458_fs_mul[] = {
@@ -183,6 +186,16 @@ static struct imx_akcodec_tdm_fs_mul ak5558_tdm_fs_mul[] = {
 	{ .min = 512,	.max = 512,	.mul = 1024 },
 };
 
+static struct imx_akcodec_fs_mul cs42888_fs_mul[] = {
+	{ .rmin = 8000,   .rmax = 48000,  .wmin = 256,  .wmax = 1024, },
+	{ .rmin = 64000,  .rmax = 96000,  .wmin = 128,  .wmax = 512, },
+	{ .rmin = 176400, .rmax = 192000, .wmin = 64,  .wmax = 256, },
+};
+
+static struct imx_akcodec_tdm_fs_mul cs42888_tdm_fs_mul[] = {
+	{ .min = 256,	.max = 256,	.mul = 256 },
+};
+
 static const u32 akcodec_rates[] = {
 	8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200,
 	96000, 176400, 192000, 352800, 384000, 705600, 768000,
@@ -205,6 +218,14 @@ static const u32 ak5558_channels[] = {
 };
 
 static const u32 ak5558_tdm_channels[] = {
+	1, 2, 3, 4, 5, 6, 7, 8,
+};
+
+static const u32 cs42888_channels[] = {
+	1, 2, 4, 6, 8,
+};
+
+static const u32 cs42888_tdm_channels[] = {
 	1, 2, 3, 4, 5, 6, 7, 8,
 };
 
@@ -239,6 +260,7 @@ static bool codec_is_akcodec(unsigned int type)
 	case CODEC_AK4497:
 	case CODEC_AK5558:
 	case CODEC_AK5552:
+	case CODEC_CS42888:
 		return true;
 	default:
 		break;
@@ -250,10 +272,10 @@ static unsigned long akcodec_get_mclk_rate(struct snd_pcm_substream *substream,
 					   struct snd_pcm_hw_params *params,
 					   int slots, int slot_width)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct imx_card_data *data = snd_soc_card_get_drvdata(rtd->card);
 	const struct imx_card_plat_data *plat_data = data->plat_data;
-	struct dai_link_data *link_data = &data->link_data[rtd->num];
+	struct dai_link_data *link_data = &data->link_data[rtd->id];
 	unsigned int width = slots * slot_width;
 	unsigned int rate = params_rate(params);
 	int i;
@@ -287,11 +309,11 @@ static unsigned long akcodec_get_mclk_rate(struct snd_pcm_substream *substream,
 static int imx_aif_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct imx_card_data *data = snd_soc_card_get_drvdata(card);
-	struct dai_link_data *link_data = &data->link_data[rtd->num];
+	struct dai_link_data *link_data = &data->link_data[rtd->id];
 	struct imx_card_plat_data *plat_data = data->plat_data;
 	struct device *dev = card->dev;
 	struct snd_soc_dai *codec_dai;
@@ -317,7 +339,7 @@ static int imx_aif_hw_params(struct snd_pcm_substream *substream,
 		}
 	}
 
-	ret = snd_soc_dai_set_fmt(cpu_dai, fmt);
+	ret = snd_soc_dai_set_fmt(cpu_dai, snd_soc_daifmt_clock_provider_flipped(fmt));
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(dev, "failed to set cpu dai fmt: %d\n", ret);
 		return ret;
@@ -338,13 +360,15 @@ static int imx_aif_hw_params(struct snd_pcm_substream *substream,
 			return ret;
 		}
 
-		ret = snd_soc_dai_set_tdm_slot(codec_dai,
-					       BIT(slots) - 1,
-					       BIT(slots) - 1,
-					       slots, slot_width);
-		if (ret && ret != -ENOTSUPP) {
-			dev_err(dev, "failed to set codec dai[%d] tdm slot: %d\n", i, ret);
-			return ret;
+		if (format_is_tdm(link_data)) {
+			ret = snd_soc_dai_set_tdm_slot(codec_dai,
+						       BIT(slots) - 1,
+						       BIT(slots) - 1,
+						       slots, slot_width);
+			if (ret && ret != -ENOTSUPP) {
+				dev_err(dev, "failed to set codec dai[%d] tdm slot: %d\n", i, ret);
+				return ret;
+			}
 		}
 	}
 
@@ -353,14 +377,24 @@ static int imx_aif_hw_params(struct snd_pcm_substream *substream,
 		mclk_freq = akcodec_get_mclk_rate(substream, params, slots, slot_width);
 	else
 		mclk_freq = params_rate(params) * slots * slot_width;
-	/* Use the maximum freq from DSD512 (512*44100 = 22579200) */
-	if (format_is_dsd(params))
-		mclk_freq = 22579200;
+
+	if (format_is_dsd(params)) {
+		/* Use the maximum freq from DSD512 (512*44100 = 22579200) */
+		if (!(params_rate(params) % 11025))
+			mclk_freq = IMX_CARD_MCLK_22P5792MHZ;
+		else
+			mclk_freq = IMX_CARD_MCLK_24P576MHZ;
+	}
 
 	ret = snd_soc_dai_set_sysclk(cpu_dai, link_data->cpu_sysclk_id, mclk_freq,
 				     SND_SOC_CLOCK_OUT);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(dev, "failed to set cpui dai mclk1 rate (%lu): %d\n", mclk_freq, ret);
+		return ret;
+	}
+	ret = snd_soc_dai_set_sysclk(codec_dai, 0, mclk_freq, SND_SOC_CLOCK_IN);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(dev, "failed to set codec dai mclk rate (%lu): %d\n", mclk_freq, ret);
 		return ret;
 	}
 
@@ -398,10 +432,10 @@ static int ak5558_hw_rule_rate(struct snd_pcm_hw_params *p, struct snd_pcm_hw_ru
 static int imx_aif_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_card *card = rtd->card;
 	struct imx_card_data *data = snd_soc_card_get_drvdata(card);
-	struct dai_link_data *link_data = &data->link_data[rtd->num];
+	struct dai_link_data *link_data = &data->link_data[rtd->id];
 	static struct snd_pcm_hw_constraint_list constraint_rates;
 	static struct snd_pcm_hw_constraint_list constraint_channels;
 	int ret = 0;
@@ -466,7 +500,7 @@ static int be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 
 	mask = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
 	snd_mask_none(mask);
-	snd_mask_set(mask, data->asrc_format);
+	snd_mask_set(mask, (__force unsigned int)data->asrc_format);
 
 	return 0;
 }
@@ -485,6 +519,7 @@ static int imx_card_parse_of(struct imx_card_data *data)
 	struct dai_link_data *link_data;
 	struct of_phandle_args args;
 	int ret, num_links;
+	u32 asrc_fmt = 0;
 	u32 width;
 
 	ret = snd_soc_of_parse_card_name(card, "model");
@@ -494,7 +529,7 @@ static int imx_card_parse_of(struct imx_card_data *data)
 	}
 
 	/* DAPM routes */
-	if (of_property_read_bool(dev->of_node, "audio-routing")) {
+	if (of_property_present(dev->of_node, "audio-routing")) {
 		ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
 		if (ret)
 			return ret;
@@ -542,10 +577,10 @@ static int imx_card_parse_of(struct imx_card_data *data)
 			goto err;
 		}
 
-		ret = of_parse_phandle_with_args(cpu, "sound-dai",
-						 "#sound-dai-cells", 0, &args);
+		ret = snd_soc_of_get_dlc(cpu, &args, link->cpus, 0);
 		if (ret) {
-			dev_err(card->dev, "%s: error getting cpu phandle\n", link->name);
+			dev_err_probe(card->dev, ret,
+				      "%s: error getting cpu dai info\n", link->name);
 			goto err;
 		}
 
@@ -554,7 +589,7 @@ static int imx_card_parse_of(struct imx_card_data *data)
 			link_data->cpu_sysclk_id = FSL_SAI_CLK_MAST1;
 
 			/* sai may support mclk/bclk = 1 */
-			if (of_find_property(np, "fsl,mclk-equal-bclk", NULL)) {
+			if (of_property_read_bool(np, "fsl,mclk-equal-bclk")) {
 				link_data->one2one_ratio = true;
 			} else {
 				int i;
@@ -573,16 +608,8 @@ static int imx_card_parse_of(struct imx_card_data *data)
 			}
 		}
 
-		link->cpus->of_node = args.np;
 		link->platforms->of_node = link->cpus->of_node;
 		link->id = args.args[0];
-
-		ret = snd_soc_of_get_dai_name(cpu, &link->cpus->dai_name);
-		if (ret) {
-			dev_err_probe(card->dev, ret,
-				      "%s: error getting cpu dai name\n", link->name);
-			goto err;
-		}
 
 		codec = of_get_child_by_name(np, "codec");
 		if (codec) {
@@ -604,19 +631,12 @@ static int imx_card_parse_of(struct imx_card_data *data)
 				plat_data->type = CODEC_AK5558;
 			else if (!strcmp(link->codecs->dai_name, "ak5552-aif"))
 				plat_data->type = CODEC_AK5552;
+			else if (!strcmp(link->codecs->dai_name, "cs42888"))
+				plat_data->type = CODEC_CS42888;
 
 		} else {
-			dlc = devm_kzalloc(dev, sizeof(*dlc), GFP_KERNEL);
-			if (!dlc) {
-				ret = -ENOMEM;
-				goto err;
-			}
-
-			link->codecs	 = dlc;
+			link->codecs	 = &snd_soc_dummy_dlc;
 			link->num_codecs = 1;
-
-			link->codecs->dai_name = "snd-soc-dummy-dai";
-			link->codecs->name = "snd-soc-dummy";
 		}
 
 		if (!strncmp(link->name, "HiFi-ASRC-FE", 12)) {
@@ -631,7 +651,8 @@ static int imx_card_parse_of(struct imx_card_data *data)
 				goto err;
 			}
 
-			ret = of_property_read_u32(args.np, "fsl,asrc-format", &data->asrc_format);
+			ret = of_property_read_u32(args.np, "fsl,asrc-format", &asrc_fmt);
+			data->asrc_format = (__force snd_pcm_format_t)asrc_fmt;
 			if (ret) {
 				/* Fallback to old binding; translate to asrc_format */
 				ret = of_property_read_u32(args.np, "fsl,asrc-width", &width);
@@ -658,11 +679,8 @@ static int imx_card_parse_of(struct imx_card_data *data)
 			link->ops = &imx_aif_ops;
 		}
 
-		if (link->no_pcm || link->dynamic)
-			snd_soc_dai_link_set_capabilities(link);
-
 		/* Get dai fmt */
-		ret = asoc_simple_parse_daifmt(dev, np, codec,
+		ret = simple_util_parse_daifmt(dev, np, codec,
 					       NULL, &link->dai_fmt);
 		if (ret)
 			link->dai_fmt = SND_SOC_DAIFMT_NB_NF |
@@ -688,6 +706,10 @@ static int imx_card_parse_of(struct imx_card_data *data)
 		of_node_put(cpu);
 		of_node_put(codec);
 		of_node_put(platform);
+
+		cpu = NULL;
+		codec = NULL;
+		platform = NULL;
 	}
 
 	return 0;
@@ -717,6 +739,7 @@ static int imx_card_probe(struct platform_device *pdev)
 
 	data->plat_data = plat_data;
 	data->card.dev = &pdev->dev;
+	data->card.owner = THIS_MODULE;
 
 	dev_set_drvdata(&pdev->dev, &data->card);
 	snd_soc_card_set_drvdata(&data->card, data);
@@ -767,6 +790,12 @@ static int imx_card_probe(struct platform_device *pdev)
 		data->dapm_routes[i].sink = "ASRC-Capture";
 		data->dapm_routes[i].source = "CPU-Capture";
 		break;
+	case CODEC_CS42888:
+		data->dapm_routes[0].sink = "Playback";
+		data->dapm_routes[0].source = "CPU-Playback";
+		data->dapm_routes[1].sink = "CPU-Capture";
+		data->dapm_routes[1].source = "Capture";
+		break;
 	default:
 		break;
 	}
@@ -806,6 +835,16 @@ static int imx_card_probe(struct platform_device *pdev)
 			plat_data->support_tdm_channels = ak5558_tdm_channels;
 			plat_data->num_tdm_channels = ARRAY_SIZE(ak5558_tdm_channels);
 			break;
+		case CODEC_CS42888:
+			plat_data->fs_mul = cs42888_fs_mul;
+			plat_data->num_fs_mul = ARRAY_SIZE(cs42888_fs_mul);
+			plat_data->tdm_fs_mul = cs42888_tdm_fs_mul;
+			plat_data->num_tdm_fs_mul = ARRAY_SIZE(cs42888_tdm_fs_mul);
+			plat_data->support_channels = cs42888_channels;
+			plat_data->num_channels = ARRAY_SIZE(cs42888_channels);
+			plat_data->support_tdm_channels = cs42888_tdm_channels;
+			plat_data->num_tdm_channels = ARRAY_SIZE(cs42888_tdm_channels);
+			break;
 		default:
 			break;
 		}
@@ -821,8 +860,8 @@ static int imx_card_probe(struct platform_device *pdev)
 		}
 		for_each_card_prelinks(&data->card, i, link) {
 			if (link->dynamic == 1 && link_be) {
-				link->dpcm_playback = link_be->dpcm_playback;
-				link->dpcm_capture = link_be->dpcm_capture;
+				link->playback_only = link_be->playback_only;
+				link->capture_only  = link_be->capture_only;
 			}
 		}
 	}

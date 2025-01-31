@@ -470,10 +470,7 @@ struct cs4281 {
 
 	struct gameport *gameport;
 
-#ifdef CONFIG_PM_SLEEP
 	u32 suspend_regs[SUSPEND_REGISTERS];
-#endif
-
 };
 
 static irqreturn_t snd_cs4281_interrupt(int irq, void *dev_id);
@@ -1827,8 +1824,8 @@ static void snd_cs4281_opl3_command(struct snd_opl3 *opl3, unsigned short cmd,
 	spin_unlock_irqrestore(&opl3->reg_lock, flags);
 }
 
-static int snd_cs4281_probe(struct pci_dev *pci,
-			    const struct pci_device_id *pci_id)
+static int __snd_cs4281_probe(struct pci_dev *pci,
+			      const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -1888,11 +1885,15 @@ static int snd_cs4281_probe(struct pci_dev *pci,
 	return 0;
 }
 
+static int snd_cs4281_probe(struct pci_dev *pci,
+			    const struct pci_device_id *pci_id)
+{
+	return snd_card_free_on_error(&pci->dev, __snd_cs4281_probe(pci, pci_id));
+}
+
 /*
  * Power Management
  */
-#ifdef CONFIG_PM_SLEEP
-
 static const int saved_regs[SUSPEND_REGISTERS] = {
 	BA0_JSCTL,
 	BA0_GPIOR,
@@ -1981,18 +1982,14 @@ static int cs4281_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(cs4281_pm, cs4281_suspend, cs4281_resume);
-#define CS4281_PM_OPS	&cs4281_pm
-#else
-#define CS4281_PM_OPS	NULL
-#endif /* CONFIG_PM_SLEEP */
+static DEFINE_SIMPLE_DEV_PM_OPS(cs4281_pm, cs4281_suspend, cs4281_resume);
 
 static struct pci_driver cs4281_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = snd_cs4281_ids,
 	.probe = snd_cs4281_probe,
 	.driver = {
-		.pm = CS4281_PM_OPS,
+		.pm = &cs4281_pm,
 	},
 };
 	

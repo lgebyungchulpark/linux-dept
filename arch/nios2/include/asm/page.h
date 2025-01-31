@@ -18,12 +18,7 @@
 #include <linux/pfn.h>
 #include <linux/const.h>
 
-/*
- * PAGE_SHIFT determines the page size
- */
-#define PAGE_SHIFT	12
-#define PAGE_SIZE	(_AC(1, UL) << PAGE_SHIFT)
-#define PAGE_MASK	(~(PAGE_SIZE - 1))
+#include <vdso/page.h>
 
 /*
  * PAGE_OFFSET -- the first address of the first page of memory.
@@ -85,15 +80,6 @@ extern struct page *mem_map;
 	((void *)(((page) - mem_map) << PAGE_SHIFT) + PAGE_OFFSET)
 
 # define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
-
-static inline bool pfn_valid(unsigned long pfn)
-{
-	/* avoid <linux/mm.h> include hell */
-	extern unsigned long max_mapnr;
-	unsigned long pfn_offset = ARCH_PFN_OFFSET;
-
-	return pfn >= pfn_offset && pfn < max_mapnr;
-}
 
 # define virt_to_page(vaddr)	pfn_to_page(PFN_DOWN(virt_to_phys(vaddr)))
 # define virt_addr_valid(vaddr)	pfn_valid(PFN_DOWN(virt_to_phys(vaddr)))

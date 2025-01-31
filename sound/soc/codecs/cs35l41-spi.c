@@ -30,9 +30,8 @@ MODULE_DEVICE_TABLE(spi, cs35l41_id_spi);
 static int cs35l41_spi_probe(struct spi_device *spi)
 {
 	const struct regmap_config *regmap_config = &cs35l41_regmap_spi;
-	struct cs35l41_platform_data *pdata = dev_get_platdata(&spi->dev);
+	struct cs35l41_hw_cfg *hw_cfg = dev_get_platdata(&spi->dev);
 	struct cs35l41_private *cs35l41;
-	int ret;
 
 	cs35l41 = devm_kzalloc(&spi->dev, sizeof(struct cs35l41_private), GFP_KERNEL);
 	if (!cs35l41)
@@ -43,25 +42,21 @@ static int cs35l41_spi_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, cs35l41);
 	cs35l41->regmap = devm_regmap_init_spi(spi, regmap_config);
-	if (IS_ERR(cs35l41->regmap)) {
-		ret = PTR_ERR(cs35l41->regmap);
-		dev_err(&spi->dev, "Failed to allocate register map: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(cs35l41->regmap))
+		return dev_err_probe(cs35l41->dev, PTR_ERR(cs35l41->regmap),
+				     "Failed to allocate register map\n");
 
 	cs35l41->dev = &spi->dev;
 	cs35l41->irq = spi->irq;
 
-	return cs35l41_probe(cs35l41, pdata);
+	return cs35l41_probe(cs35l41, hw_cfg);
 }
 
-static int cs35l41_spi_remove(struct spi_device *spi)
+static void cs35l41_spi_remove(struct spi_device *spi)
 {
 	struct cs35l41_private *cs35l41 = spi_get_drvdata(spi);
 
 	cs35l41_remove(cs35l41);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -76,6 +71,7 @@ MODULE_DEVICE_TABLE(of, cs35l41_of_match);
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id cs35l41_acpi_match[] = {
 	{ "CSC3541", 0 }, /* Cirrus Logic PnP ID + part ID */
+	{ "CLSA3541", 0 }, /* Cirrus Logic PnP ID + part ID */
 	{},
 };
 MODULE_DEVICE_TABLE(acpi, cs35l41_acpi_match);
@@ -84,7 +80,7 @@ MODULE_DEVICE_TABLE(acpi, cs35l41_acpi_match);
 static struct spi_driver cs35l41_spi_driver = {
 	.driver = {
 		.name		= "cs35l41",
-		.pm		= &cs35l41_pm_ops,
+		.pm		= pm_ptr(&cs35l41_pm_ops),
 		.of_match_table = of_match_ptr(cs35l41_of_match),
 		.acpi_match_table = ACPI_PTR(cs35l41_acpi_match),
 	},

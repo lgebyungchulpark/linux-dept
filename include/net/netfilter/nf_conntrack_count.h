@@ -10,14 +10,13 @@ struct nf_conncount_data;
 
 struct nf_conncount_list {
 	spinlock_t list_lock;
+	u32 last_gc;		/* jiffies at most recent gc */
 	struct list_head head;	/* connections with the same filtering key */
 	unsigned int count;	/* length of list */
 };
 
-struct nf_conncount_data *nf_conncount_init(struct net *net, unsigned int family,
-					    unsigned int keylen);
-void nf_conncount_destroy(struct net *net, unsigned int family,
-			  struct nf_conncount_data *data);
+struct nf_conncount_data *nf_conncount_init(struct net *net, unsigned int keylen);
+void nf_conncount_destroy(struct net *net, struct nf_conncount_data *data);
 
 unsigned int nf_conncount_count(struct net *net,
 				struct nf_conncount_data *data,

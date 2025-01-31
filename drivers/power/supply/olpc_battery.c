@@ -527,7 +527,7 @@ static enum power_supply_property olpc_xo15_bat_props[] = {
 #define EEPROM_SIZE	(EEPROM_END - EEPROM_START)
 
 static ssize_t olpc_bat_eeprom_read(struct file *filp, struct kobject *kobj,
-		struct bin_attribute *attr, char *buf, loff_t off, size_t count)
+		const struct bin_attribute *attr, char *buf, loff_t off, size_t count)
 {
 	uint8_t ec_byte;
 	int ret;
@@ -547,13 +547,13 @@ static ssize_t olpc_bat_eeprom_read(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static struct bin_attribute olpc_bat_eeprom = {
+static const struct bin_attribute olpc_bat_eeprom = {
 	.attr = {
 		.name = "eeprom",
 		.mode = S_IRUGO,
 	},
 	.size = EEPROM_SIZE,
-	.read = olpc_bat_eeprom_read,
+	.read_new = olpc_bat_eeprom_read,
 };
 
 /* Allow userspace to see the specific error value pulled from the EC */
@@ -568,7 +568,7 @@ static ssize_t olpc_bat_error_read(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sprintf(buf, "%d\n", ec_byte);
+	return sysfs_emit(buf, "%d\n", ec_byte);
 }
 
 static struct device_attribute olpc_bat_error = {
@@ -584,15 +584,14 @@ static struct attribute *olpc_bat_sysfs_attrs[] = {
 	NULL
 };
 
-static struct bin_attribute *olpc_bat_sysfs_bin_attrs[] = {
+static const struct bin_attribute *const olpc_bat_sysfs_bin_attrs[] = {
 	&olpc_bat_eeprom,
 	NULL
 };
 
 static const struct attribute_group olpc_bat_sysfs_group = {
 	.attrs = olpc_bat_sysfs_attrs,
-	.bin_attrs = olpc_bat_sysfs_bin_attrs,
-
+	.bin_attrs_new = olpc_bat_sysfs_bin_attrs,
 };
 
 static const struct attribute_group *olpc_bat_sysfs_groups[] = {
@@ -635,6 +634,7 @@ static int olpc_battery_probe(struct platform_device *pdev)
 	struct power_supply_config bat_psy_cfg = {};
 	struct power_supply_config ac_psy_cfg = {};
 	struct olpc_battery_data *data;
+	struct device_node *np;
 	uint8_t status;
 	uint8_t ecver;
 	int ret;
@@ -649,7 +649,9 @@ static int olpc_battery_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	if (of_find_compatible_node(NULL, NULL, "olpc,xo1.75-ec")) {
+	np = of_find_compatible_node(NULL, NULL, "olpc,xo1.75-ec");
+	if (np) {
+		of_node_put(np);
 		/* XO 1.75 */
 		data->new_proto = true;
 		data->little_endian = true;

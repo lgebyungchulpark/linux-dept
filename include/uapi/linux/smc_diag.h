@@ -84,12 +84,11 @@ struct smc_diag_conninfo {
 /* SMC_DIAG_LINKINFO */
 
 struct smc_diag_linkinfo {
-	__u8		link_id;		    /* link identifier */
-	__u8		ibname[IB_DEVICE_NAME_MAX]; /* name of the RDMA device */
-	__u8		ibport;			    /* RDMA device port number */
-	__u8		gid[40];		    /* local GID */
-	__u8		peer_gid[40];		    /* peer GID */
-	__aligned_u64	net_cookie;                 /* RDMA device net namespace */
+	__u8 link_id;			/* link identifier */
+	__u8 ibname[IB_DEVICE_NAME_MAX]; /* name of the RDMA device */
+	__u8 ibport;			/* RDMA device port number */
+	__u8 gid[40];			/* local GID */
+	__u8 peer_gid[40];		/* peer GID */
 };
 
 struct smc_diag_lgrinfo {
@@ -108,6 +107,8 @@ struct smcd_diag_dmbinfo {		/* SMC-D Socket internals */
 	__aligned_u64	my_gid;		/* My GID */
 	__aligned_u64	token;		/* Token of DMB */
 	__aligned_u64	peer_token;	/* Token of remote DMBE */
+	__aligned_u64	peer_gid_ext;	/* Peer GID (extended part) */
+	__aligned_u64	my_gid_ext;	/* My GID (extended part) */
 };
 
 #endif /* _UAPI_SMC_DIAG_H_ */

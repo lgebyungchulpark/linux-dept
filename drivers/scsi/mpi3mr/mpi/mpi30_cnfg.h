@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- *  Copyright 2017-2021 Broadcom Inc. All rights reserved.
- *
+ *  Copyright 2017-2023 Broadcom Inc. All rights reserved.
  */
 #ifndef MPI30_CNFG_H
 #define MPI30_CNFG_H     1
@@ -64,9 +63,11 @@
 #define MPI3_PCIE_LINK_PGAD_LINKNUM_MASK                (0x000000ff)
 #define MPI3_SECURITY_PGAD_FORM_MASK                    (0xf0000000)
 #define MPI3_SECURITY_PGAD_FORM_GET_NEXT_SLOT           (0x00000000)
-#define MPI3_SECURITY_PGAD_FORM_SOT_NUM                 (0x10000000)
+#define MPI3_SECURITY_PGAD_FORM_SLOT_NUM		(0x10000000)
 #define MPI3_SECURITY_PGAD_SLOT_GROUP_MASK              (0x0000ff00)
+#define MPI3_SECURITY_PGAD_SLOT_GROUP_SHIFT		(8)
 #define MPI3_SECURITY_PGAD_SLOT_MASK                    (0x000000ff)
+#define MPI3_INSTANCE_PGAD_INSTANCE_MASK                (0x0000ffff)
 struct mpi3_config_request {
 	__le16             host_tag;
 	u8                 ioc_use_only02;
@@ -75,7 +76,8 @@ struct mpi3_config_request {
 	u8                 ioc_use_only06;
 	u8                 msg_flags;
 	__le16             change_count;
-	__le16             reserved0a;
+	u8                 proxy_ioc_number;
+	u8                 reserved0b;
 	u8                 page_version;
 	u8                 page_number;
 	u8                 page_type;
@@ -100,6 +102,7 @@ struct mpi3_config_page_header {
 #define MPI3_SAS_NEG_LINK_RATE_LOGICAL_MASK             (0xf0)
 #define MPI3_SAS_NEG_LINK_RATE_LOGICAL_SHIFT            (4)
 #define MPI3_SAS_NEG_LINK_RATE_PHYSICAL_MASK            (0x0f)
+#define MPI3_SAS_NEG_LINK_RATE_PHYSICAL_SHIFT           (0)
 #define MPI3_SAS_NEG_LINK_RATE_UNKNOWN_LINK_RATE        (0x00)
 #define MPI3_SAS_NEG_LINK_RATE_PHY_DISABLED             (0x01)
 #define MPI3_SAS_NEG_LINK_RATE_NEGOTIATION_FAILED       (0x02)
@@ -135,6 +138,15 @@ struct mpi3_config_page_header {
 #define MPI3_SAS_PHYINFO_PHY_POWER_CONDITION_ACTIVE     (0x00000000)
 #define MPI3_SAS_PHYINFO_PHY_POWER_CONDITION_PARTIAL    (0x08000000)
 #define MPI3_SAS_PHYINFO_PHY_POWER_CONDITION_SLUMBER    (0x10000000)
+#define MPI3_SAS_PHYINFO_REQUESTED_INSIDE_ZPSDS_CHANGED_MASK  (0x04000000)
+#define MPI3_SAS_PHYINFO_REQUESTED_INSIDE_ZPSDS_CHANGED_SHIFT (26)
+#define MPI3_SAS_PHYINFO_INSIDE_ZPSDS_PERSISTENT_MASK         (0x02000000)
+#define MPI3_SAS_PHYINFO_INSIDE_ZPSDS_PERSISTENT_SHIFT        (25)
+#define MPI3_SAS_PHYINFO_REQUESTED_INSIDE_ZPSDS_MASK          (0x01000000)
+#define MPI3_SAS_PHYINFO_REQUESTED_INSIDE_ZPSDS_SHIFT         (24)
+#define MPI3_SAS_PHYINFO_ZONE_GROUP_PERSISTENT                (0x00400000)
+#define MPI3_SAS_PHYINFO_INSIDE_ZPSDS_WITHIN                  (0x00200000)
+#define MPI3_SAS_PHYINFO_ZONING_ENABLED                       (0x00100000)
 #define MPI3_SAS_PHYINFO_REASON_MASK                    (0x000f0000)
 #define MPI3_SAS_PHYINFO_REASON_UNKNOWN                 (0x00000000)
 #define MPI3_SAS_PHYINFO_REASON_POWER_ON                (0x00010000)
@@ -191,7 +203,14 @@ struct mpi3_config_page_header {
 #define MPI3_TEMP_SENSOR_LOCATION_DRAM                  (0x3)
 #define MPI3_MFGPAGE_VENDORID_BROADCOM                  (0x1000)
 #define MPI3_MFGPAGE_DEVID_SAS4116                      (0x00a5)
-#define MPI3_MFGPAGE_DEVID_SAS4016                      (0x00a7)
+#define MPI3_MFGPAGE_DEVID_SAS5116_MPI			(0x00b3)
+#define MPI3_MFGPAGE_DEVID_SAS5116_NVME			(0x00b4)
+#define MPI3_MFGPAGE_DEVID_SAS5116_MPI_MGMT		(0x00b5)
+#define MPI3_MFGPAGE_DEVID_SAS5116_NVME_MGMT		(0x00b6)
+#define MPI3_MFGPAGE_DEVID_SAS5116_PCIE_SWITCH		(0x00b8)
+#define MPI3_MFGPAGE_DEVID_SAS5248_MPI			(0x00f0)
+#define MPI3_MFGPAGE_DEVID_SAS5248_MPI_NS		(0x00f1)
+#define MPI3_MFGPAGE_DEVID_SAS5248_PCIE_SWITCH		(0x00f2)
 struct mpi3_man_page0 {
 	struct mpi3_config_page_header         header;
 	u8                                 chip_revision[8];
@@ -203,7 +222,7 @@ struct mpi3_man_page0 {
 	__le32                             reserved94;
 	__le32                             reserved98;
 	u8                                 oem;
-	u8                                 sub_oem;
+	u8                                 profile_identifier;
 	__le16                             flags;
 	u8                                 board_mfg_day;
 	u8                                 board_mfg_month;
@@ -211,7 +230,7 @@ struct mpi3_man_page0 {
 	u8                                 board_rework_day;
 	u8                                 board_rework_month;
 	__le16                             board_rework_year;
-	__le64                             board_revision;
+	u8                                 board_revision[8];
 	u8                                 e_pack_fru[16];
 	u8                                 product_name[256];
 };
@@ -227,6 +246,15 @@ struct mpi3_man_page1 {
 };
 
 #define MPI3_MAN1_PAGEVERSION                                 (0x00)
+struct mpi3_man_page2 {
+	struct mpi3_config_page_header         header;
+	u8                                 flags;
+	u8                                 reserved09[3];
+	__le32                             reserved0c[3];
+	u8                                 oem_board_tracer_number[32];
+};
+#define MPI3_MAN2_PAGEVERSION                                 (0x00)
+#define MPI3_MAN2_FLAGS_TRACER_PRESENT                        (0x01)
 struct mpi3_man5_phy_entry {
 	__le64     ioc_wwid;
 	__le64     device_name;
@@ -267,13 +295,18 @@ struct mpi3_man6_gpio_entry {
 #define MPI3_MAN6_GPIO_FUNCTION_ISTWI_RESET                                   (0x0a)
 #define MPI3_MAN6_GPIO_FUNCTION_BACKEND_PCIE_RESET                            (0x0b)
 #define MPI3_MAN6_GPIO_FUNCTION_GLOBAL_FAULT                                  (0x0c)
-#define MPI3_MAN6_GPIO_FUNCTION_EPACK_ATTN                                    (0x0d)
+#define MPI3_MAN6_GPIO_FUNCTION_PBLP_STATUS_CHANGE                            (0x0d)
 #define MPI3_MAN6_GPIO_FUNCTION_EPACK_ONLINE                                  (0x0e)
 #define MPI3_MAN6_GPIO_FUNCTION_EPACK_FAULT                                   (0x0f)
 #define MPI3_MAN6_GPIO_FUNCTION_CTRL_TYPE                                     (0x10)
 #define MPI3_MAN6_GPIO_FUNCTION_LICENSE                                       (0x11)
 #define MPI3_MAN6_GPIO_FUNCTION_REFCLK_CONTROL                                (0x12)
 #define MPI3_MAN6_GPIO_FUNCTION_BACKEND_PCIE_RESET_CLAMP                      (0x13)
+#define MPI3_MAN6_GPIO_FUNCTION_AUXILIARY_POWER                               (0x14)
+#define MPI3_MAN6_GPIO_FUNCTION_RAID_DATA_CACHE_DIRTY                         (0x15)
+#define MPI3_MAN6_GPIO_FUNCTION_BOARD_FAN_CONTROL                             (0x16)
+#define MPI3_MAN6_GPIO_FUNCTION_BOARD_FAN_FAULT                               (0x17)
+#define MPI3_MAN6_GPIO_FUNCTION_POWER_BRAKE                                   (0x18)
 #define MPI3_MAN6_GPIO_ISTWI_RESET_FUNCTIONFLAGS_DEVSELECT_MASK               (0x01)
 #define MPI3_MAN6_GPIO_ISTWI_RESET_FUNCTIONFLAGS_DEVSELECT_ISTWI              (0x00)
 #define MPI3_MAN6_GPIO_ISTWI_RESET_FUNCTIONFLAGS_DEVSELECT_RECEPTACLEID       (0x01)
@@ -281,6 +314,7 @@ struct mpi3_man6_gpio_entry {
 #define MPI3_MAN6_GPIO_EXTINT_PARAM1_FLAGS_SOURCE_GENERIC                     (0x00)
 #define MPI3_MAN6_GPIO_EXTINT_PARAM1_FLAGS_SOURCE_CABLE_MGMT                  (0x10)
 #define MPI3_MAN6_GPIO_EXTINT_PARAM1_FLAGS_SOURCE_ACTIVE_CABLE_OVERCURRENT    (0x20)
+#define MPI3_MAN6_GPIO_EXTINT_PARAM1_FLAGS_ACK_REQUIRED                       (0x02)
 #define MPI3_MAN6_GPIO_EXTINT_PARAM1_FLAGS_TRIGGER_MASK                       (0x01)
 #define MPI3_MAN6_GPIO_EXTINT_PARAM1_FLAGS_TRIGGER_EDGE                       (0x00)
 #define MPI3_MAN6_GPIO_EXTINT_PARAM1_FLAGS_TRIGGER_LEVEL                      (0x01)
@@ -334,6 +368,8 @@ struct mpi3_man7_receptacle_info {
 #define MPI3_MAN7_LOCATION_INTERNAL                        (0x01)
 #define MPI3_MAN7_LOCATION_EXTERNAL                        (0x02)
 #define MPI3_MAN7_LOCATION_VIRTUAL                         (0x03)
+#define MPI3_MAN7_LOCATION_HOST                            (0x04)
+#define MPI3_MAN7_CONNECTOR_TYPE_NO_INFO                   (0x00)
 #define MPI3_MAN7_PEDCLK_ROUTING_MASK                      (0x10)
 #define MPI3_MAN7_PEDCLK_ROUTING_DIRECT                    (0x00)
 #define MPI3_MAN7_PEDCLK_ROUTING_CLOCK_BUFFER              (0x10)
@@ -365,7 +401,8 @@ struct mpi3_man8_phy_info {
 	__le32                             reserved0c;
 };
 
-#define MPI3_MAN8_PHY_INFO_RECEPTACLE_ID_HOST_PHY          (0xff)
+#define MPI3_MAN8_PHY_INFO_RECEPTACLE_ID_NOT_ASSOCIATED    (0xff)
+#define MPI3_MAN8_PHY_INFO_CONNECTOR_LANE_NOT_ASSOCIATED   (0xff)
 #ifndef MPI3_MAN8_PHY_INFO_MAX
 #define MPI3_MAN8_PHY_INFO_MAX                      (1)
 #endif
@@ -409,18 +446,22 @@ enum mpi3_man9_resources {
 #define MPI3_MAN9_MAX_OUTSTANDING_REQS      (65000)
 #define MPI3_MAN9_MIN_TARGET_CMDS           (0)
 #define MPI3_MAN9_MAX_TARGET_CMDS           (65535)
-#define MPI3_MAN9_MIN_SAS_TARGETS           (0)
-#define MPI3_MAN9_MAX_SAS_TARGETS           (65535)
-#define MPI3_MAN9_MIN_PCIE_TARGETS          (0)
+#define MPI3_MAN9_MIN_NVME_TARGETS          (0)
 #define MPI3_MAN9_MIN_INITIATORS            (0)
-#define MPI3_MAN9_MAX_INITIATORS            (65535)
-#define MPI3_MAN9_MIN_ENCLOSURES            (0)
+#define MPI3_MAN9_MIN_VDS                   (0)
+#define MPI3_MAN9_MIN_ENCLOSURES            (1)
 #define MPI3_MAN9_MAX_ENCLOSURES            (65535)
 #define MPI3_MAN9_MIN_ENCLOSURE_PHYS        (0)
-#define MPI3_MAN9_MIN_NAMESPACE_COUNT       (1)
 #define MPI3_MAN9_MIN_EXPANDERS             (0)
 #define MPI3_MAN9_MAX_EXPANDERS             (65535)
 #define MPI3_MAN9_MIN_PCIE_SWITCHES         (0)
+#define MPI3_MAN9_MIN_HOST_PD_DRIVES        (0)
+#define MPI3_MAN9_ADV_HOST_PD_DRIVES        (0)
+#define MPI3_MAN9_RAID_PD_DRIVES            (0)
+#define MPI3_MAN9_DRIVER_DIAG_BUFFER        (0)
+#define MPI3_MAN9_MIN_NAMESPACE_COUNT       (1)
+#define MPI3_MAN9_MIN_EXPANDERS             (0)
+#define MPI3_MAN9_MAX_EXPANDERS             (65535)
 struct mpi3_man_page9 {
 	struct mpi3_config_page_header         header;
 	u8                                 num_resources;
@@ -436,7 +477,7 @@ struct mpi3_man_page9 {
 
 #define MPI3_MAN9_PAGEVERSION                   (0x00)
 struct mpi3_man10_istwi_ctrlr_entry {
-	__le16     slave_address;
+	__le16     target_address;
 	__le16     flags;
 	u8         scl_low_override;
 	u8         scl_high_override;
@@ -446,8 +487,8 @@ struct mpi3_man10_istwi_ctrlr_entry {
 #define MPI3_MAN10_ISTWI_CTRLR_FLAGS_BUS_SPEED_MASK         (0x000c)
 #define MPI3_MAN10_ISTWI_CTRLR_FLAGS_BUS_SPEED_100K         (0x0000)
 #define MPI3_MAN10_ISTWI_CTRLR_FLAGS_BUS_SPEED_400K         (0x0004)
-#define MPI3_MAN10_ISTWI_CTRLR_FLAGS_SLAVE_ENABLED          (0x0002)
-#define MPI3_MAN10_ISTWI_CTRLR_FLAGS_MASTER_ENABLED         (0x0001)
+#define MPI3_MAN10_ISTWI_CTRLR_FLAGS_TARGET_ENABLED          (0x0002)
+#define MPI3_MAN10_ISTWI_CTRLR_FLAGS_INITIATOR_ENABLED         (0x0001)
 #ifndef MPI3_MAN10_ISTWI_CTRLR_MAX
 #define MPI3_MAN10_ISTWI_CTRLR_MAX          (1)
 #endif
@@ -528,6 +569,10 @@ struct mpi3_man11_bkplane_spec_non_ubm_format {
 #define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_GROUP_MASK                    (0xf000)
 #define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_GROUP_SHIFT                   (12)
 #define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_REFCLK_POLICY_ALWAYS_ENABLED  (0x0200)
+#define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_LINKWIDTH_MASK                (0x00c0)
+#define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_LINKWIDTH_4                   (0x0000)
+#define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_LINKWIDTH_2                   (0x0040)
+#define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_LINKWIDTH_1                   (0x0080)
 #define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_PRESENCE_DETECT_MASK          (0x0030)
 #define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_PRESENCE_DETECT_GPIO          (0x0000)
 #define MPI3_MAN11_BKPLANE_NON_UBM_FLAGS_PRESENCE_DETECT_REG           (0x0010)
@@ -564,7 +609,15 @@ struct mpi3_man11_mgmt_ctrlr_device_format {
 	__le32     reserved00;
 	__le32     reserved04;
 };
-
+struct mpi3_man11_board_fan_device_format {
+	u8         flags;
+	u8         reserved01;
+	u8         min_fan_speed;
+	u8         max_fan_speed;
+	__le32     reserved04;
+};
+#define MPI3_MAN11_BOARD_FAN_FLAGS_FAN_CTRLR_TYPE_MASK        (0x07)
+#define MPI3_MAN11_BOARD_FAN_FLAGS_FAN_CTRLR_TYPE_AMC6821     (0x00)
 union mpi3_man11_device_specific_format {
 	struct mpi3_man11_mux_device_format            mux;
 	struct mpi3_man11_temp_sensor_device_format    temp_sensor;
@@ -574,9 +627,9 @@ union mpi3_man11_device_specific_format {
 	struct mpi3_man11_bkplane_mgmt_device_format   bkplane_mgmt;
 	struct mpi3_man11_gas_gauge_device_format      gas_gauge;
 	struct mpi3_man11_mgmt_ctrlr_device_format     mgmt_controller;
+	struct mpi3_man11_board_fan_device_format      board_fan;
 	__le32                                     words[2];
 };
-
 struct mpi3_man11_istwi_device_format {
 	u8                                     device_type;
 	u8                                     controller;
@@ -596,6 +649,7 @@ struct mpi3_man11_istwi_device_format {
 #define MPI3_MAN11_ISTWI_DEVTYPE_BACKPLANE_MGMT       (0x05)
 #define MPI3_MAN11_ISTWI_DEVTYPE_GAS_GAUGE            (0x06)
 #define MPI3_MAN11_ISTWI_DEVTYPE_MGMT_CONTROLLER      (0x07)
+#define MPI3_MAN11_ISTWI_DEVTYPE_BOARD_FAN            (0x08)
 #define MPI3_MAN11_ISTWI_FLAGS_MUX_PRESENT            (0x01)
 #ifndef MPI3_MAN11_ISTWI_DEVICE_MAX
 #define MPI3_MAN11_ISTWI_DEVICE_MAX             (1)
@@ -717,20 +771,16 @@ struct mpi3_man_page13 {
 #define MPI3_MAN13_PAGEVERSION                                       (0x00)
 struct mpi3_man_page14 {
 	struct mpi3_config_page_header         header;
-	__le16                             flags;
-	__le16                             reserved0a;
+	__le32                             reserved08;
 	u8                                 num_slot_groups;
 	u8                                 num_slots;
 	__le16                             max_cert_chain_length;
 	__le32                             sealed_slots;
+	__le32                             populated_slots;
+	__le32                             mgmt_pt_updatable_slots;
 };
-
 #define MPI3_MAN14_PAGEVERSION                                       (0x00)
-#define MPI3_MAN14_FLAGS_AUTH_SESSION_REQ                            (0x01)
-#define MPI3_MAN14_FLAGS_AUTH_API_MASK                               (0x0e)
-#define MPI3_MAN14_FLAGS_AUTH_API_NONE                               (0x00)
-#define MPI3_MAN14_FLAGS_AUTH_API_CERBERUS                           (0x02)
-#define MPI3_MAN14_FLAGS_AUTH_API_SPDM                               (0x04)
+#define MPI3_MAN14_NUMSLOTS_MAX                                      (32)
 #ifndef MPI3_MAN15_VERSION_RECORD_MAX
 #define MPI3_MAN15_VERSION_RECORD_MAX      1
 #endif
@@ -812,19 +862,16 @@ struct mpi3_man_page21 {
 };
 
 #define MPI3_MAN21_PAGEVERSION                                       (0x00)
-#define MPI3_MAN21_FLAGS_HOST_METADATA_CAPABILITY_MASK               (0x80)
-#define MPI3_MAN21_FLAGS_HOST_METADATA_CAPABILITY_ENABLED            (0x80)
-#define MPI3_MAN21_FLAGS_HOST_METADATA_CAPABILITY_DISABLED           (0x00)
-#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_MASK                     (0x60)
-#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_BLOCK                    (0x00)
-#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_ALLOW                    (0x20)
-#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_WARN                     (0x40)
-#define MPI3_MAN21_FLAGS_BLOCK_SSD_WR_CACHE_CHANGE_MASK              (0x08)
-#define MPI3_MAN21_FLAGS_BLOCK_SSD_WR_CACHE_CHANGE_ALLOW             (0x00)
-#define MPI3_MAN21_FLAGS_BLOCK_SSD_WR_CACHE_CHANGE_PREVENT           (0x08)
-#define MPI3_MAN21_FLAGS_SES_VPD_ASSOC_MASK                          (0x01)
-#define MPI3_MAN21_FLAGS_SES_VPD_ASSOC_DEFAULT                       (0x00)
-#define MPI3_MAN21_FLAGS_SES_VPD_ASSOC_OEM_SPECIFIC                  (0x01)
+#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_MASK                     (0x00000060)
+#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_BLOCK                    (0x00000000)
+#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_ALLOW                    (0x00000020)
+#define MPI3_MAN21_FLAGS_UNCERTIFIED_DRIVES_WARN                     (0x00000040)
+#define MPI3_MAN21_FLAGS_BLOCK_SSD_WR_CACHE_CHANGE_MASK              (0x00000008)
+#define MPI3_MAN21_FLAGS_BLOCK_SSD_WR_CACHE_CHANGE_ALLOW             (0x00000000)
+#define MPI3_MAN21_FLAGS_BLOCK_SSD_WR_CACHE_CHANGE_PREVENT           (0x00000008)
+#define MPI3_MAN21_FLAGS_SES_VPD_ASSOC_MASK                          (0x00000001)
+#define MPI3_MAN21_FLAGS_SES_VPD_ASSOC_DEFAULT                       (0x00000000)
+#define MPI3_MAN21_FLAGS_SES_VPD_ASSOC_OEM_SPECIFIC                  (0x00000001)
 #ifndef MPI3_MAN_PROD_SPECIFIC_MAX
 #define MPI3_MAN_PROD_SPECIFIC_MAX                      (1)
 #endif
@@ -982,7 +1029,12 @@ struct mpi3_io_unit_page5 {
 #define MPI3_IOUNIT5_DEVICE_SHUTDOWN_SATA_SSD_MASK         (0x000c)
 #define MPI3_IOUNIT5_DEVICE_SHUTDOWN_SATA_SSD_SHIFT        (2)
 #define MPI3_IOUNIT5_DEVICE_SHUTDOWN_SAS_SSD_MASK          (0x0003)
-#define MPI3_IOUNIT5_DEVICE_SHUTDOWN_SAA_SSD_SHIFT         (0)
+#define MPI3_IOUNIT5_DEVICE_SHUTDOWN_SAS_SSD_SHIFT         (0)
+#define MPI3_IOUNIT5_FLAGS_SATAPUIS_MASK                   (0x0c)
+#define MPI3_IOUNIT5_FLAGS_SATAPUIS_NOT_SUPPORTED          (0x00)
+#define MPI3_IOUNIT5_FLAGS_SATAPUIS_OS_CONTROLLED          (0x04)
+#define MPI3_IOUNIT5_FLAGS_SATAPUIS_APP_CONTROLLED         (0x08)
+#define MPI3_IOUNIT5_FLAGS_SATAPUIS_BLOCKED                (0x0c)
 #define MPI3_IOUNIT5_FLAGS_POWER_CAPABLE_SPINUP            (0x02)
 #define MPI3_IOUNIT5_FLAGS_AUTO_PORT_ENABLE                (0x01)
 #define MPI3_IOUNIT5_PHY_SPINUP_GROUP_MASK                 (0x03)
@@ -996,12 +1048,6 @@ struct mpi3_io_unit_page6 {
 
 #define MPI3_IOUNIT6_PAGEVERSION                (0x00)
 #define MPI3_IOUNIT6_FLAGS_ACT_CABLE_PWR_EXC    (0x01)
-struct mpi3_io_unit_page7 {
-	struct mpi3_config_page_header         header;
-	__le32                             reserved08;
-};
-
-#define MPI3_IOUNIT7_PAGEVERSION                (0x00)
 #ifndef MPI3_IOUNIT8_DIGEST_MAX
 #define MPI3_IOUNIT8_DIGEST_MAX                   (1)
 #endif
@@ -1020,7 +1066,8 @@ struct mpi3_io_unit_page8 {
 	u8                                 slots_available;
 	u8                                 current_key_encryption_algo;
 	u8                                 key_digest_hash_algo;
-	__le32                             reserved10[2];
+	union mpi3_version_union              current_svn;
+	__le32                             reserved14;
 	__le32                             current_key[128];
 	union mpi3_iounit8_digest             digest[MPI3_IOUNIT8_DIGEST_MAX];
 };
@@ -1029,8 +1076,11 @@ struct mpi3_io_unit_page8 {
 #define MPI3_IOUNIT8_SBMODE_SECURE_DEBUG          (0x04)
 #define MPI3_IOUNIT8_SBMODE_HARD_SECURE           (0x02)
 #define MPI3_IOUNIT8_SBMODE_CONFIG_SECURE         (0x01)
+#define MPI3_IOUNIT8_SBSTATE_SVN_UPDATE_PENDING   (0x04)
 #define MPI3_IOUNIT8_SBSTATE_KEY_UPDATE_PENDING   (0x02)
 #define MPI3_IOUNIT8_SBSTATE_SECURE_BOOT_ENABLED  (0x01)
+#define MPI3_IOUNIT8_SBMODE_CURRENT_KEY_IOUNIT17	(0x10)
+#define MPI3_IOUNIT8_SBMODE_HARD_SECURE_RECERTIFIED	(0x08)
 struct mpi3_io_unit_page9 {
 	struct mpi3_config_page_header         header;
 	__le32                             flags;
@@ -1038,9 +1088,164 @@ struct mpi3_io_unit_page9 {
 	__le16                             reserved0e;
 };
 
-#define MPI3_IOUNIT9_PAGEVERSION                  (0x00)
-#define MPI3_IOUNIT9_FLAGS_VDFIRST_ENABLED         (0x01)
-#define MPI3_IOUNIT9_FIRSTDEVICE_UNKNOWN          (0xffff)
+#define MPI3_IOUNIT9_PAGEVERSION                                  (0x00)
+#define MPI3_IOUNIT9_FLAGS_UBM_ENCLOSURE_ORDER_MASK               (0x00000006)
+#define MPI3_IOUNIT9_FLAGS_UBM_ENCLOSURE_ORDER_SHIFT              (1)
+#define MPI3_IOUNIT9_FLAGS_UBM_ENCLOSURE_ORDER_NONE               (0x00000000)
+#define MPI3_IOUNIT9_FLAGS_UBM_ENCLOSURE_ORDER_RECEPTACLE         (0x00000002)
+#define MPI3_IOUNIT9_FLAGS_UBM_ENCLOSURE_ORDER_BACKPLANE_TYPE     (0x00000004)
+#define MPI3_IOUNIT9_FLAGS_VDFIRST_ENABLED                        (0x00000001)
+#define MPI3_IOUNIT9_FIRSTDEVICE_UNKNOWN                          (0xffff)
+#define MPI3_IOUNIT9_FIRSTDEVICE_IN_DRIVER_PAGE_0                 (0xfffe)
+
+struct mpi3_io_unit_page10 {
+	struct mpi3_config_page_header         header;
+	u8                                 flags;
+	u8                                 reserved09[3];
+	__le32                             silicon_id;
+	u8                                 fw_version_minor;
+	u8                                 fw_version_major;
+	u8                                 hw_version_minor;
+	u8                                 hw_version_major;
+	u8                                 part_number[16];
+};
+#define MPI3_IOUNIT10_PAGEVERSION                  (0x00)
+#define MPI3_IOUNIT10_FLAGS_VALID                  (0x01)
+#define MPI3_IOUNIT10_FLAGS_ACTIVEID_MASK          (0x02)
+#define MPI3_IOUNIT10_FLAGS_ACTIVEID_FIRST_REGION  (0x00)
+#define MPI3_IOUNIT10_FLAGS_ACTIVEID_SECOND_REGION (0x02)
+#define MPI3_IOUNIT10_FLAGS_PBLP_EXPECTED          (0x80)
+#ifndef MPI3_IOUNIT11_PROFILE_MAX
+#define MPI3_IOUNIT11_PROFILE_MAX                   (1)
+#endif
+struct mpi3_iounit11_profile {
+	u8                                 profile_identifier;
+	u8                                 reserved01[3];
+	__le16                             max_vds;
+	__le16                             max_host_pds;
+	__le16                             max_adv_host_pds;
+	__le16                             max_raid_pds;
+	__le16                             max_nvme;
+	__le16                             max_outstanding_requests;
+	__le16                             subsystem_id;
+	__le16                             reserved12;
+	__le32                             reserved14[2];
+};
+struct mpi3_io_unit_page11 {
+	struct mpi3_config_page_header         header;
+	__le32                             reserved08;
+	u8                                 num_profiles;
+	u8                                 current_profile_identifier;
+	__le16                             reserved0e;
+	struct mpi3_iounit11_profile           profile[MPI3_IOUNIT11_PROFILE_MAX];
+};
+#define MPI3_IOUNIT11_PAGEVERSION                  (0x00)
+#ifndef MPI3_IOUNIT12_BUCKET_MAX
+#define MPI3_IOUNIT12_BUCKET_MAX                   (1)
+#endif
+struct mpi3_iounit12_bucket {
+	u8                                 coalescing_depth;
+	u8                                 coalescing_timeout;
+	__le16                             io_count_low_boundary;
+	__le32                             reserved04;
+};
+struct mpi3_io_unit_page12 {
+	struct mpi3_config_page_header         header;
+	__le32                             flags;
+	__le32                             reserved0c[4];
+	u8                                 num_buckets;
+	u8                                 reserved1d[3];
+	struct mpi3_iounit12_bucket            bucket[MPI3_IOUNIT12_BUCKET_MAX];
+};
+#define MPI3_IOUNIT12_PAGEVERSION                  (0x00)
+#define MPI3_IOUNIT12_FLAGS_NUMPASSES_MASK         (0x00000300)
+#define MPI3_IOUNIT12_FLAGS_NUMPASSES_SHIFT        (8)
+#define MPI3_IOUNIT12_FLAGS_NUMPASSES_8            (0x00000000)
+#define MPI3_IOUNIT12_FLAGS_NUMPASSES_16           (0x00000100)
+#define MPI3_IOUNIT12_FLAGS_NUMPASSES_32           (0x00000200)
+#define MPI3_IOUNIT12_FLAGS_NUMPASSES_64           (0x00000300)
+#define MPI3_IOUNIT12_FLAGS_PASSPERIOD_MASK        (0x00000003)
+#define MPI3_IOUNIT12_FLAGS_PASSPERIOD_DISABLED    (0x00000000)
+#define MPI3_IOUNIT12_FLAGS_PASSPERIOD_500US       (0x00000001)
+#define MPI3_IOUNIT12_FLAGS_PASSPERIOD_1MS         (0x00000002)
+#define MPI3_IOUNIT12_FLAGS_PASSPERIOD_2MS         (0x00000003)
+#ifndef MPI3_IOUNIT13_FUNC_MAX
+#define MPI3_IOUNIT13_FUNC_MAX                                     (1)
+#endif
+struct mpi3_iounit13_allowed_function {
+	__le16                             sub_function;
+	u8                                 function_code;
+	u8                                 function_flags;
+};
+#define MPI3_IOUNIT13_FUNCTION_FLAGS_ADMIN_BLOCKED                 (0x04)
+#define MPI3_IOUNIT13_FUNCTION_FLAGS_OOB_BLOCKED                   (0x02)
+#define MPI3_IOUNIT13_FUNCTION_FLAGS_CHECK_SUBFUNCTION_ENABLED     (0x01)
+struct mpi3_io_unit_page13 {
+	struct mpi3_config_page_header         header;
+	__le16                             flags;
+	__le16                             reserved0a;
+	u8                                 num_allowed_functions;
+	u8                                 reserved0d[3];
+	struct mpi3_iounit13_allowed_function  allowed_function[MPI3_IOUNIT13_FUNC_MAX];
+};
+#define MPI3_IOUNIT13_PAGEVERSION                                  (0x00)
+#define MPI3_IOUNIT13_FLAGS_ADMIN_BLOCKED                          (0x0002)
+#define MPI3_IOUNIT13_FLAGS_OOB_BLOCKED                            (0x0001)
+#ifndef MPI3_IOUNIT14_MD_MAX
+#define MPI3_IOUNIT14_MD_MAX                                       (1)
+#endif
+struct mpi3_iounit14_pagemetadata {
+	u8                                 page_type;
+	u8                                 page_number;
+	u8                                 reserved02;
+	u8                                 page_flags;
+};
+#define MPI3_IOUNIT14_PAGEMETADATA_PAGEFLAGS_OOBWRITE_ALLOWED      (0x02)
+#define MPI3_IOUNIT14_PAGEMETADATA_PAGEFLAGS_HOSTWRITE_ALLOWED     (0x01)
+struct mpi3_io_unit_page14 {
+	struct mpi3_config_page_header         header;
+	u8                                 flags;
+	u8                                 reserved09[3];
+	u8                                 num_pages;
+	u8                                 reserved0d[3];
+	struct mpi3_iounit14_pagemetadata      page_metadata[MPI3_IOUNIT14_MD_MAX];
+};
+#define MPI3_IOUNIT14_PAGEVERSION                                  (0x00)
+#define MPI3_IOUNIT14_FLAGS_READONLY                               (0x01)
+#ifndef MPI3_IOUNIT15_PBD_MAX
+#define MPI3_IOUNIT15_PBD_MAX                                       (1)
+#endif
+struct mpi3_io_unit_page15 {
+	struct mpi3_config_page_header         header;
+	u8                                 flags;
+	u8                                 reserved09[3];
+	__le32                             reserved0c;
+	u8                                 power_budgeting_capability;
+	u8                                 reserved11[3];
+	u8                                 num_power_budget_data;
+	u8                                 reserved15[3];
+	__le32                             power_budget_data[MPI3_IOUNIT15_PBD_MAX];
+};
+#define MPI3_IOUNIT15_PAGEVERSION                                   (0x00)
+#define MPI3_IOUNIT15_FLAGS_EPRINIT_INITREQUIRED                    (0x04)
+#define MPI3_IOUNIT15_FLAGS_EPRSUPPORT_MASK                         (0x03)
+#define MPI3_IOUNIT15_FLAGS_EPRSUPPORT_NOT_SUPPORTED                (0x00)
+#define MPI3_IOUNIT15_FLAGS_EPRSUPPORT_WITHOUT_POWER_BRAKE_GPIO     (0x01)
+#define MPI3_IOUNIT15_FLAGS_EPRSUPPORT_WITH_POWER_BRAKE_GPIO        (0x02)
+#define MPI3_IOUNIT15_NUMPOWERBUDGETDATA_POWER_BUDGETING_DISABLED   (0x00)
+
+struct mpi3_io_unit_page17 {
+	struct mpi3_config_page_header         header;
+	u8                                 num_instances;
+	u8                                 instance;
+	__le16                             reserved0a;
+	__le32                             reserved0c[4];
+	__le16                             key_length;
+	u8                                 encryption_algorithm;
+	u8                                 reserved1f;
+	__le32                             current_key[];
+};
+#define MPI3_IOUNIT17_PAGEVERSION		(0x00)
 struct mpi3_ioc_page0 {
 	struct mpi3_config_page_header         header;
 	__le32                             reserved08;
@@ -1058,12 +1263,10 @@ struct mpi3_ioc_page1 {
 	struct mpi3_config_page_header         header;
 	__le32                             coalescing_timeout;
 	u8                                 coalescing_depth;
-	u8                                 pci_slot_num;
+	u8                                 obsolete;
 	__le16                             reserved0e;
 };
-
 #define MPI3_IOC1_PAGEVERSION               (0x00)
-#define MPI3_IOC1_PCISLOTNUM_UNKNOWN        (0xff)
 #ifndef MPI3_IOC2_EVENTMASK_WORDS
 #define MPI3_IOC2_EVENTMASK_WORDS           (4)
 #endif
@@ -1130,21 +1333,26 @@ struct mpi3_driver_page0 {
 	u8                                 tur_interval;
 	u8                                 reserved10;
 	u8                                 security_key_timeout;
-	__le16                             reserved12;
+	__le16                             first_device;
 	__le32                             reserved14;
 	__le32                             reserved18;
 };
-
 #define MPI3_DRIVER0_PAGEVERSION               (0x00)
+#define MPI3_DRIVER0_BSDOPTS_DEVICEEXPOSURE_DISABLE	    (0x00000020)
+#define MPI3_DRIVER0_BSDOPTS_WRITECACHE_DISABLE		    (0x00000010)
+#define MPI3_DRIVER0_BSDOPTS_HEADLESS_MODE_ENABLE           (0x00000008)
+#define MPI3_DRIVER0_BSDOPTS_DIS_HII_CONFIG_UTIL            (0x00000004)
 #define MPI3_DRIVER0_BSDOPTS_REGISTRATION_MASK              (0x00000003)
 #define MPI3_DRIVER0_BSDOPTS_REGISTRATION_IOC_AND_DEVS      (0x00000000)
 #define MPI3_DRIVER0_BSDOPTS_REGISTRATION_IOC_ONLY          (0x00000001)
-#define MPI3_DRIVER0_BSDOPTS_DIS_HII_CONFIG_UTIL            (0x00000004)
-#define MPI3_DRIVER0_BSDOPTS_EN_ADV_ADAPTER_CONFIG          (0x00000008)
+#define MPI3_DRIVER0_BSDOPTS_REGISTRATION_IOC_AND_INTERNAL_DEVS		(0x00000002)
+#define MPI3_DRIVER0_FIRSTDEVICE_IGNORE1                            (0x0000)
+#define MPI3_DRIVER0_FIRSTDEVICE_IGNORE2                            (0xffff)
 struct mpi3_driver_page1 {
 	struct mpi3_config_page_header         header;
 	__le32                             flags;
-	__le32                             reserved0c;
+	u8                                 time_stamp_update;
+	u8                                 reserved0d[3];
 	__le16                             host_diag_trace_max_size;
 	__le16                             host_diag_trace_min_size;
 	__le16                             host_diag_trace_decrement_size;
@@ -1208,7 +1416,7 @@ union mpi3_driver2_trigger_element {
 #define MPI3_DRIVER2_TRIGGER_FLAGS_DIAG_FW_RELEASE                            (0x01)
 struct mpi3_driver_page2 {
 	struct mpi3_config_page_header         header;
-	__le64                             master_trigger;
+	__le64                             global_trigger;
 	__le32                             reserved10[3];
 	u8                                 num_triggers;
 	u8                                 reserved1d[3];
@@ -1216,11 +1424,13 @@ struct mpi3_driver_page2 {
 };
 
 #define MPI3_DRIVER2_PAGEVERSION               (0x00)
-#define MPI3_DRIVER2_MASTERTRIGGER_DIAG_TRACE_RELEASE                       (0x8000000000000000ULL)
-#define MPI3_DRIVER2_MASTERTRIGGER_DIAG_FW_RELEASE                          (0x4000000000000000ULL)
-#define MPI3_DRIVER2_MASTERTRIGGER_SNAPDUMP                                 (0x2000000000000000ULL)
-#define MPI3_DRIVER2_MASTERTRIGGER_DEVICE_REMOVAL_ENABLED                   (0x0000000000000004ULL)
-#define MPI3_DRIVER2_MASTERTRIGGER_TASK_MANAGEMENT_ENABLED                  (0x0000000000000002ULL)
+#define MPI3_DRIVER2_GLOBALTRIGGER_DIAG_TRACE_RELEASE                       (0x8000000000000000ULL)
+#define MPI3_DRIVER2_GLOBALTRIGGER_DIAG_FW_RELEASE                          (0x4000000000000000ULL)
+#define MPI3_DRIVER2_GLOBALTRIGGER_SNAPDUMP_ENABLED			    (0x2000000000000000ULL)
+#define MPI3_DRIVER2_GLOBALTRIGGER_POST_DIAG_TRACE_DISABLED                 (0x1000000000000000ULL)
+#define MPI3_DRIVER2_GLOBALTRIGGER_POST_DIAG_FW_DISABLED                    (0x0800000000000000ULL)
+#define MPI3_DRIVER2_GLOBALTRIGGER_DEVICE_REMOVAL_ENABLED                   (0x0000000000000004ULL)
+#define MPI3_DRIVER2_GLOBALTRIGGER_TASK_MANAGEMENT_ENABLED                  (0x0000000000000002ULL)
 struct mpi3_driver_page10 {
 	struct mpi3_config_page_header         header;
 	__le16                             flags;
@@ -1263,6 +1473,12 @@ union mpi3_security_nonce {
 	u8                                 byte[64];
 };
 
+union mpi3_security_root_digest {
+	__le32                             dword[16];
+	__le16                             word[32];
+	u8                                 byte[64];
+};
+
 union mpi3_security0_cert_chain {
 	__le32                             dword[1024];
 	__le16                             word[2048];
@@ -1294,7 +1510,7 @@ struct mpi3_security_page0 {
 #define MPI3_SECURITY1_KEY_RECORD_MAX      1
 #endif
 #ifndef MPI3_SECURITY1_PAD_MAX
-#define MPI3_SECURITY1_PAD_MAX      1
+#define MPI3_SECURITY1_PAD_MAX      4
 #endif
 union mpi3_security1_key_data {
 	__le32                             dword[128];
@@ -1335,6 +1551,32 @@ struct mpi3_security_page1 {
 };
 
 #define MPI3_SECURITY1_PAGEVERSION               (0x00)
+#ifndef MPI3_SECURITY2_TRUSTED_ROOT_MAX
+#define MPI3_SECURITY2_TRUSTED_ROOT_MAX      1
+#endif
+struct mpi3_security2_trusted_root {
+	u8                                 level;
+	u8                                 hash_algorithm;
+	__le16                             trusted_root_flags;
+	__le32                             reserved04[3];
+	union mpi3_security_root_digest       root_digest;
+};
+#define MPI3_SECURITY2_TRUSTEDROOT_TRUSTEDROOTFLAGS_HASHALGOSOURCE_MASK            (0x0006)
+#define MPI3_SECURITY2_TRUSTEDROOT_TRUSTEDROOTFLAGS_HASHALGOSOURCE_SHIFT           (1)
+#define MPI3_SECURITY2_TRUSTEDROOT_TRUSTEDROOTFLAGS_HASHALGOSOURCE_HA_FIELD        (0x0000)
+#define MPI3_SECURITY2_TRUSTEDROOT_TRUSTEDROOTFLAGS_HASHALGOSOURCE_AKI             (0x0002)
+#define MPI3_SECURITY2_TRUSTEDROOT_TRUSTEDROOTFLAGS_USERPROVISIONED_YES            (0x0001)
+struct mpi3_security_page2 {
+	struct mpi3_config_page_header         header;
+	__le32                             reserved08[2];
+	union mpi3_security_mac               mac;
+	union mpi3_security_nonce             nonce;
+	__le32                             reserved90[3];
+	u8                                 num_roots;
+	u8                                 reserved9d[3];
+	struct mpi3_security2_trusted_root     trusted_root[MPI3_SECURITY2_TRUSTED_ROOT_MAX];
+};
+#define MPI3_SECURITY2_PAGEVERSION               (0x00)
 struct mpi3_sas_io_unit0_phy_data {
 	u8                 io_unit_port;
 	u8                 port_flags;
@@ -1348,16 +1590,13 @@ struct mpi3_sas_io_unit0_phy_data {
 	__le32             reserved10;
 };
 
-#ifndef MPI3_SAS_IO_UNIT0_PHY_MAX
-#define MPI3_SAS_IO_UNIT0_PHY_MAX           (1)
-#endif
 struct mpi3_sas_io_unit_page0 {
 	struct mpi3_config_page_header         header;
 	__le32                             reserved08;
 	u8                                 num_phys;
 	u8                                 init_status;
 	__le16                             reserved0e;
-	struct mpi3_sas_io_unit0_phy_data      phy_data[MPI3_SAS_IO_UNIT0_PHY_MAX];
+	struct mpi3_sas_io_unit0_phy_data      phy_data[];
 };
 
 #define MPI3_SASIOUNIT0_PAGEVERSION                          (0x00)
@@ -1389,9 +1628,6 @@ struct mpi3_sas_io_unit1_phy_data {
 	__le32             reserved08;
 };
 
-#ifndef MPI3_SAS_IO_UNIT1_PHY_MAX
-#define MPI3_SAS_IO_UNIT1_PHY_MAX           (1)
-#endif
 struct mpi3_sas_io_unit_page1 {
 	struct mpi3_config_page_header         header;
 	__le16                             control_flags;
@@ -1401,7 +1637,7 @@ struct mpi3_sas_io_unit_page1 {
 	u8                                 num_phys;
 	u8                                 sata_max_q_depth;
 	__le16                             reserved12;
-	struct mpi3_sas_io_unit1_phy_data      phy_data[MPI3_SAS_IO_UNIT1_PHY_MAX];
+	struct mpi3_sas_io_unit1_phy_data      phy_data[];
 };
 
 #define MPI3_SASIOUNIT1_PAGEVERSION                                 (0x00)
@@ -1861,19 +2097,30 @@ struct mpi3_pcie_io_unit_page1 {
 };
 
 #define MPI3_PCIEIOUNIT1_PAGEVERSION                                           (0x00)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_OVERRIDE_DISABLE                   (0x80)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_DISABLE                  (0x40)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_MASK                (0x30)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_PERST_OVERRIDE_MASK                     (0xe0000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_PERST_OVERRIDE_NONE                     (0x00000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_PERST_OVERRIDE_DEASSERT                 (0x20000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_PERST_OVERRIDE_ASSERT                   (0x40000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_PERST_OVERRIDE_BACKPLANE_ERROR          (0x60000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_REFCLK_OVERRIDE_MASK                    (0x1c000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_REFCLK_OVERRIDE_NONE                    (0x00000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_REFCLK_OVERRIDE_DEASSERT                (0x04000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_REFCLK_OVERRIDE_ASSERT                  (0x08000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_REFCLK_OVERRIDE_BACKPLANE_ERROR         (0x0c000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_OVERRIDE_DISABLE                   (0x00000080)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_DISABLE                  (0x00000040)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_MASK                (0x00000030)
 #define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_SHIFT               (4)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_SRIS_SRNS_DISABLED  (0x00)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_SRIS_ENABLED        (0x10)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_SRNS_ENABLED        (0x20)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MASK                 (0x0f)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_2_5              (0x02)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_5_0              (0x03)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_8_0              (0x04)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_16_0             (0x05)
-#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_32_0             (0x06)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_SRIS_SRNS_DISABLED  (0x00000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_SRIS_ENABLED        (0x00000010)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_CLOCK_OVERRIDE_MODE_SRNS_ENABLED        (0x00000020)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MASK                 (0x0000000f)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_USE_BACKPLANE        (0x00000000)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_2_5              (0x00000002)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_5_0              (0x00000003)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_8_0              (0x00000004)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_16_0             (0x00000005)
+#define MPI3_PCIEIOUNIT1_CONTROL_FLAGS_LINK_RATE_OVERRIDE_MAX_32_0             (0x00000006)
 #define MPI3_PCIEIOUNIT1_ASPM_SWITCH_MASK                                 (0x0c)
 #define MPI3_PCIEIOUNIT1_ASPM_SWITCH_SHIFT                                   (2)
 #define MPI3_PCIEIOUNIT1_ASPM_DIRECT_MASK                                 (0x03)
@@ -2102,10 +2349,11 @@ struct mpi3_device0_vd_format {
 	u8         raid_level;
 	__le16     device_info;
 	__le16     flags;
-	__le16     reserved06;
-	__le32     reserved08[2];
+	__le16     io_throttle_group;
+	__le16     io_throttle_group_low;
+	__le16     io_throttle_group_high;
+	__le32     reserved0c;
 };
-
 #define MPI3_DEVICE0_VD_STATE_OFFLINE                       (0x00)
 #define MPI3_DEVICE0_VD_STATE_PARTIALLY_DEGRADED            (0x01)
 #define MPI3_DEVICE0_VD_STATE_DEGRADED                      (0x02)
@@ -2122,10 +2370,12 @@ struct mpi3_device0_vd_format {
 #define MPI3_DEVICE0_VD_DEVICE_INFO_NVME                    (0x0004)
 #define MPI3_DEVICE0_VD_DEVICE_INFO_SATA                    (0x0002)
 #define MPI3_DEVICE0_VD_DEVICE_INFO_SAS                     (0x0001)
-#define MPI3_DEVICE0_VD_FLAGS_METADATA_MODE_MASK            (0x0003)
-#define MPI3_DEVICE0_VD_FLAGS_METADATA_MODE_NONE            (0x0000)
-#define MPI3_DEVICE0_VD_FLAGS_METADATA_MODE_HOST            (0x0001)
-#define MPI3_DEVICE0_VD_FLAGS_METADATA_MODE_IOC             (0x0002)
+#define MPI3_DEVICE0_VD_FLAGS_IO_THROTTLE_GROUP_QD_MASK     (0xf000)
+#define MPI3_DEVICE0_VD_FLAGS_IO_THROTTLE_GROUP_QD_SHIFT    (12)
+#define MPI3_DEVICE0_VD_FLAGS_OSEXPOSURE_MASK               (0x0003)
+#define MPI3_DEVICE0_VD_FLAGS_OSEXPOSURE_HDD                (0x0000)
+#define MPI3_DEVICE0_VD_FLAGS_OSEXPOSURE_SSD                (0x0001)
+#define MPI3_DEVICE0_VD_FLAGS_OSEXPOSURE_NO_GUIDANCE        (0x0002)
 union mpi3_device0_dev_spec_format {
 	struct mpi3_device0_sas_sata_format        sas_sata_format;
 	struct mpi3_device0_pcie_format            pcie_format;
@@ -2205,21 +2455,24 @@ struct mpi3_device_page0 {
 #define MPI3_DEVICE0_ASTATUS_NVME_BAR                               (0x4f)
 #define MPI3_DEVICE0_ASTATUS_NVME_NS_DESCRIPTOR                     (0x50)
 #define MPI3_DEVICE0_ASTATUS_NVME_INCOMPATIBLE_SETTINGS             (0x51)
+#define MPI3_DEVICE0_ASTATUS_NVME_TOO_MANY_ERRORS                   (0x52)
 #define MPI3_DEVICE0_ASTATUS_NVME_MAX                               (0x5f)
 #define MPI3_DEVICE0_ASTATUS_VD_UNKNOWN                             (0x80)
 #define MPI3_DEVICE0_ASTATUS_VD_MAX                                 (0x8f)
+#define MPI3_DEVICE0_FLAGS_MAX_WRITE_SAME_MASK          (0xe000)
+#define MPI3_DEVICE0_FLAGS_MAX_WRITE_SAME_NO_LIMIT      (0x0000)
+#define MPI3_DEVICE0_FLAGS_MAX_WRITE_SAME_256_LB        (0x2000)
+#define MPI3_DEVICE0_FLAGS_MAX_WRITE_SAME_2048_LB       (0x4000)
 #define MPI3_DEVICE0_FLAGS_CONTROLLER_DEV_HANDLE        (0x0080)
+#define MPI3_DEVICE0_FLAGS_IO_THROTTLING_REQUIRED       (0x0010)
 #define MPI3_DEVICE0_FLAGS_HIDDEN                       (0x0008)
-#define MPI3_DEVICE0_FLAGS_ATT_METHOD_MASK              (0x0006)
-#define MPI3_DEVICE0_FLAGS_ATT_METHOD_NOT_DIR_ATTACHED  (0x0000)
-#define MPI3_DEVICE0_FLAGS_ATT_METHOD_DIR_ATTACHED      (0x0002)
 #define MPI3_DEVICE0_FLAGS_ATT_METHOD_VIRTUAL           (0x0004)
+#define MPI3_DEVICE0_FLAGS_ATT_METHOD_DIR_ATTACHED      (0x0002)
 #define MPI3_DEVICE0_FLAGS_DEVICE_PRESENT               (0x0001)
 #define MPI3_DEVICE0_QUEUE_DEPTH_NOT_APPLICABLE         (0x0000)
 struct mpi3_device1_sas_sata_format {
 	__le32                             reserved00;
 };
-
 struct mpi3_device1_pcie_format {
 	__le16                             vendor_id;
 	__le16                             device_id;

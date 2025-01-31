@@ -188,12 +188,13 @@ struct __packed vmcs12 {
 };
 
 /*
- * VMCS12_REVISION is an arbitrary id that should be changed if the content or
- * layout of struct vmcs12 is changed. MSR_IA32_VMX_BASIC returns this id, and
- * VMPTRLD verifies that the VMCS region that L1 is loading contains this id.
+ * VMCS12_REVISION is KVM's arbitrary ID for the layout of struct vmcs12.  KVM
+ * enumerates this value to L1 via MSR_IA32_VMX_BASIC, and checks the revision
+ * ID during nested VMPTRLD to verify that L1 is loading a VMCS that adhere's
+ * to KVM's virtual CPU definition.
  *
- * IMPORTANT: Changing this value will break save/restore compatibility with
- * older kvm releases.
+ * DO NOT change this value, as it will break save/restore compatibility with
+ * older KVM releases.
  */
 #define VMCS12_REVISION 0x11e57ed0
 
@@ -206,11 +207,11 @@ struct __packed vmcs12 {
 #define VMCS12_SIZE		KVM_STATE_NESTED_VMX_VMCS_SIZE
 
 /*
- * For save/restore compatibility, the vmcs12 field offsets must not change.
+ * For save/restore compatibility, the vmcs12 field offsets must not change,
+ * although appending fields and/or filling gaps is obviously allowed.
  */
-#define CHECK_OFFSET(field, loc)				\
-	BUILD_BUG_ON_MSG(offsetof(struct vmcs12, field) != (loc),	\
-		"Offset of " #field " in struct vmcs12 has changed.")
+#define CHECK_OFFSET(field, loc) \
+	ASSERT_STRUCT_OFFSET(struct vmcs12, field, loc)
 
 static inline void vmx_check_vmcs12_offsets(void)
 {
@@ -361,10 +362,10 @@ static inline void vmx_check_vmcs12_offsets(void)
 	CHECK_OFFSET(guest_pml_index, 996);
 }
 
-extern const unsigned short vmcs_field_to_offset_table[];
+extern const unsigned short vmcs12_field_offsets[];
 extern const unsigned int nr_vmcs12_fields;
 
-static inline short vmcs_field_to_offset(unsigned long field)
+static inline short get_vmcs12_field_offset(unsigned long field)
 {
 	unsigned short offset;
 	unsigned int index;
@@ -377,7 +378,7 @@ static inline short vmcs_field_to_offset(unsigned long field)
 		return -ENOENT;
 
 	index = array_index_nospec(index, nr_vmcs12_fields);
-	offset = vmcs_field_to_offset_table[index];
+	offset = vmcs12_field_offsets[index];
 	if (offset == 0)
 		return -ENOENT;
 	return offset;

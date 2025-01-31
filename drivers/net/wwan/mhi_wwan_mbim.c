@@ -42,6 +42,8 @@
 #define MHI_MBIM_LINK_HASH_SIZE 8
 #define LINK_HASH(session) ((session) % MHI_MBIM_LINK_HASH_SIZE)
 
+#define WDS_BIND_MUX_DATA_PORT_MUX_ID 112
+
 struct mhi_mbim_link {
 	struct mhi_mbim_context *mbim;
 	struct net_device *ndev;
@@ -91,6 +93,15 @@ static struct mhi_mbim_link *mhi_mbim_get_link_rcu(struct mhi_mbim_context *mbim
 	}
 
 	return NULL;
+}
+
+static int mhi_mbim_get_link_mux_id(struct mhi_controller *cntrl)
+{
+	if (strcmp(cntrl->name, "foxconn-dw5934e") == 0 ||
+	    strcmp(cntrl->name, "foxconn-t99w515") == 0)
+		return WDS_BIND_MUX_DATA_PORT_MUX_ID;
+
+	return 0;
 }
 
 static struct sk_buff *mbim_tx_fixup(struct sk_buff *skb, unsigned int session,
@@ -456,19 +467,19 @@ static void mhi_mbim_ndo_get_stats64(struct net_device *ndev,
 	unsigned int start;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&link->rx_syncp);
+		start = u64_stats_fetch_begin(&link->rx_syncp);
 		stats->rx_packets = u64_stats_read(&link->rx_packets);
 		stats->rx_bytes = u64_stats_read(&link->rx_bytes);
 		stats->rx_errors = u64_stats_read(&link->rx_errors);
-	} while (u64_stats_fetch_retry_irq(&link->rx_syncp, start));
+	} while (u64_stats_fetch_retry(&link->rx_syncp, start));
 
 	do {
-		start = u64_stats_fetch_begin_irq(&link->tx_syncp);
+		start = u64_stats_fetch_begin(&link->tx_syncp);
 		stats->tx_packets = u64_stats_read(&link->tx_packets);
 		stats->tx_bytes = u64_stats_read(&link->tx_bytes);
 		stats->tx_errors = u64_stats_read(&link->tx_errors);
 		stats->tx_dropped = u64_stats_read(&link->tx_dropped);
-	} while (u64_stats_fetch_retry_irq(&link->tx_syncp, start));
+	} while (u64_stats_fetch_retry(&link->tx_syncp, start));
 }
 
 static void mhi_mbim_ul_callback(struct mhi_device *mhi_dev,
@@ -582,6 +593,7 @@ static void mhi_mbim_setup(struct net_device *ndev)
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = MHI_MAX_BUF_SZ - ndev->needed_headroom;
 	ndev->tx_queue_len = 1000;
+	ndev->needs_free_netdev = true;
 }
 
 static const struct wwan_ops mhi_mbim_wwan_ops = {
@@ -595,7 +607,7 @@ static int mhi_mbim_probe(struct mhi_device *mhi_dev, const struct mhi_device_id
 {
 	struct mhi_controller *cntrl = mhi_dev->mhi_cntrl;
 	struct mhi_mbim_context *mbim;
-	int err;
+	int err, link_id;
 
 	mbim = devm_kzalloc(&mhi_dev->dev, sizeof(*mbim), GFP_KERNEL);
 	if (!mbim)
@@ -616,8 +628,11 @@ static int mhi_mbim_probe(struct mhi_device *mhi_dev, const struct mhi_device_id
 	/* Number of transfer descriptors determines size of the queue */
 	mbim->rx_queue_sz = mhi_get_free_desc_count(mhi_dev, DMA_FROM_DEVICE);
 
+	/* Get the corresponding mux_id from mhi */
+	link_id = mhi_mbim_get_link_mux_id(cntrl);
+
 	/* Register wwan link ops with MHI controller representing WWAN instance */
-	return wwan_register_ops(&cntrl->mhi_dev->dev, &mhi_mbim_wwan_ops, mbim, 0);
+	return wwan_register_ops(&cntrl->mhi_dev->dev, &mhi_mbim_wwan_ops, mbim, link_id);
 }
 
 static void mhi_mbim_remove(struct mhi_device *mhi_dev)
@@ -647,7 +662,6 @@ static struct mhi_driver mhi_mbim_driver = {
 	.id_table = mhi_mbim_id_table,
 	.driver = {
 		.name = "mhi_wwan_mbim",
-		.owner = THIS_MODULE,
 	},
 };
 

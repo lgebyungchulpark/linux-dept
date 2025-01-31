@@ -159,13 +159,17 @@ static bool __report_matches(const struct expect_report *r)
 	const bool is_assert = (r->access[0].type | r->access[1].type) & KCSAN_ACCESS_ASSERT;
 	bool ret = false;
 	unsigned long flags;
-	typeof(observed.lines) expect;
+	typeof(*observed.lines) *expect;
 	const char *end;
 	char *cur;
 	int i;
 
 	/* Doubled-checked locking. */
 	if (!report_available())
+		return false;
+
+	expect = kmalloc(sizeof(observed.lines), GFP_KERNEL);
+	if (WARN_ON(!expect))
 		return false;
 
 	/* Generate expected report contents. */
@@ -253,6 +257,7 @@ static bool __report_matches(const struct expect_report *r)
 		strstr(observed.lines[2], expect[1])));
 out:
 	spin_unlock_irqrestore(&observed.lock, flags);
+	kfree(expect);
 	return ret;
 }
 
@@ -299,6 +304,7 @@ static long test_array[3 * PAGE_SIZE / sizeof(long)];
 static struct {
 	long val[8];
 } test_struct;
+static long __data_racy test_data_racy;
 static DEFINE_SEQLOCK(test_seqlock);
 static DEFINE_SPINLOCK(test_spinlock);
 static DEFINE_MUTEX(test_mutex);
@@ -352,6 +358,8 @@ __no_kcsan
 static noinline void test_kernel_write_uninstrumented(void) { test_var++; }
 
 static noinline void test_kernel_data_race(void) { data_race(test_var++); }
+
+static noinline void test_kernel_data_racy_qualifier(void) { test_data_racy++; }
 
 static noinline void test_kernel_assert_writer(void)
 {
@@ -694,12 +702,9 @@ static void test_barrier_nothreads(struct kunit *test)
 	KCSAN_EXPECT_RW_BARRIER(spin_unlock(&test_spinlock), true);
 	KCSAN_EXPECT_RW_BARRIER(mutex_lock(&test_mutex), false);
 	KCSAN_EXPECT_RW_BARRIER(mutex_unlock(&test_mutex), true);
-
-#ifdef clear_bit_unlock_is_negative_byte
-	KCSAN_EXPECT_READ_BARRIER(clear_bit_unlock_is_negative_byte(0, &test_var), true);
-	KCSAN_EXPECT_WRITE_BARRIER(clear_bit_unlock_is_negative_byte(0, &test_var), true);
-	KCSAN_EXPECT_RW_BARRIER(clear_bit_unlock_is_negative_byte(0, &test_var), true);
-#endif
+	KCSAN_EXPECT_READ_BARRIER(xor_unlock_is_negative_byte(1, &test_var), true);
+	KCSAN_EXPECT_WRITE_BARRIER(xor_unlock_is_negative_byte(1, &test_var), true);
+	KCSAN_EXPECT_RW_BARRIER(xor_unlock_is_negative_byte(1, &test_var), true);
 	kcsan_nestable_atomic_end();
 }
 
@@ -1001,6 +1006,19 @@ static void test_data_race(struct kunit *test)
 	bool match_never = false;
 
 	begin_test_checks(test_kernel_data_race, test_kernel_data_race);
+	do {
+		match_never = report_available();
+	} while (!end_test_checks(match_never));
+	KUNIT_EXPECT_FALSE(test, match_never);
+}
+
+/* Test the __data_racy type qualifier. */
+__no_kcsan
+static void test_data_racy_qualifier(struct kunit *test)
+{
+	bool match_never = false;
+
+	begin_test_checks(test_kernel_data_racy_qualifier, test_kernel_data_racy_qualifier);
 	do {
 		match_never = report_available();
 	} while (!end_test_checks(match_never));
@@ -1380,13 +1398,14 @@ static const void *nthreads_gen_params(const void *prev, char *desc)
 	else
 		nthreads *= 2;
 
-	if (!IS_ENABLED(CONFIG_PREEMPT) || !IS_ENABLED(CONFIG_KCSAN_INTERRUPT_WATCHER)) {
+	if (!preempt_model_preemptible() ||
+	    !IS_ENABLED(CONFIG_KCSAN_INTERRUPT_WATCHER)) {
 		/*
 		 * Without any preemption, keep 2 CPUs free for other tasks, one
 		 * of which is the main test case function checking for
 		 * completion or failure.
 		 */
-		const long min_unused_cpus = IS_ENABLED(CONFIG_PREEMPT_NONE) ? 2 : 0;
+		const long min_unused_cpus = preempt_model_none() ? 2 : 0;
 		const long min_required_cpus = 2 + min_unused_cpus;
 
 		if (num_online_cpus() < min_required_cpus) {
@@ -1421,6 +1440,7 @@ static struct kunit_case kcsan_test_cases[] = {
 	KCSAN_KUNIT_CASE(test_read_plain_atomic_rmw),
 	KCSAN_KUNIT_CASE(test_zero_size_access),
 	KCSAN_KUNIT_CASE(test_data_race),
+	KCSAN_KUNIT_CASE(test_data_racy_qualifier),
 	KCSAN_KUNIT_CASE(test_assert_exclusive_writer),
 	KCSAN_KUNIT_CASE(test_assert_exclusive_access),
 	KCSAN_KUNIT_CASE(test_assert_exclusive_access_writer),
@@ -1565,53 +1585,41 @@ static void test_exit(struct kunit *test)
 	torture_cleanup_end();
 }
 
+__no_kcsan
+static void register_tracepoints(void)
+{
+	register_trace_console(probe_console, NULL);
+}
+
+__no_kcsan
+static void unregister_tracepoints(void)
+{
+	unregister_trace_console(probe_console, NULL);
+}
+
+static int kcsan_suite_init(struct kunit_suite *suite)
+{
+	register_tracepoints();
+	return 0;
+}
+
+static void kcsan_suite_exit(struct kunit_suite *suite)
+{
+	unregister_tracepoints();
+	tracepoint_synchronize_unregister();
+}
+
 static struct kunit_suite kcsan_test_suite = {
 	.name = "kcsan",
 	.test_cases = kcsan_test_cases,
 	.init = test_init,
 	.exit = test_exit,
+	.suite_init = kcsan_suite_init,
+	.suite_exit = kcsan_suite_exit,
 };
-static struct kunit_suite *kcsan_test_suites[] = { &kcsan_test_suite, NULL };
 
-__no_kcsan
-static void register_tracepoints(struct tracepoint *tp, void *ignore)
-{
-	check_trace_callback_type_console(probe_console);
-	if (!strcmp(tp->name, "console"))
-		WARN_ON(tracepoint_probe_register(tp, probe_console, NULL));
-}
+kunit_test_suites(&kcsan_test_suite);
 
-__no_kcsan
-static void unregister_tracepoints(struct tracepoint *tp, void *ignore)
-{
-	if (!strcmp(tp->name, "console"))
-		tracepoint_probe_unregister(tp, probe_console, NULL);
-}
-
-/*
- * We only want to do tracepoints setup and teardown once, therefore we have to
- * customize the init and exit functions and cannot rely on kunit_test_suite().
- */
-static int __init kcsan_test_init(void)
-{
-	/*
-	 * Because we want to be able to build the test as a module, we need to
-	 * iterate through all known tracepoints, since the static registration
-	 * won't work here.
-	 */
-	for_each_kernel_tracepoint(register_tracepoints, NULL);
-	return __kunit_test_suites_init(kcsan_test_suites);
-}
-
-static void kcsan_test_exit(void)
-{
-	__kunit_test_suites_exit(kcsan_test_suites);
-	for_each_kernel_tracepoint(unregister_tracepoints, NULL);
-	tracepoint_synchronize_unregister();
-}
-
-late_initcall_sync(kcsan_test_init);
-module_exit(kcsan_test_exit);
-
+MODULE_DESCRIPTION("KCSAN test suite");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Marco Elver <elver@google.com>");

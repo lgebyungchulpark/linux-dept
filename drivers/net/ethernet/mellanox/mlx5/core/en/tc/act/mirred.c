@@ -10,6 +10,7 @@
 #include "en/tc_tun_encap.h"
 #include "en/tc_priv.h"
 #include "en_rep.h"
+#include "lag/lag.h"
 
 static bool
 same_vf_reps(struct mlx5e_priv *priv, struct net_device *out_dev)
@@ -99,7 +100,8 @@ get_fdb_out_dev(struct net_device *uplink_dev, struct net_device *out_dev)
 static bool
 tc_act_can_offload_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 			  const struct flow_action_entry *act,
-			  int act_index)
+			  int act_index,
+			  struct mlx5_flow_attr *attr)
 {
 	struct netlink_ext_ack *extack = parse_state->extack;
 	struct mlx5e_tc_flow *flow = parse_state->flow;
@@ -108,8 +110,8 @@ tc_act_can_offload_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 	struct mlx5e_priv *priv = flow->priv;
 	struct mlx5_esw_flow_attr *esw_attr;
 
-	parse_attr = flow->attr->parse_attr;
-	esw_attr = flow->attr->esw_attr;
+	parse_attr = attr->parse_attr;
+	esw_attr = attr->esw_attr;
 
 	if (!out_dev) {
 		/* out_dev is NULL when filters with
@@ -121,6 +123,16 @@ tc_act_can_offload_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 
 	if (parse_state->mpls_push && !netif_is_bareudp(out_dev)) {
 		NL_SET_ERR_MSG_MOD(extack, "mpls is supported only through a bareudp device");
+		return false;
+	}
+
+	if (parse_state->eth_pop && !parse_state->mpls_push) {
+		NL_SET_ERR_MSG_MOD(extack, "vlan pop eth is supported only with mpls push");
+		return false;
+	}
+
+	if (flow_flag_test(parse_state->flow, L3_TO_L2_DECAP) && !parse_state->eth_push) {
+		NL_SET_ERR_MSG_MOD(extack, "mpls pop is only supported with vlan eth push");
 		return false;
 	}
 
@@ -177,9 +189,15 @@ parse_mirred_encap(struct mlx5e_tc_act_parse_state *parse_state,
 		return -ENOMEM;
 
 	parse_state->encap = false;
+
+	if (parse_state->mpls_push) {
+		memcpy(&parse_attr->mpls_info[esw_attr->out_count],
+		       &parse_state->mpls_info, sizeof(parse_state->mpls_info));
+		parse_state->mpls_push = false;
+	}
 	esw_attr->dests[esw_attr->out_count].flags |= MLX5_ESW_DEST_ENCAP;
 	esw_attr->out_count++;
-	/* attr->dests[].rep is resolved when we handle encap */
+	/* attr->dests[].vport is resolved when we handle encap */
 
 	return 0;
 }
@@ -213,6 +231,12 @@ parse_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 	parse_state->ifindexes[if_count] = out_dev->ifindex;
 	parse_state->if_count++;
 
+	if (mlx5_lag_mpesw_do_mirred(priv->mdev, out_dev, extack))
+		return -EOPNOTSUPP;
+
+	if (netif_is_macvlan(out_dev))
+		out_dev = macvlan_dev_real_dev(out_dev);
+
 	out_dev = get_fdb_out_dev(uplink_dev, out_dev);
 	if (!out_dev)
 		return -ENODEV;
@@ -228,9 +252,6 @@ parse_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 		if (err)
 			return err;
 	}
-
-	if (netif_is_macvlan(out_dev))
-		out_dev = macvlan_dev_real_dev(out_dev);
 
 	err = verify_uplink_forwarding(priv, attr, out_dev, extack);
 	if (err)
@@ -249,8 +270,10 @@ parse_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 
 	out_priv = netdev_priv(out_dev);
 	rpriv = out_priv->ppriv;
-	esw_attr->dests[esw_attr->out_count].rep = rpriv->rep;
+	esw_attr->dests[esw_attr->out_count].vport_valid = true;
+	esw_attr->dests[esw_attr->out_count].vport = rpriv->rep->vport;
 	esw_attr->dests[esw_attr->out_count].mdev = out_priv->mdev;
+
 	esw_attr->out_count++;
 
 	return 0;
@@ -272,6 +295,7 @@ parse_mirred_ovs_master(struct mlx5e_tc_act_parse_state *parse_state,
 	if (err)
 		return err;
 
+	parse_state->if_count = 0;
 	esw_attr->out_count++;
 	return 0;
 }
@@ -295,8 +319,7 @@ tc_act_parse_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 	if (err)
 		return err;
 
-	attr->action |= MLX5_FLOW_CONTEXT_ACTION_FWD_DEST |
-			MLX5_FLOW_CONTEXT_ACTION_COUNT;
+	attr->action |= MLX5_FLOW_CONTEXT_ACTION_FWD_DEST;
 
 	return 0;
 }
@@ -304,4 +327,11 @@ tc_act_parse_mirred(struct mlx5e_tc_act_parse_state *parse_state,
 struct mlx5e_tc_act mlx5e_tc_act_mirred = {
 	.can_offload = tc_act_can_offload_mirred,
 	.parse_action = tc_act_parse_mirred,
+	.is_terminating_action = false,
+};
+
+struct mlx5e_tc_act mlx5e_tc_act_redirect = {
+	.can_offload = tc_act_can_offload_mirred,
+	.parse_action = tc_act_parse_mirred,
+	.is_terminating_action = true,
 };

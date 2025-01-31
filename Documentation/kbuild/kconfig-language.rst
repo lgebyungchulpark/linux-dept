@@ -70,7 +70,11 @@ applicable everywhere (see syntax).
 
   Every menu entry can have at most one prompt, which is used to display
   to the user. Optionally dependencies only for this prompt can be added
-  with "if".
+  with "if". If a prompt is not present, the config option is a non-visible
+  symbol, meaning its value cannot be directly changed by the user (such as
+  altering the value in ``.config``) and the option will not appear in any
+  config menus. Its value can only be set via "default" and "select" (see
+  below).
 
 - default value: "default" <expr> ["if" <expr>]
 
@@ -150,6 +154,12 @@ applicable everywhere (see syntax).
 	That will limit the usefulness but on the other hand avoid
 	the illegal configurations all over.
 
+	If "select" <symbol> is followed by "if" <expr>, <symbol> will be
+	selected by the logical AND of the value of the current menu symbol
+	and <expr>. This means, the lower limit can be downgraded due to the
+	presence of "if" <expr>. This behavior may seem weird, but we rely on
+	it. (The future of this behavior is undecided.)
+
 - weak reverse dependencies: "imply" <symbol> ["if" <expr>]
 
   This is similar to "select" as it enforces a lower limit on another
@@ -184,7 +194,7 @@ applicable everywhere (see syntax).
   ability to hook into a secondary subsystem while allowing the user to
   configure that subsystem out without also having to unset these drivers.
 
-  Note: If the combination of FOO=y and BAR=m causes a link error,
+  Note: If the combination of FOO=y and BAZ=m causes a link error,
   you can guard the function call with IS_REACHABLE()::
 
 	foo_init()
@@ -201,6 +211,10 @@ applicable everywhere (see syntax).
 	tristate "foo"
 	imply BAR
 	imply BAZ
+
+  Note: If "imply" <symbol> is followed by "if" <expr>, the default of <symbol>
+  will be the logical AND of the value of the current menu symbol and <expr>.
+  (The future of this behavior is undecided.)
 
 - limiting menu display: "visible if" <expr>
 
@@ -393,29 +407,15 @@ of C0, which doesn't depend on M::
 
 choices::
 
-	"choice" [symbol]
+	"choice"
 	<choice options>
 	<choice block>
 	"endchoice"
 
-This defines a choice group and accepts any of the above attributes as
-options. A choice can only be of type bool or tristate.  If no type is
-specified for a choice, its type will be determined by the type of
-the first choice element in the group or remain unknown if none of the
-choice elements have a type specified, as well.
+This defines a choice group and accepts "prompt", "default", "depends on", and
+"help" attributes as options.
 
-While a boolean choice only allows a single config entry to be
-selected, a tristate choice also allows any number of config entries
-to be set to 'm'. This can be used if multiple drivers for a single
-hardware exists and only a single driver can be compiled/loaded into
-the kernel, but all drivers can be compiled as modules.
-
-A choice accepts another option "optional", which allows to set the
-choice to 'n' and no entry needs to be selected.
-If no [symbol] is associated with a choice, then you can not have multiple
-definitions of that choice. If a [symbol] is associated to the choice,
-then you may define the same choice (i.e. with the same entries) in another
-place.
+A choice only allows a single config entry to be selected.
 
 comment::
 
@@ -525,8 +525,8 @@ followed by a test macro::
 If you need to expose a compiler capability to makefiles and/or C source files,
 `CC_HAS_` is the recommended prefix for the config option::
 
-  config CC_HAS_ASM_GOTO
-	def_bool $(success,$(srctree)/scripts/gcc-goto.sh $(CC))
+  config CC_HAS_FOO
+	def_bool $(success,$(srctree)/scripts/cc-check-foo.sh $(CC))
 
 Build as module only
 ~~~~~~~~~~~~~~~~~~~~
@@ -572,6 +572,32 @@ above, leading to:
   config FOO
 	bool "Support for foo hardware"
 	depends on ARCH_FOO_VENDOR || COMPILE_TEST
+
+Optional dependencies
+~~~~~~~~~~~~~~~~~~~~~
+
+Some drivers are able to optionally use a feature from another module
+or build cleanly with that module disabled, but cause a link failure
+when trying to use that loadable module from a built-in driver.
+
+The most common way to express this optional dependency in Kconfig logic
+uses the slightly counterintuitive::
+
+  config FOO
+	tristate "Support for foo hardware"
+	depends on BAR || !BAR
+
+This means that there is either a dependency on BAR that disallows
+the combination of FOO=y with BAR=m, or BAR is completely disabled.
+For a more formalized approach if there are multiple drivers that have
+the same dependency, a helper symbol can be used, like::
+
+  config FOO
+	tristate "Support for foo hardware"
+	depends on BAR_OPTIONAL
+
+  config BAR_OPTIONAL
+	def_tristate BAR || !BAR
 
 Kconfig recursive dependency limitations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -672,7 +698,7 @@ Future kconfig work
 Work on kconfig is welcomed on both areas of clarifying semantics and on
 evaluating the use of a full SAT solver for it. A full SAT solver can be
 desirable to enable more complex dependency mappings and / or queries,
-for instance on possible use case for a SAT solver could be that of handling
+for instance one possible use case for a SAT solver could be that of handling
 the current known recursive dependency issues. It is not known if this would
 address such issues but such evaluation is desirable. If support for a full SAT
 solver proves too complex or that it cannot address recursive dependency issues
@@ -693,6 +719,8 @@ in documenting basic Kconfig syntax a more precise definition of Kconfig
 semantics is welcomed. One project deduced Kconfig semantics through
 the use of the xconfig configurator [1]_. Work should be done to confirm if
 the deduced semantics matches our intended Kconfig design goals.
+Another project formalized a denotational semantics of a core subset of
+the Kconfig language [10]_.
 
 Having well defined semantics can be useful for tools for practical
 evaluation of dependencies, for instance one such case was work to
@@ -700,6 +728,8 @@ express in boolean abstraction of the inferred semantics of Kconfig to
 translate Kconfig logic into boolean formulas and run a SAT solver on this to
 find dead code / features (always inactive), 114 dead features were found in
 Linux using this methodology [1]_ (Section 8: Threats to validity).
+The kismet tool, based on the semantics in [10]_, finds abuses of reverse
+dependencies and has led to dozens of committed fixes to Linux Kconfig files [11]_.
 
 Confirming this could prove useful as Kconfig stands as one of the leading
 industrial variability modeling languages [1]_ [2]_. Its study would help
@@ -738,3 +768,5 @@ https://kernelnewbies.org/KernelProjects/kconfig-sat
 .. [7] https://vamos.cs.fau.de
 .. [8] https://undertaker.cs.fau.de
 .. [9] https://www4.cs.fau.de/Publications/2011/tartler_11_eurosys.pdf
+.. [10] https://paulgazzillo.com/papers/esecfse21.pdf
+.. [11] https://github.com/paulgazz/kmax

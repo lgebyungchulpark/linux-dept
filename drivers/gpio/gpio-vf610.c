@@ -15,21 +15,20 @@
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/irq.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
+#include <linux/property.h>
 
 #define VF610_GPIO_PER_PORT		32
 
 struct fsl_gpio_soc_data {
 	/* SoCs has a Port Data Direction Register (PDDR) */
 	bool have_paddr;
+	bool have_dual_base;
 };
 
 struct vf610_gpio_port {
 	struct gpio_chip gc;
-	struct irq_chip ic;
 	void __iomem *base;
 	void __iomem *gpio_base;
 	const struct fsl_gpio_soc_data *sdata;
@@ -61,13 +60,26 @@ struct vf610_gpio_port {
 #define PORT_INT_EITHER_EDGE	0xb
 #define PORT_INT_LOGIC_ONE	0xc
 
+#define IMX8ULP_GPIO_BASE_OFF	0x40
+#define IMX8ULP_BASE_OFF	0x80
+
+static const struct fsl_gpio_soc_data vf610_data = {
+	.have_dual_base = true,
+};
+
 static const struct fsl_gpio_soc_data imx_data = {
+	.have_paddr = true,
+	.have_dual_base = true,
+};
+
+static const struct fsl_gpio_soc_data imx8ulp_data = {
 	.have_paddr = true,
 };
 
 static const struct of_device_id vf610_gpio_dt_ids[] = {
-	{ .compatible = "fsl,vf610-gpio",	.data = NULL, },
+	{ .compatible = "fsl,vf610-gpio",	.data = &vf610_data },
 	{ .compatible = "fsl,imx7ulp-gpio",	.data = &imx_data, },
+	{ .compatible = "fsl,imx8ulp-gpio",	.data = &imx8ulp_data, },
 	{ /* sentinel */ }
 };
 
@@ -84,10 +96,10 @@ static inline u32 vf610_gpio_readl(void __iomem *reg)
 static int vf610_gpio_get(struct gpio_chip *gc, unsigned int gpio)
 {
 	struct vf610_gpio_port *port = gpiochip_get_data(gc);
-	unsigned long mask = BIT(gpio);
+	u32 mask = BIT(gpio);
 	unsigned long offset = GPIO_PDIR;
 
-	if (port->sdata && port->sdata->have_paddr) {
+	if (port->sdata->have_paddr) {
 		mask &= vf610_gpio_readl(port->gpio_base + GPIO_PDDR);
 		if (mask)
 			offset = GPIO_PDOR;
@@ -99,39 +111,56 @@ static int vf610_gpio_get(struct gpio_chip *gc, unsigned int gpio)
 static void vf610_gpio_set(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	struct vf610_gpio_port *port = gpiochip_get_data(gc);
-	unsigned long mask = BIT(gpio);
+	u32 mask = BIT(gpio);
 	unsigned long offset = val ? GPIO_PSOR : GPIO_PCOR;
 
 	vf610_gpio_writel(mask, port->gpio_base + offset);
 }
 
-static int vf610_gpio_direction_input(struct gpio_chip *chip, unsigned gpio)
+static int vf610_gpio_direction_input(struct gpio_chip *chip, unsigned int gpio)
 {
 	struct vf610_gpio_port *port = gpiochip_get_data(chip);
-	unsigned long mask = BIT(gpio);
+	u32 mask = BIT(gpio);
 	u32 val;
 
-	if (port->sdata && port->sdata->have_paddr) {
+	if (port->sdata->have_paddr) {
 		val = vf610_gpio_readl(port->gpio_base + GPIO_PDDR);
 		val &= ~mask;
 		vf610_gpio_writel(val, port->gpio_base + GPIO_PDDR);
 	}
 
-	return pinctrl_gpio_direction_input(chip->base + gpio);
+	return pinctrl_gpio_direction_input(chip, gpio);
 }
 
-static int vf610_gpio_direction_output(struct gpio_chip *chip, unsigned gpio,
+static int vf610_gpio_direction_output(struct gpio_chip *chip, unsigned int gpio,
 				       int value)
 {
 	struct vf610_gpio_port *port = gpiochip_get_data(chip);
-	unsigned long mask = BIT(gpio);
-
-	if (port->sdata && port->sdata->have_paddr)
-		vf610_gpio_writel(mask, port->gpio_base + GPIO_PDDR);
+	u32 mask = BIT(gpio);
+	u32 val;
 
 	vf610_gpio_set(chip, gpio, value);
 
-	return pinctrl_gpio_direction_output(chip->base + gpio);
+	if (port->sdata->have_paddr) {
+		val = vf610_gpio_readl(port->gpio_base + GPIO_PDDR);
+		val |= mask;
+		vf610_gpio_writel(val, port->gpio_base + GPIO_PDDR);
+	}
+
+	return pinctrl_gpio_direction_output(chip, gpio);
+}
+
+static int vf610_gpio_get_direction(struct gpio_chip *gc, unsigned int gpio)
+{
+	struct vf610_gpio_port *port = gpiochip_get_data(gc);
+	u32 mask = BIT(gpio);
+
+	mask &= vf610_gpio_readl(port->gpio_base + GPIO_PDDR);
+
+	if (mask)
+		return GPIO_LINE_DIRECTION_OUT;
+
+	return GPIO_LINE_DIRECTION_IN;
 }
 
 static void vf610_gpio_irq_handler(struct irq_desc *desc)
@@ -202,20 +231,24 @@ static int vf610_gpio_irq_set_type(struct irq_data *d, u32 type)
 
 static void vf610_gpio_irq_mask(struct irq_data *d)
 {
-	struct vf610_gpio_port *port =
-		gpiochip_get_data(irq_data_get_irq_chip_data(d));
-	void __iomem *pcr_base = port->base + PORT_PCR(d->hwirq);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct vf610_gpio_port *port = gpiochip_get_data(gc);
+	irq_hw_number_t gpio_num = irqd_to_hwirq(d);
+	void __iomem *pcr_base = port->base + PORT_PCR(gpio_num);
 
 	vf610_gpio_writel(0, pcr_base);
+	gpiochip_disable_irq(gc, gpio_num);
 }
 
 static void vf610_gpio_irq_unmask(struct irq_data *d)
 {
-	struct vf610_gpio_port *port =
-		gpiochip_get_data(irq_data_get_irq_chip_data(d));
-	void __iomem *pcr_base = port->base + PORT_PCR(d->hwirq);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct vf610_gpio_port *port = gpiochip_get_data(gc);
+	irq_hw_number_t gpio_num = irqd_to_hwirq(d);
+	void __iomem *pcr_base = port->base + PORT_PCR(gpio_num);
 
-	vf610_gpio_writel(port->irqc[d->hwirq] << PORT_PCR_IRQC_OFFSET,
+	gpiochip_enable_irq(gc, gpio_num);
+	vf610_gpio_writel(port->irqc[gpio_num] << PORT_PCR_IRQC_OFFSET,
 			  pcr_base);
 }
 
@@ -232,6 +265,18 @@ static int vf610_gpio_irq_set_wake(struct irq_data *d, u32 enable)
 	return 0;
 }
 
+static const struct irq_chip vf610_irqchip = {
+	.name = "gpio-vf610",
+	.irq_ack = vf610_gpio_irq_ack,
+	.irq_mask = vf610_gpio_irq_mask,
+	.irq_unmask = vf610_gpio_irq_unmask,
+	.irq_set_type = vf610_gpio_irq_set_type,
+	.irq_set_wake = vf610_gpio_irq_set_wake,
+	.flags = IRQCHIP_IMMUTABLE | IRQCHIP_MASK_ON_SUSPEND
+			| IRQCHIP_ENABLE_WAKEUP_ON_SUSPEND,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
+
 static void vf610_gpio_disable_clk(void *data)
 {
 	clk_disable_unprepare(data);
@@ -240,26 +285,46 @@ static void vf610_gpio_disable_clk(void *data)
 static int vf610_gpio_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *np = dev->of_node;
 	struct vf610_gpio_port *port;
 	struct gpio_chip *gc;
 	struct gpio_irq_chip *girq;
-	struct irq_chip *ic;
 	int i;
 	int ret;
+	bool dual_base;
 
 	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
 	if (!port)
 		return -ENOMEM;
 
-	port->sdata = of_device_get_match_data(dev);
-	port->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(port->base))
-		return PTR_ERR(port->base);
+	port->sdata = device_get_match_data(dev);
 
-	port->gpio_base = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(port->gpio_base))
-		return PTR_ERR(port->gpio_base);
+	dual_base = port->sdata->have_dual_base;
+
+	/*
+	 * Handle legacy compatible combinations which used two reg values
+	 * for the i.MX8ULP and i.MX93.
+	 */
+	if (device_is_compatible(dev, "fsl,imx7ulp-gpio") &&
+	    (device_is_compatible(dev, "fsl,imx93-gpio") ||
+	    (device_is_compatible(dev, "fsl,imx8ulp-gpio"))))
+		dual_base = true;
+
+	if (dual_base) {
+		port->base = devm_platform_ioremap_resource(pdev, 0);
+		if (IS_ERR(port->base))
+			return PTR_ERR(port->base);
+
+		port->gpio_base = devm_platform_ioremap_resource(pdev, 1);
+		if (IS_ERR(port->gpio_base))
+			return PTR_ERR(port->gpio_base);
+	} else {
+		port->base = devm_platform_ioremap_resource(pdev, 0);
+		if (IS_ERR(port->base))
+			return PTR_ERR(port->base);
+
+		port->gpio_base = port->base + IMX8ULP_GPIO_BASE_OFF;
+		port->base = port->base + IMX8ULP_BASE_OFF;
+	}
 
 	port->irq = platform_get_irq(pdev, 0);
 	if (port->irq < 0)
@@ -299,9 +364,9 @@ static int vf610_gpio_probe(struct platform_device *pdev)
 
 	gc = &port->gc;
 	gc->parent = dev;
-	gc->label = "vf610-gpio";
+	gc->label = dev_name(dev);
 	gc->ngpio = VF610_GPIO_PER_PORT;
-	gc->base = of_alias_get_id(np, "gpio") * VF610_GPIO_PER_PORT;
+	gc->base = -1;
 
 	gc->request = gpiochip_generic_request;
 	gc->free = gpiochip_generic_free;
@@ -309,14 +374,12 @@ static int vf610_gpio_probe(struct platform_device *pdev)
 	gc->get = vf610_gpio_get;
 	gc->direction_output = vf610_gpio_direction_output;
 	gc->set = vf610_gpio_set;
-
-	ic = &port->ic;
-	ic->name = "gpio-vf610";
-	ic->irq_ack = vf610_gpio_irq_ack;
-	ic->irq_mask = vf610_gpio_irq_mask;
-	ic->irq_unmask = vf610_gpio_irq_unmask;
-	ic->irq_set_type = vf610_gpio_irq_set_type;
-	ic->irq_set_wake = vf610_gpio_irq_set_wake;
+	/*
+	 * only IP has Port Data Direction Register(PDDR) can
+	 * support get direction
+	 */
+	if (port->sdata->have_paddr)
+		gc->get_direction = vf610_gpio_get_direction;
 
 	/* Mask all GPIO interrupts */
 	for (i = 0; i < gc->ngpio; i++)
@@ -326,7 +389,7 @@ static int vf610_gpio_probe(struct platform_device *pdev)
 	vf610_gpio_writel(~0, port->base + PORT_ISFR);
 
 	girq = &gc->irq;
-	girq->chip = ic;
+	gpio_irq_chip_set_chip(girq, &vf610_irqchip);
 	girq->parent_handler = vf610_gpio_irq_handler;
 	girq->num_parents = 1;
 	girq->parents = devm_kcalloc(&pdev->dev, 1,

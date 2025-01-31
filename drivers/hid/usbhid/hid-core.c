@@ -19,8 +19,9 @@
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/mutex.h>
+#include <linux/property.h>
 #include <linux/spinlock.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/byteorder.h>
 #include <linux/input.h>
 #include <linux/wait.h>
@@ -387,7 +388,7 @@ static int hid_submit_ctrl(struct hid_device *hid)
 
 		usbhid->urbctrl->pipe = usb_rcvctrlpipe(hid_to_usb_dev(hid), 0);
 		maxpacket = usb_maxpacket(hid_to_usb_dev(hid),
-					  usbhid->urbctrl->pipe, 0);
+					  usbhid->urbctrl->pipe);
 		len += (len == 0);	/* Don't allow 0-length reports */
 		len = round_up(len, maxpacket);
 		if (len > usbhid->bufsize)
@@ -1099,7 +1100,7 @@ static int usbhid_start(struct hid_device *hid)
 
 		interval = endpoint->bInterval;
 
-		/* Some vendors give fullspeed interval on highspeed devides */
+		/* Some vendors give fullspeed interval on highspeed devices */
 		if (hid->quirks & HID_QUIRK_FULLSPEED_INTERVAL &&
 		    dev->speed == USB_SPEED_HIGH) {
 			interval = fls(endpoint->bInterval*8);
@@ -1318,7 +1319,7 @@ static bool usbhid_may_wakeup(struct hid_device *hid)
 	return device_may_wakeup(&dev->dev);
 }
 
-struct hid_ll_driver usb_hid_driver = {
+static const struct hid_ll_driver usb_hid_driver = {
 	.parse = usbhid_parse,
 	.start = usbhid_start,
 	.stop = usbhid_stop,
@@ -1332,7 +1333,12 @@ struct hid_ll_driver usb_hid_driver = {
 	.idle = usbhid_idle,
 	.may_wakeup = usbhid_may_wakeup,
 };
-EXPORT_SYMBOL_GPL(usb_hid_driver);
+
+bool hid_is_usb(const struct hid_device *hdev)
+{
+	return hdev->ll_driver == &usb_hid_driver;
+}
+EXPORT_SYMBOL_GPL(hid_is_usb);
 
 static int usbhid_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
@@ -1369,6 +1375,7 @@ static int usbhid_probe(struct usb_interface *intf, const struct usb_device_id *
 	hid->hiddev_report_event = hiddev_report_event;
 #endif
 	hid->dev.parent = &intf->dev;
+	device_set_node(&hid->dev, dev_fwnode(&intf->dev));
 	hid->bus = BUS_USB;
 	hid->vendor = le16_to_cpu(dev->descriptor.idVendor);
 	hid->product = le16_to_cpu(dev->descriptor.idProduct);
@@ -1381,7 +1388,7 @@ static int usbhid_probe(struct usb_interface *intf, const struct usb_device_id *
 		hid->type = HID_TYPE_USBNONE;
 
 	if (dev->manufacturer)
-		strlcpy(hid->name, dev->manufacturer, sizeof(hid->name));
+		strscpy(hid->name, dev->manufacturer, sizeof(hid->name));
 
 	if (dev->product) {
 		if (dev->manufacturer)
@@ -1557,7 +1564,6 @@ static int hid_post_reset(struct usb_interface *intf)
 	return 0;
 }
 
-#ifdef CONFIG_PM
 static int hid_resume_common(struct hid_device *hid, bool driver_suspended)
 {
 	int status = 0;
@@ -1649,8 +1655,6 @@ static int hid_reset_resume(struct usb_interface *intf)
 	return status;
 }
 
-#endif /* CONFIG_PM */
-
 static const struct usb_device_id hid_usb_ids[] = {
 	{ .match_flags = USB_DEVICE_ID_MATCH_INT_CLASS,
 		.bInterfaceClass = USB_INTERFACE_CLASS_HID },
@@ -1663,11 +1667,9 @@ static struct usb_driver hid_driver = {
 	.name =		"usbhid",
 	.probe =	usbhid_probe,
 	.disconnect =	usbhid_disconnect,
-#ifdef CONFIG_PM
-	.suspend =	hid_suspend,
-	.resume =	hid_resume,
-	.reset_resume =	hid_reset_resume,
-#endif
+	.suspend =	pm_ptr(hid_suspend),
+	.resume =	pm_ptr(hid_resume),
+	.reset_resume =	pm_ptr(hid_reset_resume),
 	.pre_reset =	hid_pre_reset,
 	.post_reset =	hid_post_reset,
 	.id_table =	hid_usb_ids,

@@ -25,6 +25,7 @@
 #include <asm/traps.h>
 #include <asm/thread_info.h>
 #include <asm/alternative.h>
+#include <asm/spinlock_types.h>
 
 #include <linux/linkage.h>
 #include <linux/pgtable.h>
@@ -34,6 +35,24 @@
 #else
 	.level 2.0
 #endif
+
+/*
+ * We need seven instructions after a TLB insert for it to take effect.
+ * The PA8800/PA8900 processors are an exception and need 12 instructions.
+ * The RFI changes both IAOQ_Back and IAOQ_Front, so it counts as one.
+ */
+#ifdef CONFIG_64BIT
+#define NUM_PIPELINE_INSNS    12
+#else
+#define NUM_PIPELINE_INSNS    7
+#endif
+
+	/* Insert num nops */
+	.macro	insert_nops num
+	.rept \num
+	nop
+	.endr
+	.endm
 
 	/* Get aligned page_table_lock address for this mm from cr28/tr4 */
 	.macro  get_ptl reg
@@ -406,7 +425,7 @@
 	LDREG		0(\ptp),\pte
 	bb,<,n		\pte,_PAGE_PRESENT_BIT,3f
 	b		\fault
-	stw		\spc,0(\tmp)
+	stw		\tmp1,0(\tmp)
 99:	ALTERNATIVE(98b, 99b, ALT_COND_NO_SMP, INSN_NOP)
 #endif
 2:	LDREG		0(\ptp),\pte
@@ -414,26 +433,20 @@
 3:
 	.endm
 
-	/* Release page_table_lock without reloading lock address.
-	   Note that the values in the register spc are limited to
-	   NR_SPACE_IDS (262144). Thus, the stw instruction always
-	   stores a nonzero value even when register spc is 64 bits.
-	   We use an ordered store to ensure all prior accesses are
-	   performed prior to releasing the lock. */
-	.macro		ptl_unlock0	spc,tmp
-#ifdef CONFIG_TLB_PTLOCK
-98:	or,COND(=)	%r0,\spc,%r0
-	stw,ma		\spc,0(\tmp)
-99:	ALTERNATIVE(98b, 99b, ALT_COND_NO_SMP, INSN_NOP)
-#endif
-	.endm
-
-	/* Release page_table_lock. */
-	.macro		ptl_unlock1	spc,tmp
+	/* Release page_table_lock if for user space. We use an ordered
+	   store to ensure all prior accesses are performed prior to
+	   releasing the lock. Note stw may not be executed, so we
+	   provide one extra nop when CONFIG_TLB_PTLOCK is defined. */
+	.macro		ptl_unlock	spc,tmp,tmp2
 #ifdef CONFIG_TLB_PTLOCK
 98:	get_ptl		\tmp
-	ptl_unlock0	\spc,\tmp
+	ldi		__ARCH_SPIN_LOCK_UNLOCKED_VAL, \tmp2
+	or,COND(=)	%r0,\spc,%r0
+	stw,ma		\tmp2,0(\tmp)
 99:	ALTERNATIVE(98b, 99b, ALT_COND_NO_SMP, INSN_NOP)
+	insert_nops	NUM_PIPELINE_INSNS - 4
+#else
+	insert_nops	NUM_PIPELINE_INSNS - 1
 #endif
 	.endm
 
@@ -462,13 +475,13 @@
 	 * to a CPU TLB 4k PFN (4k => 12 bits to shift) */
 	#define PAGE_ADD_SHIFT		(PAGE_SHIFT-12)
 	#define PAGE_ADD_HUGE_SHIFT	(REAL_HPAGE_SHIFT-12)
+	#define PFN_START_BIT	(63-ASM_PFN_PTE_SHIFT+(63-58)-PAGE_ADD_SHIFT)
 
 	/* Drop prot bits and convert to page addr for iitlbt and idtlbt */
 	.macro		convert_for_tlb_insert20 pte,tmp
 #ifdef CONFIG_HUGETLB_PAGE
 	copy		\pte,\tmp
-	extrd,u		\tmp,(63-ASM_PFN_PTE_SHIFT)+(63-58)+PAGE_ADD_SHIFT,\
-				64-PAGE_SHIFT-PAGE_ADD_SHIFT,\pte
+	extrd,u		\tmp,PFN_START_BIT,PFN_START_BIT+1,\pte
 
 	depdi		_PAGE_SIZE_ENCODING_DEFAULT,63,\
 				(63-58)+PAGE_ADD_SHIFT,\pte
@@ -476,8 +489,7 @@
 	depdi		_HUGE_PAGE_SIZE_ENCODING_DEFAULT,63,\
 				(63-58)+PAGE_ADD_HUGE_SHIFT,\pte
 #else /* Huge pages disabled */
-	extrd,u		\pte,(63-ASM_PFN_PTE_SHIFT)+(63-58)+PAGE_ADD_SHIFT,\
-				64-PAGE_SHIFT-PAGE_ADD_SHIFT,\pte
+	extrd,u		\pte,PFN_START_BIT,PFN_START_BIT+1,\pte
 	depdi		_PAGE_SIZE_ENCODING_DEFAULT,63,\
 				(63-58)+PAGE_ADD_SHIFT,\pte
 #endif
@@ -499,6 +511,10 @@
 	 * Finally, _PAGE_READ goes in the top bit of PL1 (so we
 	 * trigger an access rights trap in user space if the user
 	 * tries to read an unreadable page */
+#if _PAGE_SPECIAL_BIT == _PAGE_DMB_BIT
+	/* need to drop DMB bit, as it's used as SPECIAL flag */
+	depi		0,_PAGE_SPECIAL_BIT,1,\pte
+#endif
 	depd            \pte,8,7,\prot
 
 	/* PAGE_USER indicates the page can be read with user privileges,
@@ -529,6 +545,10 @@
 	 * makes the tlb entry for the differently formatted pa11
 	 * insertion instructions */
 	.macro		make_insert_tlb_11	spc,pte,prot
+#if _PAGE_SPECIAL_BIT == _PAGE_DMB_BIT
+	/* need to drop DMB bit, as it's used as SPECIAL flag */
+	depi		0,_PAGE_SPECIAL_BIT,1,\pte
+#endif
 	zdep		\spc,30,15,\prot
 	dep		\pte,8,7,\prot
 	extru,=		\pte,_PAGE_NO_CACHE_BIT,1,%r0
@@ -554,8 +574,9 @@
 	extrd,s		\pte,63,25,\pte
 	.endm
 
-	/* The alias region is an 8MB aligned 16MB to do clear and
-	 * copy user pages at addresses congruent with the user
+	/* The alias region is comprised of a pair of 4 MB regions
+	 * aligned to 8 MB. It is used to clear/copy/flush user pages
+	 * using kernel virtual addresses congruent with the user
 	 * virtual address.
 	 *
 	 * To use the alias page, you set %r26 up with the to TLB
@@ -565,13 +586,8 @@
 	.macro		do_alias	spc,tmp,tmp1,va,pte,prot,fault,patype
 	cmpib,COND(<>),n 0,\spc,\fault
 	ldil		L%(TMPALIAS_MAP_START),\tmp
-#if defined(CONFIG_64BIT) && (TMPALIAS_MAP_START >= 0x80000000)
-	/* on LP64, ldi will sign extend into the upper 32 bits,
-	 * which is behaviour we don't want */
-	depdi		0,31,32,\tmp
-#endif
 	copy		\va,\tmp1
-	depi		0,31,23,\tmp1
+	depi_safe	0,31,TMPALIAS_SIZE_BITS+1,\tmp1
 	cmpb,COND(<>),n	\tmp,\tmp1,\fault
 	mfctl		%cr19,\tmp	/* iir */
 	/* get the opcode (first six bits) into \tmp */
@@ -604,13 +620,13 @@
 	 * OK, it is in the temp alias region, check whether "from" or "to".
 	 * Check "subtle" note in pacache.S re: r23/r26.
 	 */
-#ifdef CONFIG_64BIT
-	extrd,u,*=	\va,41,1,%r0
-#else
-	extrw,u,=	\va,9,1,%r0
-#endif
+	extrw,u,=	\va,31-TMPALIAS_SIZE_BITS,1,%r0
 	or,COND(tr)	%r23,%r0,\pte
 	or		%r26,%r0,\pte
+
+	/* convert phys addr in \pte (from r23 or r26) to tlb insert format */
+	SHRREG		\pte,PAGE_SHIFT+PAGE_ADD_SHIFT-5, \pte
+	depi_safe	_PAGE_SIZE_ENCODING_DEFAULT, 31,5, \pte
 	.endm 
 
 
@@ -1035,8 +1051,7 @@ ENTRY_CFI(intr_save)		/* for os_hpmc */
 	STREG           %r16, PT_ISR(%r29)
 	STREG           %r17, PT_IOR(%r29)
 
-#if 0 && defined(CONFIG_64BIT)
-	/* Revisit when we have 64-bit code above 4Gb */
+#if defined(CONFIG_64BIT)
 	b,n		intr_save2
 
 skip_save_ior:
@@ -1044,8 +1059,7 @@ skip_save_ior:
 	 * need to adjust iasq/iaoq here in the same way we adjusted isr/ior
 	 * above.
 	 */
-	extrd,u,*	%r8,PSW_W_BIT,1,%r1
-	cmpib,COND(=),n	1,%r1,intr_save2
+	bb,COND(>=),n	%r8,PSW_W_BIT,intr_save2
 	LDREG		PT_IASQ0(%r29), %r16
 	LDREG		PT_IAOQ0(%r29), %r17
 	/* adjust iasq/iaoq */
@@ -1121,7 +1135,7 @@ dtlb_miss_20w:
 	
 	idtlbt          pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1130,6 +1144,7 @@ dtlb_check_alias_20w:
 
 	idtlbt          pte,prot
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1147,7 +1162,7 @@ nadtlb_miss_20w:
 
 	idtlbt          pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1156,6 +1171,7 @@ nadtlb_check_alias_20w:
 
 	idtlbt          pte,prot
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1181,7 +1197,7 @@ dtlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1191,6 +1207,7 @@ dtlb_check_alias_11:
 	idtlba          pte,(va)
 	idtlbp          prot,(va)
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1214,7 +1231,7 @@ nadtlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1224,6 +1241,7 @@ nadtlb_check_alias_11:
 	idtlba          pte,(va)
 	idtlbp          prot,(va)
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1243,7 +1261,7 @@ dtlb_miss_20:
 
 	idtlbt          pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1252,6 +1270,7 @@ dtlb_check_alias_20:
 	
 	idtlbt          pte,prot
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1271,7 +1290,7 @@ nadtlb_miss_20:
 	
 	idtlbt		pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1280,6 +1299,7 @@ nadtlb_check_alias_20:
 
 	idtlbt          pte,prot
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1288,74 +1308,12 @@ nadtlb_check_alias_20:
 nadtlb_emulate:
 
 	/*
-	 * Non access misses can be caused by fdc,fic,pdc,lpa,probe and
-	 * probei instructions. We don't want to fault for these
-	 * instructions (not only does it not make sense, it can cause
-	 * deadlocks, since some flushes are done with the mmap
-	 * semaphore held). If the translation doesn't exist, we can't
-	 * insert a translation, so have to emulate the side effects
-	 * of the instruction. Since we don't insert a translation
-	 * we can get a lot of faults during a flush loop, so it makes
-	 * sense to try to do it here with minimum overhead. We only
-	 * emulate fdc,fic,pdc,probew,prober instructions whose base 
-	 * and index registers are not shadowed. We defer everything 
-	 * else to the "slow" path.
+	 * Non-access misses can be caused by fdc,fic,pdc,lpa,probe and
+	 * probei instructions. The kernel no longer faults doing flushes.
+	 * Use of lpa and probe instructions is rare. Given the issue
+	 * with shadow registers, we defer everything to the "slow" path.
 	 */
-
-	mfctl           %cr19,%r9 /* Get iir */
-
-	/* PA 2.0 Arch Ref. Book pg 382 has a good description of the insn bits.
-	   Checks for fdc,fdce,pdc,"fic,4f",prober,probeir,probew, probeiw */
-
-	/* Checks for fdc,fdce,pdc,"fic,4f" only */
-	ldi             0x280,%r16
-	and             %r9,%r16,%r17
-	cmpb,<>,n       %r16,%r17,nadtlb_probe_check
-	bb,>=,n         %r9,26,nadtlb_nullify  /* m bit not set, just nullify */
-	BL		get_register,%r25
-	extrw,u         %r9,15,5,%r8           /* Get index register # */
-	cmpib,COND(=),n        -1,%r1,nadtlb_fault    /* have to use slow path */
-	copy            %r1,%r24
-	BL		get_register,%r25
-	extrw,u         %r9,10,5,%r8           /* Get base register # */
-	cmpib,COND(=),n        -1,%r1,nadtlb_fault    /* have to use slow path */
-	BL		set_register,%r25
-	add,l           %r1,%r24,%r1           /* doesn't affect c/b bits */
-
-nadtlb_nullify:
-	mfctl           %ipsw,%r8
-	ldil            L%PSW_N,%r9
-	or              %r8,%r9,%r8            /* Set PSW_N */
-	mtctl           %r8,%ipsw
-
-	rfir
-	nop
-
-	/* 
-		When there is no translation for the probe address then we
-		must nullify the insn and return zero in the target register.
-		This will indicate to the calling code that it does not have 
-		write/read privileges to this address.
-
-		This should technically work for prober and probew in PA 1.1,
-		and also probe,r and probe,w in PA 2.0
-
-		WARNING: USE ONLY NON-SHADOW REGISTERS WITH PROBE INSN!
-		THE SLOW-PATH EMULATION HAS NOT BEEN WRITTEN YET.
-
-	*/
-nadtlb_probe_check:
-	ldi             0x80,%r16
-	and             %r9,%r16,%r17
-	cmpb,<>,n       %r16,%r17,nadtlb_fault /* Must be probe,[rw]*/
-	BL              get_register,%r25      /* Find the target register */
-	extrw,u         %r9,31,5,%r8           /* Get target register */
-	cmpib,COND(=),n        -1,%r1,nadtlb_fault    /* have to use slow path */
-	BL		set_register,%r25
-	copy            %r0,%r1                /* Write zero to target register */
-	b nadtlb_nullify                       /* Nullify return insn */
-	nop
-
+	b,n		nadtlb_fault
 
 #ifdef CONFIG_64BIT
 itlb_miss_20w:
@@ -1378,7 +1336,7 @@ itlb_miss_20w:
 	
 	iitlbt          pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1402,7 +1360,7 @@ naitlb_miss_20w:
 
 	iitlbt          pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1411,6 +1369,7 @@ naitlb_check_alias_20w:
 
 	iitlbt		pte,prot
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1436,7 +1395,7 @@ itlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1460,7 +1419,7 @@ naitlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1470,6 +1429,7 @@ naitlb_check_alias_11:
 	iitlba          pte,(%sr0, va)
 	iitlbp          prot,(%sr0, va)
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1490,7 +1450,7 @@ itlb_miss_20:
 
 	iitlbt          pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1510,7 +1470,7 @@ naitlb_miss_20:
 
 	iitlbt          pte,prot
 
-	ptl_unlock1	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1519,6 +1479,7 @@ naitlb_check_alias_20:
 
 	iitlbt          pte,prot
 
+	insert_nops	NUM_PIPELINE_INSNS - 1
 	rfir
 	nop
 
@@ -1540,7 +1501,7 @@ dbit_trap_20w:
 		
 	idtlbt          pte,prot
 
-	ptl_unlock0	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 #else
@@ -1566,7 +1527,7 @@ dbit_trap_11:
 
 	mtsp            t1, %sr1     /* Restore sr1 */
 
-	ptl_unlock0	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 
@@ -1586,7 +1547,7 @@ dbit_trap_20:
 	
 	idtlbt		pte,prot
 
-	ptl_unlock0	spc,t0
+	ptl_unlock	spc,t0,t1
 	rfir
 	nop
 #endif

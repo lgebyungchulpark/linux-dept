@@ -5,7 +5,7 @@
  * Copied from cfg.c - originally
  * Copyright 2006-2010	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2014	Intel Corporation (Author: Johannes Berg)
- * Copyright (C) 2018 Intel Corporation
+ * Copyright (C) 2018, 2022-2023 Intel Corporation
  */
 #include <linux/types.h>
 #include <net/cfg80211.h>
@@ -23,6 +23,8 @@ static int ieee80211_set_ringparam(struct net_device *dev,
 	if (rp->rx_mini_pending != 0 || rp->rx_jumbo_pending != 0)
 		return -EINVAL;
 
+	guard(wiphy)(local->hw.wiphy);
+
 	return drv_set_ringparam(local, rp->tx_pending, rp->rx_pending);
 }
 
@@ -34,6 +36,8 @@ static void ieee80211_get_ringparam(struct net_device *dev,
 	struct ieee80211_local *local = wiphy_priv(dev->ieee80211_ptr->wiphy);
 
 	memset(rp, 0, sizeof(*rp));
+
+	guard(wiphy)(local->hw.wiphy);
 
 	drv_get_ringparam(local, &rp->tx_pending, &rp->tx_max_pending,
 			  &rp->rx_pending, &rp->rx_max_pending);
@@ -83,17 +87,17 @@ static void ieee80211_get_stats(struct net_device *dev,
 
 #define ADD_STA_STATS(sta)					\
 	do {							\
-		data[i++] += sta->rx_stats.packets;		\
-		data[i++] += sta->rx_stats.bytes;		\
-		data[i++] += sta->rx_stats.num_duplicates;	\
-		data[i++] += sta->rx_stats.fragments;		\
-		data[i++] += sta->rx_stats.dropped;		\
+		data[i++] += sinfo.rx_packets;			\
+		data[i++] += sinfo.rx_bytes;			\
+		data[i++] += (sta)->rx_stats.num_duplicates;	\
+		data[i++] += (sta)->rx_stats.fragments;		\
+		data[i++] += sinfo.rx_dropped_misc;		\
 								\
 		data[i++] += sinfo.tx_packets;			\
 		data[i++] += sinfo.tx_bytes;			\
-		data[i++] += sta->status_stats.filtered;	\
-		data[i++] += sta->status_stats.retry_failed;	\
-		data[i++] += sta->status_stats.retry_count;	\
+		data[i++] += (sta)->status_stats.filtered;	\
+		data[i++] += sinfo.tx_failed;			\
+		data[i++] += sinfo.tx_retries;			\
 	} while (0)
 
 	/* For Managed stations, find the single station based on BSSID
@@ -102,10 +106,10 @@ static void ieee80211_get_stats(struct net_device *dev,
 	 * network device.
 	 */
 
-	mutex_lock(&local->sta_mtx);
+	guard(wiphy)(local->hw.wiphy);
 
 	if (sdata->vif.type == NL80211_IFTYPE_STATION) {
-		sta = sta_info_get_bss(sdata, sdata->u.mgd.bssid);
+		sta = sta_info_get_bss(sdata, sdata->deflink.u.mgd.bssid);
 
 		if (!(sta && !WARN_ON(sta->sdata->dev != dev)))
 			goto do_survey;
@@ -114,7 +118,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 		sta_set_sinfo(sta, &sinfo, false);
 
 		i = 0;
-		ADD_STA_STATS(sta);
+		ADD_STA_STATS(&sta->deflink);
 
 		data[i++] = sta->sta_state;
 
@@ -140,7 +144,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 			memset(&sinfo, 0, sizeof(sinfo));
 			sta_set_sinfo(sta, &sinfo, false);
 			i = 0;
-			ADD_STA_STATS(sta);
+			ADD_STA_STATS(&sta->deflink);
 		}
 	}
 
@@ -150,9 +154,13 @@ do_survey:
 	survey.filled = 0;
 
 	rcu_read_lock();
-	chanctx_conf = rcu_dereference(sdata->vif.chanctx_conf);
+	chanctx_conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
 	if (chanctx_conf)
 		channel = chanctx_conf->def.chan;
+	else if (local->open_count > 0 &&
+		 local->open_count == local->monitors &&
+		 sdata->vif.type == NL80211_IFTYPE_MONITOR)
+		channel = local->monitor_chanreq.oper.chan;
 	else
 		channel = NULL;
 	rcu_read_unlock();
@@ -197,8 +205,6 @@ do_survey:
 		data[i++] = survey.time_tx;
 	else
 		data[i++] = -1LL;
-
-	mutex_unlock(&local->sta_mtx);
 
 	if (WARN_ON(i != STA_STATS_LEN))
 		return;

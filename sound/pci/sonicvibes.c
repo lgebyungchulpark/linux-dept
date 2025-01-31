@@ -1118,7 +1118,7 @@ static void snd_sonicvibes_proc_read(struct snd_info_entry *entry,
 
 	tmp = sonic->srs_space & 0x0f;
 	snd_iprintf(buffer, "SRS 3D           : %s\n",
-		    sonic->srs_space & 0x80 ? "off" : "on");
+		    str_off_on(sonic->srs_space & 0x80));
 	snd_iprintf(buffer, "SRS Space        : %s\n",
 		    tmp == 0x00 ? "100%" :
 		    tmp == 0x01 ? "75%" :
@@ -1135,9 +1135,9 @@ static void snd_sonicvibes_proc_read(struct snd_info_entry *entry,
 		    tmp == 0x00 ? "on-board ROM" :
 		    tmp == 0x01 ? "PCI bus" : "on-board ROM + PCI bus");
 	tmp = sonic->mpu_switch;
-	snd_iprintf(buffer, "Onboard synth    : %s\n", tmp & 0x01 ? "on" : "off");
-	snd_iprintf(buffer, "Ext. Rx to synth : %s\n", tmp & 0x02 ? "on" : "off");
-	snd_iprintf(buffer, "MIDI to ext. Tx  : %s\n", tmp & 0x04 ? "on" : "off");
+	snd_iprintf(buffer, "Onboard synth    : %s\n", str_on_off(tmp & 0x01));
+	snd_iprintf(buffer, "Ext. Rx to synth : %s\n", str_on_off(tmp & 0x02));
+	snd_iprintf(buffer, "MIDI to ext. Tx  : %s\n", str_on_off(tmp & 0x04));
 }
 
 static void snd_sonicvibes_proc_init(struct sonicvibes *sonic)
@@ -1387,8 +1387,8 @@ static int snd_sonicvibes_midi(struct sonicvibes *sonic,
 	return 0;
 }
 
-static int snd_sonic_probe(struct pci_dev *pci,
-			   const struct pci_device_id *pci_id)
+static int __snd_sonic_probe(struct pci_dev *pci,
+			     const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -1457,6 +1457,12 @@ static int snd_sonic_probe(struct pci_dev *pci,
 	pci_set_drvdata(pci, card);
 	dev++;
 	return 0;
+}
+
+static int snd_sonic_probe(struct pci_dev *pci,
+			   const struct pci_device_id *pci_id)
+{
+	return snd_card_free_on_error(&pci->dev, __snd_sonic_probe(pci, pci_id));
 }
 
 static struct pci_driver sonicvibes_driver = {

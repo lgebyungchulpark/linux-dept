@@ -451,9 +451,6 @@ select_timeout:
 		dev->rdev->max_timeout = 200000;
 	}
 
-	if (dev->hw_learning_and_tx_capable)
-		dev->rdev->tx_resolution = sample_period;
-
 	if (dev->rdev->timeout > dev->rdev->max_timeout)
 		dev->rdev->timeout = dev->rdev->max_timeout;
 	if (dev->rdev->timeout < dev->rdev->min_timeout)
@@ -1106,6 +1103,8 @@ static void ene_remove(struct pnp_dev *pnp_dev)
 	struct ene_device *dev = pnp_get_drvdata(pnp_dev);
 	unsigned long flags;
 
+	rc_unregister_device(dev->rdev);
+	del_timer_sync(&dev->tx_sim_timer);
 	spin_lock_irqsave(&dev->hw_lock, flags);
 	ene_rx_disable(dev);
 	ene_rx_restore_hw_buffer(dev);
@@ -1113,7 +1112,6 @@ static void ene_remove(struct pnp_dev *pnp_dev)
 
 	free_irq(dev->irq, dev);
 	release_region(dev->hw_io, ENE_IO_SIZE);
-	rc_unregister_device(dev->rdev);
 	kfree(dev);
 }
 

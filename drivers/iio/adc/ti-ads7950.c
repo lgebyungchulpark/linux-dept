@@ -102,11 +102,11 @@ struct ti_ads7950_state {
 	unsigned int		gpio_cmd_settings_bitmask;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
 	u16 rx_buf[TI_ADS7950_MAX_CHAN + 2 + TI_ADS7950_TIMESTAMP_SIZE]
-							____cacheline_aligned;
+		__aligned(IIO_DMA_MINALIGN);
 	u16 tx_buf[TI_ADS7950_MAX_CHAN + 2];
 	u16 single_tx;
 	u16 single_rx;
@@ -634,6 +634,7 @@ static int ti_ads7950_probe(struct spi_device *spi)
 	st->chip.label = dev_name(&st->spi->dev);
 	st->chip.parent = &st->spi->dev;
 	st->chip.owner = THIS_MODULE;
+	st->chip.can_sleep = true;
 	st->chip.base = -1;
 	st->chip.ngpio = TI_ADS7950_NUM_GPIOS;
 	st->chip.get_direction = ti_ads7950_get_direction;
@@ -662,7 +663,7 @@ error_destroy_mutex:
 	return ret;
 }
 
-static int ti_ads7950_remove(struct spi_device *spi)
+static void ti_ads7950_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ti_ads7950_state *st = iio_priv(indio_dev);
@@ -672,8 +673,6 @@ static int ti_ads7950_remove(struct spi_device *spi)
 	iio_triggered_buffer_cleanup(indio_dev);
 	regulator_disable(st->reg);
 	mutex_destroy(&st->slock);
-
-	return 0;
 }
 
 static const struct spi_device_id ti_ads7950_id[] = {
@@ -706,7 +705,7 @@ static const struct of_device_id ads7950_of_table[] = {
 	{ .compatible = "ti,ads7959", .data = &ti_ads7950_chip_info[TI_ADS7959] },
 	{ .compatible = "ti,ads7960", .data = &ti_ads7950_chip_info[TI_ADS7960] },
 	{ .compatible = "ti,ads7961", .data = &ti_ads7950_chip_info[TI_ADS7961] },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ads7950_of_table);
 

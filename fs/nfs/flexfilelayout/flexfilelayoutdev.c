@@ -113,8 +113,10 @@ nfs4_ff_alloc_deviceid_node(struct nfs_server *server, struct pnfs_device *pdev,
 			goto out_err_drain_dsaddrs;
 		ds_versions[i].version = be32_to_cpup(p++);
 		ds_versions[i].minor_version = be32_to_cpup(p++);
-		ds_versions[i].rsize = nfs_block_size(be32_to_cpup(p++), NULL);
-		ds_versions[i].wsize = nfs_block_size(be32_to_cpup(p++), NULL);
+		ds_versions[i].rsize = nfs_io_size(be32_to_cpup(p++),
+						   server->nfs_client->cl_proto);
+		ds_versions[i].wsize = nfs_io_size(be32_to_cpup(p++),
+						   server->nfs_client->cl_proto);
 		ds_versions[i].tightly_coupled = be32_to_cpup(p);
 
 		if (ds_versions[i].rsize > NFS_MAX_FILE_IO_SIZE)
@@ -393,6 +395,12 @@ nfs4_ff_layout_prepare_ds(struct pnfs_layout_segment *lseg,
 
 	/* connect success, check rsize/wsize limit */
 	if (!status) {
+		/*
+		 * ds_clp is put in destroy_ds().
+		 * keep ds_clp even if DS is local, so that if local IO cannot
+		 * proceed somehow, we can fall back to NFS whenever we want.
+		 */
+		nfs_local_probe(ds->ds_clp);
 		max_payload =
 			nfs_block_size(rpc_max_payload(ds->ds_clp->cl_rpcclient),
 				       NULL);

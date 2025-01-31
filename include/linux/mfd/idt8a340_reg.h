@@ -61,7 +61,7 @@
 #define HW_Q8_CTRL_SPARE  (0xa7d4)
 #define HW_Q11_CTRL_SPARE (0xa7ec)
 
-/**
+/*
  * Select FOD5 as sync_trigger for Q8 divider.
  * Transition from logic zero to one
  * sets trigger to sync Q8 divider.
@@ -70,7 +70,7 @@
  */
 #define Q9_TO_Q8_SYNC_TRIG  BIT(1)
 
-/**
+/*
  * Enable FOD5 as driver for clock and sync for Q8 divider.
  * Enable fanout buffer for FOD5.
  *
@@ -78,7 +78,7 @@
  */
 #define Q9_TO_Q8_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK  (BIT(0) | BIT(2))
 
-/**
+/*
  * Select FOD6 as sync_trigger for Q11 divider.
  * Transition from logic zero to one
  * sets trigger to sync Q11 divider.
@@ -87,7 +87,7 @@
  */
 #define Q10_TO_Q11_SYNC_TRIG  BIT(1)
 
-/**
+/*
  * Enable FOD6 as driver for clock and sync for Q11 divider.
  * Enable fanout buffer for FOD6.
  *
@@ -407,7 +407,7 @@
 #define TOD_READ_PRIMARY_0                0xcc40
 #define TOD_READ_PRIMARY_0_V520           0xcc50
 /* 8-bit subns, 32-bit ns, 48-bit seconds */
-#define TOD_READ_PRIMARY                  0x0000
+#define TOD_READ_PRIMARY_BASE             0x0000
 /* Counter increments after TOD write is completed */
 #define TOD_READ_PRIMARY_COUNTER          0x000b
 /* Read trigger configuration */
@@ -424,6 +424,16 @@
 
 #define TOD_READ_SECONDARY_0              0xcc90
 #define TOD_READ_SECONDARY_0_V520         0xcca0
+/* 8-bit subns, 32-bit ns, 48-bit seconds */
+#define TOD_READ_SECONDARY_BASE           0x0000
+/* Counter increments after TOD write is completed */
+#define TOD_READ_SECONDARY_COUNTER        0x000b
+/* Read trigger configuration */
+#define TOD_READ_SECONDARY_SEL_CFG_0      0x000c
+/* Read trigger selection */
+#define TOD_READ_SECONDARY_CMD            0x000e
+#define TOD_READ_SECONDARY_CMD_V520       0x000f
+
 #define TOD_READ_SECONDARY_1              0xcca0
 #define TOD_READ_SECONDARY_1_V520         0xccb0
 #define TOD_READ_SECONDARY_2              0xccb0

@@ -194,14 +194,9 @@ void orangefs_debugfs_init(int debug_mask)
  */
 static void orangefs_kernel_debug_init(void)
 {
-	int rc = -ENOMEM;
-	char *k_buffer = NULL;
+	static char k_buffer[ORANGEFS_MAX_DEBUG_STRING_LEN] = { };
 
 	gossip_debug(GOSSIP_DEBUGFS_DEBUG, "%s: start\n", __func__);
-
-	k_buffer = kzalloc(ORANGEFS_MAX_DEBUG_STRING_LEN, GFP_KERNEL);
-	if (!k_buffer)
-		goto out;
 
 	if (strlen(kernel_debug_string) + 1 < ORANGEFS_MAX_DEBUG_STRING_LEN) {
 		strcpy(k_buffer, kernel_debug_string);
@@ -211,17 +206,16 @@ static void orangefs_kernel_debug_init(void)
 		pr_info("%s: overflow 1!\n", __func__);
 	}
 
-	debugfs_create_file(ORANGEFS_KMOD_DEBUG_FILE, 0444, debug_dir, k_buffer,
-			    &kernel_debug_fops);
-
-out:
-	gossip_debug(GOSSIP_DEBUGFS_DEBUG, "%s: rc:%d:\n", __func__, rc);
+	debugfs_create_file_aux_num(ORANGEFS_KMOD_DEBUG_FILE, 0444, debug_dir, k_buffer,
+			    0, &kernel_debug_fops);
 }
 
 
 void orangefs_debugfs_cleanup(void)
 {
 	debugfs_remove_recursive(debug_dir);
+	kfree(debug_help_string);
+	debug_help_string = NULL;
 }
 
 /* open ORANGEFS_KMOD_DEBUG_HELP_FILE */
@@ -297,17 +291,12 @@ static int help_show(struct seq_file *m, void *v)
 /*
  * initialize the client-debug file.
  */
-static int orangefs_client_debug_init(void)
+static void orangefs_client_debug_init(void)
 {
 
-	int rc = -ENOMEM;
-	char *c_buffer = NULL;
+	static char c_buffer[ORANGEFS_MAX_DEBUG_STRING_LEN] = { };
 
 	gossip_debug(GOSSIP_DEBUGFS_DEBUG, "%s: start\n", __func__);
-
-	c_buffer = kzalloc(ORANGEFS_MAX_DEBUG_STRING_LEN, GFP_KERNEL);
-	if (!c_buffer)
-		goto out;
 
 	if (strlen(client_debug_string) + 1 < ORANGEFS_MAX_DEBUG_STRING_LEN) {
 		strcpy(c_buffer, client_debug_string);
@@ -317,18 +306,10 @@ static int orangefs_client_debug_init(void)
 		pr_info("%s: overflow! 2\n", __func__);
 	}
 
-	client_debug_dentry = debugfs_create_file(ORANGEFS_CLIENT_DEBUG_FILE,
-						  0444,
-						  debug_dir,
-						  c_buffer,
-						  &kernel_debug_fops);
-
-	rc = 0;
-
-out:
-
-	gossip_debug(GOSSIP_DEBUGFS_DEBUG, "%s: rc:%d:\n", __func__, rc);
-	return rc;
+	client_debug_dentry = debugfs_create_file_aux_num(
+					  ORANGEFS_CLIENT_DEBUG_FILE,
+					  0444, debug_dir, c_buffer, 1,
+					  &kernel_debug_fops);
 }
 
 /* open ORANGEFS_KMOD_DEBUG_FILE or ORANGEFS_CLIENT_DEBUG_FILE.*/
@@ -436,8 +417,7 @@ static ssize_t orangefs_debug_write(struct file *file,
 	 * A service operation is required to set a new client-side
 	 * debug mask.
 	 */
-	if (!strcmp(file->f_path.dentry->d_name.name,
-		    ORANGEFS_KMOD_DEBUG_FILE)) {
+	if (!debugfs_get_aux_num(file)) {	// kernel-debug
 		debug_string_to_mask(buf, &orangefs_gossip_debug_mask, 0);
 		debug_mask_to_string(&orangefs_gossip_debug_mask, 0);
 		debug_string = kernel_debug_string;
@@ -671,6 +651,7 @@ int orangefs_prepare_debugfs_help_string(int at_boot)
 		memset(debug_help_string, 0, DEBUG_HELP_STRING_SIZE);
 		strlcat(debug_help_string, new, string_size);
 		mutex_unlock(&orangefs_help_file_lock);
+		kfree(new);
 	}
 
 	rc = 0;

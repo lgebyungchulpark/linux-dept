@@ -115,7 +115,6 @@ struct rtrs_clt_io_req {
 	struct completion	inv_comp;
 	int			inv_errno;
 	bool			need_inv_comp;
-	bool			need_inv;
 	refcount_t		ref;
 };
 
@@ -134,6 +133,7 @@ struct rtrs_clt_path {
 	struct rtrs_clt_io_req	*reqs;
 	struct delayed_work	reconnect_dwork;
 	struct work_struct	close_work;
+	struct work_struct	err_recovery_work;
 	unsigned int		reconnect_attempts;
 	bool			established;
 	struct rtrs_rbuf	*rbufs;
@@ -212,6 +212,8 @@ int rtrs_clt_remove_path_from_sysfs(struct rtrs_clt_path *path,
 void rtrs_clt_set_max_reconnect_attempts(struct rtrs_clt_sess *clt, int value);
 int rtrs_clt_get_max_reconnect_attempts(const struct rtrs_clt_sess *clt);
 void free_path(struct rtrs_clt_path *clt_path);
+void rtrs_clt_ib_event_handler(struct ib_event_handler *handler,
+			       struct ib_event *ibevent);
 
 /* rtrs-clt-stats.c */
 

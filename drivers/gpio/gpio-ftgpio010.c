@@ -41,14 +41,12 @@
  * struct ftgpio_gpio - Gemini GPIO state container
  * @dev: containing device for this instance
  * @gc: gpiochip for this instance
- * @irq: irqchip for this instance
  * @base: remapped I/O-memory base
  * @clk: silicon clock
  */
 struct ftgpio_gpio {
 	struct device *dev;
 	struct gpio_chip gc;
-	struct irq_chip irq;
 	void __iomem *base;
 	struct clk *clk;
 };
@@ -70,6 +68,7 @@ static void ftgpio_gpio_mask_irq(struct irq_data *d)
 	val = readl(g->base + GPIO_INT_EN);
 	val &= ~BIT(irqd_to_hwirq(d));
 	writel(val, g->base + GPIO_INT_EN);
+	gpiochip_disable_irq(gc, irqd_to_hwirq(d));
 }
 
 static void ftgpio_gpio_unmask_irq(struct irq_data *d)
@@ -78,6 +77,7 @@ static void ftgpio_gpio_unmask_irq(struct irq_data *d)
 	struct ftgpio_gpio *g = gpiochip_get_data(gc);
 	u32 val;
 
+	gpiochip_enable_irq(gc, irqd_to_hwirq(d));
 	val = readl(g->base + GPIO_INT_EN);
 	val |= BIT(irqd_to_hwirq(d));
 	writel(val, g->base + GPIO_INT_EN);
@@ -221,6 +221,16 @@ static int ftgpio_gpio_set_config(struct gpio_chip *gc, unsigned int offset,
 	return 0;
 }
 
+static const struct irq_chip ftgpio_irq_chip = {
+	.name = "FTGPIO010",
+	.irq_ack = ftgpio_gpio_ack_irq,
+	.irq_mask = ftgpio_gpio_mask_irq,
+	.irq_unmask = ftgpio_gpio_unmask_irq,
+	.irq_set_type = ftgpio_gpio_set_irq_type,
+	.flags = IRQCHIP_IMMUTABLE,
+	 GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
+
 static int ftgpio_gpio_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -240,21 +250,16 @@ static int ftgpio_gpio_probe(struct platform_device *pdev)
 		return PTR_ERR(g->base);
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0)
-		return irq ? irq : -EINVAL;
+	if (irq < 0)
+		return irq;
 
-	g->clk = devm_clk_get(dev, NULL);
-	if (!IS_ERR(g->clk)) {
-		ret = clk_prepare_enable(g->clk);
-		if (ret)
-			return ret;
-	} else if (PTR_ERR(g->clk) == -EPROBE_DEFER) {
+	g->clk = devm_clk_get_enabled(dev, NULL);
+	if (IS_ERR(g->clk) && PTR_ERR(g->clk) == -EPROBE_DEFER)
 		/*
 		 * Percolate deferrals, for anything else,
 		 * just live without the clocking.
 		 */
 		return PTR_ERR(g->clk);
-	}
 
 	ret = bgpio_init(&g->gc, dev, 4,
 			 g->base + GPIO_DATA_IN,
@@ -263,11 +268,10 @@ static int ftgpio_gpio_probe(struct platform_device *pdev)
 			 g->base + GPIO_DIR,
 			 NULL,
 			 0);
-	if (ret) {
-		dev_err(dev, "unable to init generic GPIO\n");
-		goto dis_clk;
-	}
-	g->gc.label = "FTGPIO010";
+	if (ret)
+		return dev_err_probe(dev, ret, "unable to init generic GPIO\n");
+
+	g->gc.label = dev_name(dev);
 	g->gc.base = -1;
 	g->gc.parent = dev;
 	g->gc.owner = THIS_MODULE;
@@ -277,22 +281,15 @@ static int ftgpio_gpio_probe(struct platform_device *pdev)
 	if (!IS_ERR(g->clk))
 		g->gc.set_config = ftgpio_gpio_set_config;
 
-	g->irq.name = "FTGPIO010";
-	g->irq.irq_ack = ftgpio_gpio_ack_irq;
-	g->irq.irq_mask = ftgpio_gpio_mask_irq;
-	g->irq.irq_unmask = ftgpio_gpio_unmask_irq;
-	g->irq.irq_set_type = ftgpio_gpio_set_irq_type;
-
 	girq = &g->gc.irq;
-	girq->chip = &g->irq;
+	gpio_irq_chip_set_chip(girq, &ftgpio_irq_chip);
 	girq->parent_handler = ftgpio_gpio_irq_handler;
 	girq->num_parents = 1;
 	girq->parents = devm_kcalloc(dev, 1, sizeof(*girq->parents),
 				     GFP_KERNEL);
-	if (!girq->parents) {
-		ret = -ENOMEM;
-		goto dis_clk;
-	}
+	if (!girq->parents)
+		return -ENOMEM;
+
 	girq->default_type = IRQ_TYPE_NONE;
 	girq->handler = handle_bad_irq;
 	girq->parents[0] = irq;
@@ -305,28 +302,7 @@ static int ftgpio_gpio_probe(struct platform_device *pdev)
 	/* Clear any use of debounce */
 	writel(0x0, g->base + GPIO_DEBOUNCE_EN);
 
-	ret = devm_gpiochip_add_data(dev, &g->gc, g);
-	if (ret)
-		goto dis_clk;
-
-	platform_set_drvdata(pdev, g);
-	dev_info(dev, "FTGPIO010 @%p registered\n", g->base);
-
-	return 0;
-
-dis_clk:
-	if (!IS_ERR(g->clk))
-		clk_disable_unprepare(g->clk);
-	return ret;
-}
-
-static int ftgpio_gpio_remove(struct platform_device *pdev)
-{
-	struct ftgpio_gpio *g = platform_get_drvdata(pdev);
-
-	if (!IS_ERR(g->clk))
-		clk_disable_unprepare(g->clk);
-	return 0;
+	return devm_gpiochip_add_data(dev, &g->gc, g);
 }
 
 static const struct of_device_id ftgpio_gpio_of_match[] = {
@@ -345,9 +321,8 @@ static const struct of_device_id ftgpio_gpio_of_match[] = {
 static struct platform_driver ftgpio_gpio_driver = {
 	.driver = {
 		.name		= "ftgpio010-gpio",
-		.of_match_table = of_match_ptr(ftgpio_gpio_of_match),
+		.of_match_table = ftgpio_gpio_of_match,
 	},
 	.probe = ftgpio_gpio_probe,
-	.remove = ftgpio_gpio_remove,
 };
 builtin_platform_driver(ftgpio_gpio_driver);

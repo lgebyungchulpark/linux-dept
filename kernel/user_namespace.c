@@ -9,6 +9,7 @@
 #include <linux/highuid.h>
 #include <linux/cred.h>
 #include <linux/securebits.h>
+#include <linux/security.h>
 #include <linux/keyctl.h>
 #include <linux/key-type.h>
 #include <keys/user-type.h>
@@ -21,7 +22,7 @@
 #include <linux/bsearch.h>
 #include <linux/sort.h>
 
-static struct kmem_cache *user_ns_cachep __read_mostly;
+static struct kmem_cache *user_ns_cachep __ro_after_init;
 static DEFINE_MUTEX(userns_state_mutex);
 
 static bool new_idmap_permitted(const struct file *file,
@@ -56,6 +57,18 @@ static void set_cred_user_ns(struct cred *cred, struct user_namespace *user_ns)
 #endif
 	/* tgcred will be cleared in our caller bc CLONE_THREAD won't be set */
 	cred->user_ns = user_ns;
+}
+
+static unsigned long enforced_nproc_rlimit(void)
+{
+	unsigned long limit = RLIM_INFINITY;
+
+	/* Is RLIMIT_NPROC currently enforced? */
+	if (!uid_eq(current_uid(), GLOBAL_ROOT_UID) ||
+	    (current_user_ns() != &init_user_ns))
+		limit = rlimit(RLIMIT_NPROC);
+
+	return limit;
 }
 
 /*
@@ -101,6 +114,10 @@ int create_user_ns(struct cred *new)
 	    !kgid_has_mapping(parent_ns, group))
 		goto fail_dec;
 
+	ret = security_create_user_ns(new);
+	if (ret < 0)
+		goto fail_dec;
+
 	ret = -ENOMEM;
 	ns = kmem_cache_zalloc(user_ns_cachep, GFP_KERNEL);
 	if (!ns)
@@ -119,13 +136,13 @@ int create_user_ns(struct cred *new)
 	ns->owner = owner;
 	ns->group = group;
 	INIT_WORK(&ns->work, free_user_ns);
-	for (i = 0; i < MAX_PER_NAMESPACE_UCOUNTS; i++) {
+	for (i = 0; i < UCOUNT_COUNTS; i++) {
 		ns->ucount_max[i] = INT_MAX;
 	}
-	set_rlimit_ucount_max(ns, UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC));
-	set_rlimit_ucount_max(ns, UCOUNT_RLIMIT_MSGQUEUE, rlimit(RLIMIT_MSGQUEUE));
-	set_rlimit_ucount_max(ns, UCOUNT_RLIMIT_SIGPENDING, rlimit(RLIMIT_SIGPENDING));
-	set_rlimit_ucount_max(ns, UCOUNT_RLIMIT_MEMLOCK, rlimit(RLIMIT_MEMLOCK));
+	set_userns_rlimit_max(ns, UCOUNT_RLIMIT_NPROC, enforced_nproc_rlimit());
+	set_userns_rlimit_max(ns, UCOUNT_RLIMIT_MSGQUEUE, rlimit(RLIMIT_MSGQUEUE));
+	set_userns_rlimit_max(ns, UCOUNT_RLIMIT_SIGPENDING, rlimit(RLIMIT_SIGPENDING));
+	set_userns_rlimit_max(ns, UCOUNT_RLIMIT_MEMLOCK, rlimit(RLIMIT_MEMLOCK));
 	ns->ucounts = ucounts;
 
 	/* Inherit USERNS_SETGROUPS_ALLOWED from our parent */
@@ -196,6 +213,9 @@ static void free_user_ns(struct work_struct *work)
 			kfree(ns->projid_map.forward);
 			kfree(ns->projid_map.reverse);
 		}
+#if IS_ENABLED(CONFIG_BINFMT_MISC)
+		kfree(ns->binfmt_misc);
+#endif
 		retire_userns_sysctls(ns);
 		key_free_user_ns(ns);
 		ns_free_inum(&ns->ns);
@@ -211,8 +231,8 @@ void __put_user_ns(struct user_namespace *ns)
 }
 EXPORT_SYMBOL(__put_user_ns);
 
-/**
- * idmap_key struct holds the information necessary to find an idmapping in a
+/*
+ * struct idmap_key - holds the information necessary to find an idmapping in a
  * sorted idmap array. It is passed to cmp_map_id() as first argument.
  */
 struct idmap_key {
@@ -221,7 +241,7 @@ struct idmap_key {
 	u32 count; /* == 0 unless used with map_id_range_down() */
 };
 
-/**
+/*
  * cmp_map_id - Function to be passed to bsearch() to find the requested
  * idmapping. Expects struct idmap_key to be passed via @k.
  */
@@ -251,7 +271,7 @@ static int cmp_map_id(const void *k, const void *e)
 	return 1;
 }
 
-/**
+/*
  * map_id_range_down_max - Find idmap via binary search in ordered idmap array.
  * Can only be called if number of mappings exceeds UID_GID_MAP_MAX_BASE_EXTENTS.
  */
@@ -268,7 +288,7 @@ map_id_range_down_max(unsigned extents, struct uid_gid_map *map, u32 id, u32 cou
 		       sizeof(struct uid_gid_extent), cmp_map_id);
 }
 
-/**
+/*
  * map_id_range_down_base - Find idmap via binary search in static extent array.
  * Can only be called if number of mappings is equal or less than
  * UID_GID_MAP_MAX_BASE_EXTENTS.
@@ -312,12 +332,12 @@ static u32 map_id_range_down(struct uid_gid_map *map, u32 id, u32 count)
 	return id;
 }
 
-static u32 map_id_down(struct uid_gid_map *map, u32 id)
+u32 map_id_down(struct uid_gid_map *map, u32 id)
 {
 	return map_id_range_down(map, id, 1);
 }
 
-/**
+/*
  * map_id_up_base - Find idmap via binary search in static extent array.
  * Can only be called if number of mappings is equal or less than
  * UID_GID_MAP_MAX_BASE_EXTENTS.
@@ -338,7 +358,7 @@ map_id_up_base(unsigned extents, struct uid_gid_map *map, u32 id)
 	return NULL;
 }
 
-/**
+/*
  * map_id_up_max - Find idmap via binary search in ordered idmap array.
  * Can only be called if number of mappings exceeds UID_GID_MAP_MAX_BASE_EXTENTS.
  */
@@ -355,7 +375,7 @@ map_id_up_max(unsigned extents, struct uid_gid_map *map, u32 id)
 		       sizeof(struct uid_gid_extent), cmp_map_id);
 }
 
-static u32 map_id_up(struct uid_gid_map *map, u32 id)
+u32 map_id_up(struct uid_gid_map *map, u32 id)
 {
 	struct uid_gid_extent *extent;
 	unsigned extents = map->nr_extents;
@@ -750,7 +770,7 @@ static bool mappings_overlap(struct uid_gid_map *new_map,
 	return false;
 }
 
-/**
+/*
  * insert_extent - Safely insert a new idmap extent into struct uid_gid_map.
  * Takes care to allocate a 4K block of memory if the number of mappings exceeds
  * UID_GID_MAP_MAX_BASE_EXTENTS.
@@ -819,7 +839,7 @@ static int cmp_extents_reverse(const void *a, const void *b)
 	return 0;
 }
 
-/**
+/*
  * sort_idmaps - Sorts an array of idmap entries.
  * Can only be called if number of mappings exceeds UID_GID_MAP_MAX_BASE_EXTENTS.
  */
@@ -833,9 +853,8 @@ static int sort_idmaps(struct uid_gid_map *map)
 	     cmp_extents_forward, NULL);
 
 	/* Only copy the memory from forward we actually need. */
-	map->reverse = kmemdup(map->forward,
-			       map->nr_extents * sizeof(struct uid_gid_extent),
-			       GFP_KERNEL);
+	map->reverse = kmemdup_array(map->forward, map->nr_extents,
+				     sizeof(struct uid_gid_extent), GFP_KERNEL);
 	if (!map->reverse)
 		return -ENOMEM;
 
@@ -911,7 +930,7 @@ static ssize_t map_write(struct file *file, const char __user *buf,
 	struct uid_gid_map new_map;
 	unsigned idx;
 	struct uid_gid_extent extent;
-	char *kbuf = NULL, *pos, *next_line;
+	char *kbuf, *pos, *next_line;
 	ssize_t ret;
 
 	/* Only allow < page size writes at the beginning of the file */

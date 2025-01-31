@@ -3,15 +3,18 @@
 ==========================
 
 The drm/amdgpu driver supports all AMD Radeon GPUs based on the Graphics Core
-Next (GCN) architecture.
+Next (GCN), Radeon DNA (RDNA), and Compute DNA (CDNA) architectures.
 
 .. toctree::
 
    module-parameters
    driver-core
    display/index
+   flashing
    xgmi
    ras
    thermal
    driver-misc
+   debugging
+   process-isolation
    amdgpu-glossary

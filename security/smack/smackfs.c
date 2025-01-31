@@ -23,6 +23,7 @@
 #include <linux/ctype.h>
 #include <linux/audit.h>
 #include <linux/magic.h>
+#include <linux/mount.h>
 #include <linux/fs_context.h>
 #include "smack.h"
 
@@ -113,7 +114,7 @@ struct smack_known *smack_syslog_label;
  * SMACK_PTRACE_DEFAULT    regular smack ptrace rules (/proc based)
  * SMACK_PTRACE_EXACT      labels must match, but can be overriden with
  *			   CAP_SYS_PTRACE
- * SMACK_PTRACE_DRACONIAN  lables must match, CAP_SYS_PTRACE has no effect
+ * SMACK_PTRACE_DRACONIAN  labels must match, CAP_SYS_PTRACE has no effect
  */
 int smack_ptrace_rule = SMACK_PTRACE_DEFAULT;
 
@@ -181,11 +182,9 @@ static inline void smack_catset_bit(unsigned int cat, char *catsetp)
  */
 static void smk_netlabel_audit_set(struct netlbl_audit *nap)
 {
-	struct smack_known *skp = smk_of_current();
-
 	nap->loginuid = audit_get_loginuid(current);
 	nap->sessionid = audit_get_sessionid(current);
-	nap->secid = skp->smk_secid;
+	nap->prop.smack.skp = smk_of_current();
 }
 
 /*
@@ -563,6 +562,7 @@ static void smk_seq_stop(struct seq_file *s, void *v)
 
 static void smk_rule_show(struct seq_file *s, struct smack_rule *srp, int max)
 {
+	char acc[SMK_NUM_ACCESS_TYPE + 1];
 	/*
 	 * Don't show any rules with label names too long for
 	 * interface file (/smack/load or /smack/load2)
@@ -576,28 +576,11 @@ static void smk_rule_show(struct seq_file *s, struct smack_rule *srp, int max)
 	if (srp->smk_access == 0)
 		return;
 
-	seq_printf(s, "%s %s",
+	smack_str_from_perm(acc, srp->smk_access);
+	seq_printf(s, "%s %s %s\n",
 		   srp->smk_subject->smk_known,
-		   srp->smk_object->smk_known);
-
-	seq_putc(s, ' ');
-
-	if (srp->smk_access & MAY_READ)
-		seq_putc(s, 'r');
-	if (srp->smk_access & MAY_WRITE)
-		seq_putc(s, 'w');
-	if (srp->smk_access & MAY_EXEC)
-		seq_putc(s, 'x');
-	if (srp->smk_access & MAY_APPEND)
-		seq_putc(s, 'a');
-	if (srp->smk_access & MAY_TRANSMUTE)
-		seq_putc(s, 't');
-	if (srp->smk_access & MAY_LOCK)
-		seq_putc(s, 'l');
-	if (srp->smk_access & MAY_BRINGUP)
-		seq_putc(s, 'b');
-
-	seq_putc(s, '\n');
+		   srp->smk_object->smk_known,
+		   acc);
 }
 
 /*
@@ -829,7 +812,7 @@ static int smk_open_cipso(struct inode *inode, struct file *file)
 static ssize_t smk_set_cipso(struct file *file, const char __user *buf,
 				size_t count, loff_t *ppos, int format)
 {
-	struct netlbl_lsm_catmap *old_cat;
+	struct netlbl_lsm_catmap *old_cat, *new_cat = NULL;
 	struct smack_known *skp;
 	struct netlbl_lsm_secattr ncats;
 	char mapcatset[SMK_CIPSOLEN];
@@ -895,7 +878,7 @@ static ssize_t smk_set_cipso(struct file *file, const char __user *buf,
 	}
 
 	ret = sscanf(rule, "%d", &catlen);
-	if (ret != 1 || catlen > SMACK_CIPSO_MAXCATNUM)
+	if (ret != 1 || catlen < 0 || catlen > SMACK_CIPSO_MAXCATNUM)
 		goto out;
 
 	if (format == SMK_FIXED24_FMT &&
@@ -916,11 +899,22 @@ static ssize_t smk_set_cipso(struct file *file, const char __user *buf,
 
 		smack_catset_bit(cat, mapcatset);
 	}
-
-	rc = smk_netlbl_mls(maplevel, mapcatset, &ncats, SMK_CIPSOLEN);
+	ncats.flags = 0;
+	if (catlen == 0) {
+		ncats.attr.mls.cat = NULL;
+		ncats.attr.mls.lvl = maplevel;
+		new_cat = netlbl_catmap_alloc(GFP_ATOMIC);
+		if (new_cat)
+			new_cat->next = ncats.attr.mls.cat;
+		ncats.attr.mls.cat = new_cat;
+		skp->smk_netlabel.flags &= ~(1U << 3);
+		rc = 0;
+	} else {
+		rc = smk_netlbl_mls(maplevel, mapcatset, &ncats, SMK_CIPSOLEN);
+	}
 	if (rc >= 0) {
 		old_cat = skp->smk_netlabel.attr.mls.cat;
-		skp->smk_netlabel.attr.mls.cat = ncats.attr.mls.cat;
+		rcu_assign_pointer(skp->smk_netlabel.attr.mls.cat, ncats.attr.mls.cat);
 		skp->smk_netlabel.attr.mls.lvl = ncats.attr.mls.lvl;
 		synchronize_rcu();
 		netlbl_catmap_free(old_cat);
@@ -1192,7 +1186,6 @@ static ssize_t smk_write_net4addr(struct file *file, const char __user *buf,
 			rc = -EINVAL;
 			goto free_out;
 		}
-		m = BEBITS;
 		masks = 32;
 	}
 	if (masks > BEBITS) {

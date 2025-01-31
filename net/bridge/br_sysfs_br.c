@@ -344,7 +344,11 @@ static DEVICE_ATTR_RW(group_addr);
 static int set_flush(struct net_bridge *br, unsigned long val,
 		     struct netlink_ext_ack *extack)
 {
-	br_fdb_flush(br);
+	struct net_bridge_fdb_flush_desc desc = {
+		.flags_mask = BIT(BR_FDB_STATIC)
+	};
+
+	br_fdb_flush(br, &desc);
 	return 0;
 }
 
@@ -998,7 +1002,7 @@ static const struct attribute_group bridge_group = {
  * Returns the number of bytes read.
  */
 static ssize_t brforward_read(struct file *filp, struct kobject *kobj,
-			      struct bin_attribute *bin_attr,
+			      const struct bin_attribute *bin_attr,
 			      char *buf, loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -1019,10 +1023,10 @@ static ssize_t brforward_read(struct file *filp, struct kobject *kobj,
 	return n;
 }
 
-static struct bin_attribute bridge_forward = {
+static const struct bin_attribute bridge_forward = {
 	.attr = { .name = SYSFS_BRIDGE_FDB,
 		  .mode = 0444, },
-	.read = brforward_read,
+	.read_new = brforward_read,
 };
 
 /*

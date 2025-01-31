@@ -463,10 +463,10 @@ static void can_can_gw_rcv(struct sk_buff *skb, void *data)
 
 	/* process strictly Classic CAN or CAN FD frames */
 	if (gwj->flags & CGW_FLAGS_CAN_FD) {
-		if (skb->len != CANFD_MTU)
+		if (!can_is_canfd_skb(skb))
 			return;
 	} else {
-		if (skb->len != CAN_MTU)
+		if (!can_is_can_skb(skb))
 			return;
 	}
 
@@ -577,6 +577,13 @@ static inline void cgw_unregister_filter(struct net *net, struct cgw_job *gwj)
 			  gwj->ccgw.filter.can_mask, can_can_gw_rcv, gwj);
 }
 
+static void cgw_job_free_rcu(struct rcu_head *rcu_head)
+{
+	struct cgw_job *gwj = container_of(rcu_head, struct cgw_job, rcu);
+
+	kmem_cache_free(cgw_cache, gwj);
+}
+
 static int cgw_notifier(struct notifier_block *nb,
 			unsigned long msg, void *ptr)
 {
@@ -596,8 +603,7 @@ static int cgw_notifier(struct notifier_block *nb,
 			if (gwj->src.dev == dev || gwj->dst.dev == dev) {
 				hlist_del(&gwj->list);
 				cgw_unregister_filter(net, gwj);
-				synchronize_rcu();
-				kmem_cache_free(cgw_cache, gwj);
+				call_rcu(&gwj->rcu, cgw_job_free_rcu);
 			}
 		}
 	}
@@ -1133,6 +1139,13 @@ static int cgw_create_job(struct sk_buff *skb,  struct nlmsghdr *nlh,
 	if (gwj->dst.dev->type != ARPHRD_CAN)
 		goto out;
 
+	/* is sending the skb back to the incoming interface intended? */
+	if (gwj->src.dev == gwj->dst.dev &&
+	    !(gwj->flags & CGW_FLAGS_CAN_IIF_TX_OK)) {
+		err = -EINVAL;
+		goto out;
+	}
+
 	ASSERT_RTNL();
 
 	err = cgw_register_filter(net, gwj);
@@ -1155,8 +1168,7 @@ static void cgw_remove_all_jobs(struct net *net)
 	hlist_for_each_entry_safe(gwj, nx, &net->can.cgw_list, list) {
 		hlist_del(&gwj->list);
 		cgw_unregister_filter(net, gwj);
-		synchronize_rcu();
-		kmem_cache_free(cgw_cache, gwj);
+		call_rcu(&gwj->rcu, cgw_job_free_rcu);
 	}
 }
 
@@ -1224,8 +1236,7 @@ static int cgw_remove_job(struct sk_buff *skb, struct nlmsghdr *nlh,
 
 		hlist_del(&gwj->list);
 		cgw_unregister_filter(net, gwj);
-		synchronize_rcu();
-		kmem_cache_free(cgw_cache, gwj);
+		call_rcu(&gwj->rcu, cgw_job_free_rcu);
 		err = 0;
 		break;
 	}
@@ -1239,16 +1250,28 @@ static int __net_init cangw_pernet_init(struct net *net)
 	return 0;
 }
 
-static void __net_exit cangw_pernet_exit(struct net *net)
+static void __net_exit cangw_pernet_exit_batch(struct list_head *net_list)
 {
+	struct net *net;
+
 	rtnl_lock();
-	cgw_remove_all_jobs(net);
+	list_for_each_entry(net, net_list, exit_list)
+		cgw_remove_all_jobs(net);
 	rtnl_unlock();
 }
 
 static struct pernet_operations cangw_pernet_ops = {
 	.init = cangw_pernet_init,
-	.exit = cangw_pernet_exit,
+	.exit_batch = cangw_pernet_exit_batch,
+};
+
+static const struct rtnl_msg_handler cgw_rtnl_msg_handlers[] __initconst_or_module = {
+	{.owner = THIS_MODULE, .protocol = PF_CAN, .msgtype = RTM_NEWROUTE,
+	 .doit = cgw_create_job},
+	{.owner = THIS_MODULE, .protocol = PF_CAN, .msgtype = RTM_DELROUTE,
+	 .doit = cgw_remove_job},
+	{.owner = THIS_MODULE, .protocol = PF_CAN, .msgtype = RTM_GETROUTE,
+	 .dumpit = cgw_dump_jobs},
 };
 
 static __init int cgw_module_init(void)
@@ -1276,27 +1299,13 @@ static __init int cgw_module_init(void)
 	if (ret)
 		goto out_register_notifier;
 
-	ret = rtnl_register_module(THIS_MODULE, PF_CAN, RTM_GETROUTE,
-				   NULL, cgw_dump_jobs, 0);
+	ret = rtnl_register_many(cgw_rtnl_msg_handlers);
 	if (ret)
-		goto out_rtnl_register1;
-
-	ret = rtnl_register_module(THIS_MODULE, PF_CAN, RTM_NEWROUTE,
-				   cgw_create_job, NULL, 0);
-	if (ret)
-		goto out_rtnl_register2;
-	ret = rtnl_register_module(THIS_MODULE, PF_CAN, RTM_DELROUTE,
-				   cgw_remove_job, NULL, 0);
-	if (ret)
-		goto out_rtnl_register3;
+		goto out_rtnl_register;
 
 	return 0;
 
-out_rtnl_register3:
-	rtnl_unregister(PF_CAN, RTM_NEWROUTE);
-out_rtnl_register2:
-	rtnl_unregister(PF_CAN, RTM_GETROUTE);
-out_rtnl_register1:
+out_rtnl_register:
 	unregister_netdevice_notifier(&notifier);
 out_register_notifier:
 	kmem_cache_destroy(cgw_cache);

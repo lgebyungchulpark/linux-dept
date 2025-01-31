@@ -165,8 +165,6 @@ static void mcip_probe_n_setup(void)
 		IS_AVAIL1(mp.idu, "IDU "),
 		IS_AVAIL1(mp.dbg, "DEBUG "),
 		IS_AVAIL1(mp.gfrc, "GFRC"));
-
-	cpuinfo_arc700[0].extn.gfrc = mp.gfrc;
 }
 
 struct plat_smp_ops plat_smp_ops = {
@@ -359,8 +357,6 @@ static void idu_cascade_isr(struct irq_desc *desc)
 static int idu_irq_map(struct irq_domain *d, unsigned int virq, irq_hw_number_t hwirq)
 {
 	irq_set_chip_and_handler(virq, &idu_irq_chip, handle_level_irq);
-	irq_set_status_flags(virq, IRQ_MOVE_PCNTXT);
-
 	return 0;
 }
 

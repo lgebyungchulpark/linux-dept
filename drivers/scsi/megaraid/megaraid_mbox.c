@@ -181,7 +181,7 @@ MODULE_PARM_DESC(cmd_per_lun,
  * This would result in non-disk devices being skipped during driver load
  * time. These can be later added though, using /proc/scsi/scsi
  */
-static unsigned int megaraid_fast_load = 0;
+static unsigned int megaraid_fast_load;
 module_param_named(fast_load, megaraid_fast_load, int, 0);
 MODULE_PARM_DESC(fast_load,
 	"Faster loading of the driver, skips physical devices! (default=0)");
@@ -199,7 +199,7 @@ MODULE_PARM_DESC(debug_level, "Debug level for driver (default=0)");
 /*
  * PCI table for all supported controllers.
  */
-static struct pci_device_id pci_id_table_g[] =  {
+static const struct pci_device_id pci_id_table_g[] =  {
 	{
 		PCI_VENDOR_ID_DELL,
 		PCI_DEVICE_ID_PERC4_DI_DISCOVERY,
@@ -325,7 +325,7 @@ ATTRIBUTE_GROUPS(megaraid_sdev);
 /*
  * Scsi host template for megaraid unified driver
  */
-static struct scsi_host_template megaraid_template_g = {
+static const struct scsi_host_template megaraid_template_g = {
 	.module				= THIS_MODULE,
 	.name				= "LSI Logic MegaRAID driver",
 	.proc_name			= "megaraid",
@@ -438,7 +438,7 @@ megaraid_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 
 	// set up PCI related soft state and other pre-known parameters
-	adapter->unique_id	= pdev->bus->number << 8 | pdev->devfn;
+	adapter->unique_id	= pci_dev_id(pdev);
 	adapter->irq		= pdev->irq;
 	adapter->pdev		= pdev;
 
@@ -621,7 +621,7 @@ megaraid_io_attach(adapter_t *adapter)
 	host = scsi_host_alloc(&megaraid_template_g, 8);
 	if (!host) {
 		con_log(CL_ANN, (KERN_WARNING
-			"megaraid mbox: scsi_register failed\n"));
+			"megaraid mbox: scsi_host_alloc failed\n"));
 
 		return -1;
 	}
@@ -3979,7 +3979,7 @@ megaraid_mbox_app_hndl_show(struct device *dev, struct device_attribute *attr, c
 
 	app_hndl = mraid_mm_adapter_app_handle(adapter->unique_id);
 
-	return snprintf(buf, 8, "%u\n", app_hndl);
+	return sysfs_emit(buf, "%u\n", app_hndl);
 }
 
 
@@ -4048,7 +4048,7 @@ megaraid_mbox_ld_show(struct device *dev, struct device_attribute *attr, char *b
 		}
 	}
 
-	return snprintf(buf, 36, "%d %d %d %d\n", scsi_id, logical_drv,
+	return sysfs_emit(buf, "%d %d %d %d\n", scsi_id, logical_drv,
 			ldid_map, app_hndl);
 }
 

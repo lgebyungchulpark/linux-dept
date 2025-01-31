@@ -11,11 +11,11 @@
  * Actually, the following platforms have DIO support:
  *
  * TS-5500:
- *   Documentation: http://wiki.embeddedarm.com/wiki/TS-5500
+ *   Documentation: https://docs.embeddedts.com/TS-5500
  *   Blocks: DIO1, DIO2 and LCD port.
  *
  * TS-5600:
- *   Documentation: http://wiki.embeddedarm.com/wiki/TS-5600
+ *   Documentation: https://docs.embeddedts.com/TS-5600
  *   Blocks: LCD port (identical to TS-5500 LCD).
  */
 
@@ -412,13 +412,11 @@ static int ts5500_dio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ts5500_dio_remove(struct platform_device *pdev)
+static void ts5500_dio_remove(struct platform_device *pdev)
 {
 	struct ts5500_priv *priv = platform_get_drvdata(pdev);
 
 	ts5500_disable_irq(priv);
-
-	return 0;
 }
 
 static const struct platform_device_id ts5500_dio_ids[] = {

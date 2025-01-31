@@ -236,8 +236,9 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 }
 
 /**
- * longhaul_set_cpu_frequency()
- * @mults_index : bitpattern of the new multiplier.
+ * longhaul_setstate()
+ * @policy: cpufreq_policy structure containing the current policy.
+ * @table_index: index of the frequency within the cpufreq_frequency_table.
  *
  * Sets a new clock ratio.
  */
@@ -407,10 +408,10 @@ static int guess_fsb(int mult)
 {
 	int speed = cpu_khz / 1000;
 	int i;
-	int speeds[] = { 666, 1000, 1333, 2000 };
+	static const int speeds[] = { 666, 1000, 1333, 2000 };
 	int f_max, f_min;
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ARRAY_SIZE(speeds); i++) {
 		f_max = ((speeds[i] * mult) + 50) / 100;
 		f_max += (ROUNDING / 2);
 		f_min = f_max - ROUNDING;
@@ -668,9 +669,9 @@ static acpi_status longhaul_walk_callback(acpi_handle obj_handle,
 					  u32 nesting_level,
 					  void *context, void **return_value)
 {
-	struct acpi_device *d;
+	struct acpi_device *d = acpi_fetch_acpi_dev(obj_handle);
 
-	if (acpi_bus_get_device(obj_handle, &d))
+	if (!d)
 		return 0;
 
 	*return_value = acpi_driver_data(d);

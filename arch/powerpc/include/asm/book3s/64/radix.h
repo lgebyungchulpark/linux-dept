@@ -35,6 +35,11 @@
 #define RADIX_PMD_SHIFT		(PAGE_SHIFT + RADIX_PTE_INDEX_SIZE)
 #define RADIX_PUD_SHIFT		(RADIX_PMD_SHIFT + RADIX_PMD_INDEX_SIZE)
 #define RADIX_PGD_SHIFT		(RADIX_PUD_SHIFT + RADIX_PUD_INDEX_SIZE)
+
+#define R_PTRS_PER_PTE		(1 << RADIX_PTE_INDEX_SIZE)
+#define R_PTRS_PER_PMD		(1 << RADIX_PMD_INDEX_SIZE)
+#define R_PTRS_PER_PUD		(1 << RADIX_PUD_INDEX_SIZE)
+
 /*
  * Size of EA range mapped by our pagetables.
  */
@@ -68,11 +73,11 @@
  *
  *
  * 3rd quadrant expanded:
- * +------------------------------+
+ * +------------------------------+  Highest address (0xc010000000000000)
+ * +------------------------------+  KASAN shadow end (0xc00fc00000000000)
  * |                              |
  * |                              |
- * |                              |
- * +------------------------------+  Kernel vmemmap end (0xc010000000000000)
+ * +------------------------------+  Kernel vmemmap end/shadow start (0xc00e000000000000)
  * |                              |
  * |           512TB		  |
  * |                              |
@@ -91,6 +96,7 @@
  * +------------------------------+  Kernel linear (0xc.....)
  */
 
+/* For the sizes of the shadow area, see kasan.h */
 
 /*
  * If we store section details in page->flags we can't increase the MAX_PHYSMEM_BITS
@@ -244,6 +250,10 @@ static inline int radix__pud_bad(pud_t pud)
 	return !!(pud_val(pud) & RADIX_PUD_BAD_BITS);
 }
 
+static inline int radix__pud_same(pud_t pud_a, pud_t pud_b)
+{
+	return ((pud_raw(pud_a) ^ pud_raw(pud_b)) == 0);
+}
 
 static inline int radix__p4d_bad(p4d_t p4d)
 {
@@ -262,9 +272,22 @@ static inline pmd_t radix__pmd_mkhuge(pmd_t pmd)
 	return __pmd(pmd_val(pmd) | _PAGE_PTE);
 }
 
+static inline int radix__pud_trans_huge(pud_t pud)
+{
+	return (pud_val(pud) & (_PAGE_PTE | _PAGE_DEVMAP)) == _PAGE_PTE;
+}
+
+static inline pud_t radix__pud_mkhuge(pud_t pud)
+{
+	return __pud(pud_val(pud) | _PAGE_PTE);
+}
+
 extern unsigned long radix__pmd_hugepage_update(struct mm_struct *mm, unsigned long addr,
 					  pmd_t *pmdp, unsigned long clr,
 					  unsigned long set);
+extern unsigned long radix__pud_hugepage_update(struct mm_struct *mm, unsigned long addr,
+						pud_t *pudp, unsigned long clr,
+						unsigned long set);
 extern pmd_t radix__pmdp_collapse_flush(struct vm_area_struct *vma,
 				  unsigned long address, pmd_t *pmdp);
 extern void radix__pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,
@@ -272,10 +295,21 @@ extern void radix__pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,
 extern pgtable_t radix__pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp);
 extern pmd_t radix__pmdp_huge_get_and_clear(struct mm_struct *mm,
 				      unsigned long addr, pmd_t *pmdp);
+pud_t radix__pudp_huge_get_and_clear(struct mm_struct *mm,
+				     unsigned long addr, pud_t *pudp);
+
 static inline int radix__has_transparent_hugepage(void)
 {
 	/* For radix 2M at PMD level means thp */
 	if (mmu_psize_defs[MMU_PAGE_2M].shift == PMD_SHIFT)
+		return 1;
+	return 0;
+}
+
+static inline int radix__has_transparent_pud_hugepage(void)
+{
+	/* For radix 1G at PUD level means pud hugepage support */
+	if (mmu_psize_defs[MMU_PAGE_1G].shift == PUD_SHIFT)
 		return 1;
 	return 0;
 }
@@ -286,9 +320,20 @@ static inline pmd_t radix__pmd_mkdevmap(pmd_t pmd)
 	return __pmd(pmd_val(pmd) | (_PAGE_PTE | _PAGE_DEVMAP));
 }
 
+static inline pud_t radix__pud_mkdevmap(pud_t pud)
+{
+	return __pud(pud_val(pud) | (_PAGE_PTE | _PAGE_DEVMAP));
+}
+
+struct vmem_altmap;
+struct dev_pagemap;
 extern int __meminit radix__vmemmap_create_mapping(unsigned long start,
 					     unsigned long page_size,
 					     unsigned long phys);
+int __meminit radix__vmemmap_populate(unsigned long start, unsigned long end,
+				      int node, struct vmem_altmap *altmap);
+void __ref radix__vmemmap_free(unsigned long start, unsigned long end,
+			       struct vmem_altmap *altmap);
 extern void radix__vmemmap_remove_mapping(unsigned long start,
 				    unsigned long page_size);
 
@@ -317,7 +362,15 @@ int radix__create_section_mapping(unsigned long start, unsigned long end,
 int radix__remove_section_mapping(unsigned long start, unsigned long end);
 #endif /* CONFIG_MEMORY_HOTPLUG */
 
-void radix__kernel_map_pages(struct page *page, int numpages, int enable);
+#ifdef CONFIG_ARCH_WANT_OPTIMIZE_DAX_VMEMMAP
+#define vmemmap_can_optimize vmemmap_can_optimize
+bool vmemmap_can_optimize(struct vmem_altmap *altmap, struct dev_pagemap *pgmap);
+#endif
 
+#define vmemmap_populate_compound_pages vmemmap_populate_compound_pages
+int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+					      unsigned long start,
+					      unsigned long end, int node,
+					      struct dev_pagemap *pgmap);
 #endif /* __ASSEMBLY__ */
 #endif

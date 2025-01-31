@@ -173,7 +173,6 @@ handler:							;\
 	l.sw    PT_GPR28(r1),r28					;\
 	l.sw    PT_GPR29(r1),r29					;\
 	/* r30 already save */					;\
-/*        l.sw    PT_GPR30(r1),r30*/					;\
 	l.sw    PT_GPR31(r1),r31					;\
 	TRACE_IRQS_OFF_ENTRY						;\
 	/* Store -1 in orig_gpr11 for non-syscall exceptions */	;\
@@ -211,9 +210,8 @@ handler:							;\
 	l.sw    PT_GPR27(r1),r27					;\
 	l.sw    PT_GPR28(r1),r28					;\
 	l.sw    PT_GPR29(r1),r29					;\
-	/* r31 already saved */					;\
-	l.sw    PT_GPR30(r1),r30					;\
-/*        l.sw    PT_GPR31(r1),r31	*/				;\
+	/* r30 already saved */						;\
+	l.sw    PT_GPR31(r1),r31					;\
 	/* Store -1 in orig_gpr11 for non-syscall exceptions */	;\
 	l.addi	r30,r0,-1					;\
 	l.sw	PT_ORIG_GPR11(r1),r30				;\
@@ -240,6 +238,8 @@ handler:							;\
  */
 
 /* =====================================================[ exceptions] === */
+
+	__REF
 
 /* ---[ 0x100: RESET exception ]----------------------------------------- */
 
@@ -601,7 +601,7 @@ UNHANDLED_EXCEPTION(_vector_0xb00,0xb00)
  */
 
 _string_syscall_return:
-	.string "syscall return %ld \n\r\0"
+	.string "syscall r9:0x%08x -> syscall(%ld) return %ld\0"
 	.align 4
 
 ENTRY(_sys_call_handler)
@@ -679,15 +679,25 @@ _syscall_return:
 _syscall_debug:
 	l.movhi r3,hi(_string_syscall_return)
 	l.ori   r3,r3,lo(_string_syscall_return)
-	l.ori   r27,r0,1
+	l.ori   r27,r0,2
 	l.sw    -4(r1),r27
 	l.sw    -8(r1),r11
-	l.addi  r1,r1,-8
+	l.lwz	r29,PT_ORIG_GPR11(r1)
+	l.sw    -12(r1),r29
+	l.lwz	r29,PT_GPR9(r1)
+	l.sw    -16(r1),r29
 	l.movhi r27,hi(_printk)
 	l.ori   r27,r27,lo(_printk)
 	l.jalr  r27
-	 l.nop
-	l.addi  r1,r1,8
+	 l.addi  r1,r1,-16
+	l.addi  r1,r1,16
+#endif
+#if 0
+_syscall_show_regs:
+	l.movhi r27,hi(show_registers)
+	l.ori   r27,r27,lo(show_registers)
+	l.jalr  r27
+	 l.or	r3,r1,r1
 #endif
 
 _syscall_check_trace_leave:
@@ -704,6 +714,10 @@ _syscall_check_trace_leave:
  * interrupts that set NEED_RESCHED or SIGNALPENDING... really true? */
 
 _syscall_check_work:
+#ifdef CONFIG_DEBUG_RSEQ
+	l.jal	rseq_syscall
+	 l.ori	r3,r1,0
+#endif
 	/* Here we need to disable interrupts */
 	DISABLE_INTERRUPTS(r27,r29)
 	TRACE_IRQS_OFF
@@ -834,9 +848,17 @@ _syscall_badsys:
 
 /******* END SYSCALL HANDLING *******/
 
-/* ---[ 0xd00: Trap exception ]------------------------------------------ */
+/* ---[ 0xd00: Floating Point exception ]-------------------------------- */
 
-UNHANDLED_EXCEPTION(_vector_0xd00,0xd00)
+EXCEPTION_ENTRY(_fpe_trap_handler)
+	CLEAR_LWA_FLAG(r3)
+
+	/* r4: EA of fault (set by EXCEPTION_HANDLE) */
+	l.jal   do_fpe_trap
+	 l.addi  r3,r1,0 /* pt_regs */
+
+	l.j     _ret_from_exception
+	 l.nop
 
 /* ---[ 0xe00: Trap exception ]------------------------------------------ */
 

@@ -5,7 +5,6 @@
  *
  ******************************************************************************/
 #include <drv_types.h>
-#include <rtw_debug.h>
 
 static u8 P802_1H_OUI[P80211_OUI_LEN] = { 0x00, 0x00, 0xf8 };
 static u8 RFC1042_OUI[P80211_OUI_LEN] = { 0x00, 0x00, 0x00 };
@@ -45,7 +44,7 @@ s32 _rtw_init_xmit_priv(struct xmit_priv *pxmitpriv, struct adapter *padapter)
 	init_completion(&pxmitpriv->terminate_xmitthread_comp);
 
 	/*
-	 * Please insert all the queue initializaiton using _rtw_init_queue below
+	 * Please insert all the queue initialization using _rtw_init_queue below
 	 */
 
 	pxmitpriv->adapter = padapter;
@@ -449,10 +448,7 @@ static void update_attrib_phy_info(struct adapter *padapter, struct pkt_attrib *
 
 	pattrib->raid = psta->raid;
 
-	if (mlmeext->cur_bwmode < psta->bw_mode)
-		pattrib->bwmode = mlmeext->cur_bwmode;
-	else
-		pattrib->bwmode = psta->bw_mode;
+	pattrib->bwmode = min(mlmeext->cur_bwmode, psta->bw_mode);
 
 	pattrib->sgi = query_ra_short_GI(psta);
 
@@ -476,7 +472,7 @@ static s32 update_attrib_sec_info(struct adapter *padapter, struct pkt_attrib *p
 	signed int res = _SUCCESS;
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
 	struct security_priv *psecuritypriv = &padapter->securitypriv;
-	signed int bmcast = IS_MCAST(pattrib->ra);
+	signed int bmcast = is_multicast_ether_addr(pattrib->ra);
 
 	memset(pattrib->dot118021x_UncstKey.skey,  0, 16);
 	memset(pattrib->dot11tkiptxmickey.skey,  0, 16);
@@ -694,7 +690,7 @@ static s32 update_attrib(struct adapter *padapter, struct sk_buff *pkt, struct p
 	else if (pattrib->dhcp_pkt == 1)
 		rtw_lps_ctrl_wk_cmd(padapter, LPS_CTRL_SPECIAL_PACKET, 1);
 
-	bmcast = IS_MCAST(pattrib->ra);
+	bmcast = is_multicast_ether_addr(pattrib->ra);
 
 	/*  get sta_info */
 	if (bmcast) {
@@ -768,7 +764,7 @@ static s32 xmitframe_addmic(struct adapter *padapter, struct xmit_frame *pxmitfr
 	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
 	u8 priority[4] = {0x0, 0x0, 0x0, 0x0};
 	u8 hw_hdr_offset = 0;
-	signed int bmcst = IS_MCAST(pattrib->ra);
+	signed int bmcst = is_multicast_ether_addr(pattrib->ra);
 
 	hw_hdr_offset = TXDESC_OFFSET;
 
@@ -1038,7 +1034,7 @@ s32 rtw_xmitframe_coalesce(struct adapter *padapter, struct sk_buff *pkt, struct
 
 	u8 *pbuf_start;
 
-	s32 bmcst = IS_MCAST(pattrib->ra);
+	s32 bmcst = is_multicast_ether_addr(pattrib->ra);
 	s32 res = _SUCCESS;
 
 	if (!pxmitframe->buf_addr)
@@ -1146,7 +1142,7 @@ s32 rtw_mgmt_xmitframe_coalesce(struct adapter *padapter, struct sk_buff *pkt, s
 	u8 subtype;
 	struct sta_info *psta = NULL;
 	struct pkt_attrib *pattrib = &pxmitframe->attrib;
-	s32 bmcst = IS_MCAST(pattrib->ra);
+	s32 bmcst = is_multicast_ether_addr(pattrib->ra);
 	u8 *BIP_AAD = NULL;
 	u8 *MGMT_body = NULL;
 
@@ -1471,7 +1467,8 @@ struct xmit_buf *rtw_alloc_xmitbuf_ext(struct xmit_priv *pxmitpriv)
 		pxmitbuf->priv_data = NULL;
 
 		pxmitbuf->len = 0;
-		pxmitbuf->pdata = pxmitbuf->ptail = pxmitbuf->phead;
+		pxmitbuf->pdata = pxmitbuf->phead;
+		pxmitbuf->ptail = pxmitbuf->phead;
 		pxmitbuf->agg_num = 1;
 
 		if (pxmitbuf->sctx)
@@ -1530,7 +1527,8 @@ struct xmit_buf *rtw_alloc_xmitbuf(struct xmit_priv *pxmitpriv)
 		pxmitbuf->priv_data = NULL;
 
 		pxmitbuf->len = 0;
-		pxmitbuf->pdata = pxmitbuf->ptail = pxmitbuf->phead;
+		pxmitbuf->pdata = pxmitbuf->phead;
+		pxmitbuf->ptail = pxmitbuf->phead;
 		pxmitbuf->agg_num = 0;
 		pxmitbuf->pg_num = 0;
 
@@ -1734,12 +1732,15 @@ void rtw_free_xmitframe_queue(struct xmit_priv *pxmitpriv, struct __queue *pfram
 	struct list_head *plist, *phead, *tmp;
 	struct	xmit_frame	*pxmitframe;
 
+	spin_lock_bh(&pframequeue->lock);
+
 	phead = get_list_head(pframequeue);
 	list_for_each_safe(plist, tmp, phead) {
 		pxmitframe = list_entry(plist, struct xmit_frame, list);
 
 		rtw_free_xmitframe(pxmitpriv, pxmitframe);
 	}
+	spin_unlock_bh(&pframequeue->lock);
 }
 
 s32 rtw_xmitframe_enqueue(struct adapter *padapter, struct xmit_frame *pxmitframe)
@@ -1794,7 +1795,6 @@ s32 rtw_xmit_classifier(struct adapter *padapter, struct xmit_frame *pxmitframe)
 	struct sta_info *psta;
 	struct tx_servq	*ptxservq;
 	struct pkt_attrib	*pattrib = &pxmitframe->attrib;
-	struct xmit_priv *xmit_priv = &padapter->xmitpriv;
 	struct hw_xmit	*phwxmits =  padapter->xmitpriv.hwxmits;
 	signed int res = _SUCCESS;
 
@@ -1812,14 +1812,12 @@ s32 rtw_xmit_classifier(struct adapter *padapter, struct xmit_frame *pxmitframe)
 
 	ptxservq = rtw_get_sta_pending(padapter, psta, pattrib->priority, (u8 *)(&ac_index));
 
-	spin_lock_bh(&xmit_priv->lock);
 	if (list_empty(&ptxservq->tx_pending))
 		list_add_tail(&ptxservq->tx_pending, get_list_head(phwxmits[ac_index].sta_queue));
 
 	list_add_tail(&pxmitframe->list, get_list_head(&ptxservq->sta_pending));
 	ptxservq->qcnt++;
 	phwxmits[ac_index].accnt++;
-	spin_unlock_bh(&xmit_priv->lock);
 
 exit:
 
@@ -2019,7 +2017,7 @@ signed int xmitframe_enqueue_for_sleeping_sta(struct adapter *padapter, struct x
 	struct sta_priv *pstapriv = &padapter->stapriv;
 	struct pkt_attrib *pattrib = &pxmitframe->attrib;
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
-	signed int bmcst = IS_MCAST(pattrib->ra);
+	signed int bmcst = is_multicast_ether_addr(pattrib->ra);
 	bool update_tim = false;
 
 	if (check_fwstate(pmlmepriv, WIFI_AP_STATE) == false)
@@ -2202,10 +2200,11 @@ void wakeup_sta_to_xmit(struct adapter *padapter, struct sta_info *psta)
 	struct list_head *xmitframe_plist, *xmitframe_phead, *tmp;
 	struct xmit_frame *pxmitframe = NULL;
 	struct sta_priv *pstapriv = &padapter->stapriv;
+	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
 
 	psta_bmc = rtw_get_bcmc_stainfo(padapter);
 
-	spin_lock_bh(&psta->sleep_q.lock);
+	spin_lock_bh(&pxmitpriv->lock);
 
 	xmitframe_phead = get_list_head(&psta->sleep_q);
 	list_for_each_safe(xmitframe_plist, tmp, xmitframe_phead) {
@@ -2306,7 +2305,7 @@ void wakeup_sta_to_xmit(struct adapter *padapter, struct sta_info *psta)
 
 _exit:
 
-	spin_unlock_bh(&psta->sleep_q.lock);
+	spin_unlock_bh(&pxmitpriv->lock);
 
 	if (update_mask)
 		update_beacon(padapter, WLAN_EID_TIM, NULL, true);
@@ -2318,8 +2317,9 @@ void xmit_delivery_enabled_frames(struct adapter *padapter, struct sta_info *pst
 	struct list_head *xmitframe_plist, *xmitframe_phead, *tmp;
 	struct xmit_frame *pxmitframe = NULL;
 	struct sta_priv *pstapriv = &padapter->stapriv;
+	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
 
-	spin_lock_bh(&psta->sleep_q.lock);
+	spin_lock_bh(&pxmitpriv->lock);
 
 	xmitframe_phead = get_list_head(&psta->sleep_q);
 	list_for_each_safe(xmitframe_plist, tmp, xmitframe_phead) {
@@ -2372,7 +2372,7 @@ void xmit_delivery_enabled_frames(struct adapter *padapter, struct sta_info *pst
 		}
 	}
 
-	spin_unlock_bh(&psta->sleep_q.lock);
+	spin_unlock_bh(&pxmitpriv->lock);
 }
 
 void enqueue_pending_xmitbuf(struct xmit_priv *pxmitpriv, struct xmit_buf *pxmitbuf)
@@ -2491,7 +2491,7 @@ int rtw_xmit_thread(void *context)
 	err = _SUCCESS;
 	padapter = context;
 
-	thread_enter("RTW_XMIT_THREAD");
+	allow_signal(SIGTERM);
 
 	do {
 		err = rtw_hal_xmit_thread_handler(padapter);

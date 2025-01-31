@@ -71,14 +71,14 @@ static const int vcnl3020_prox_sampling_frequency[][2] = {
  * @dev:	vcnl3020 device.
  * @rev:	revision id.
  * @lock:	lock for protecting access to device hardware registers.
- * @buf:	DMA safe __be16 buffer.
+ * @buf:	__be16 buffer.
  */
 struct vcnl3020_data {
 	struct regmap *regmap;
 	struct device *dev;
 	u8 rev;
 	struct mutex lock;
-	__be16 buf ____cacheline_aligned;
+	__be16 buf;
 };
 
 /**
@@ -449,7 +449,7 @@ static int vcnl3020_write_event_config(struct iio_dev *indio_dev,
 				       const struct iio_chan_spec *chan,
 				       enum iio_event_type type,
 				       enum iio_event_direction dir,
-				       int state)
+				       bool state)
 {
 	switch (chan->type) {
 	case IIO_PROXIMITY:
@@ -662,7 +662,7 @@ static struct i2c_driver vcnl3020_driver = {
 		.name   = "vcnl3020",
 		.of_match_table = vcnl3020_of_match,
 	},
-	.probe_new  = vcnl3020_probe,
+	.probe      = vcnl3020_probe,
 };
 module_i2c_driver(vcnl3020_driver);
 

@@ -22,16 +22,12 @@
 #include <sound/soc-dapm.h>
 #include <sound/initval.h>
 #include <sound/tlv.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <sound/cs35l33.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/regulator/machine.h>
-#include <linux/of_gpio.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
 
 #include "cs35l33.h"
 #include "cirrus_legacy.h"
@@ -840,7 +836,6 @@ static const struct snd_soc_component_driver soc_component_dev_cs35l33 = {
 	.num_dapm_routes	= ARRAY_SIZE(cs35l33_audio_map),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config cs35l33_regmap = {
@@ -853,7 +848,7 @@ static const struct regmap_config cs35l33_regmap = {
 	.volatile_reg = cs35l33_volatile_register,
 	.readable_reg = cs35l33_readable_register,
 	.writeable_reg = cs35l33_writeable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -1116,8 +1111,7 @@ static int cs35l33_of_get_pdata(struct device *dev,
 	return 0;
 }
 
-static int cs35l33_i2c_probe(struct i2c_client *i2c_client,
-				       const struct i2c_device_id *id)
+static int cs35l33_i2c_probe(struct i2c_client *i2c_client)
 {
 	struct cs35l33_private *cs35l33;
 	struct cs35l33_pdata *pdata = dev_get_platdata(&i2c_client->dev);
@@ -1169,7 +1163,7 @@ static int cs35l33_i2c_probe(struct i2c_client *i2c_client,
 
 	/* We could issue !RST or skip it based on AMP topology */
 	cs35l33->reset_gpio = devm_gpiod_get_optional(&i2c_client->dev,
-			"reset-gpios", GPIOD_OUT_HIGH);
+			"reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(cs35l33->reset_gpio)) {
 		dev_err(&i2c_client->dev, "%s ERROR: Can't get reset GPIO\n",
 			__func__);
@@ -1252,7 +1246,7 @@ err_enable:
 	return ret;
 }
 
-static int cs35l33_i2c_remove(struct i2c_client *client)
+static void cs35l33_i2c_remove(struct i2c_client *client)
 {
 	struct cs35l33_private *cs35l33 = i2c_get_clientdata(client);
 
@@ -1261,8 +1255,6 @@ static int cs35l33_i2c_remove(struct i2c_client *client)
 	pm_runtime_disable(&client->dev);
 	regulator_bulk_disable(cs35l33->num_core_supplies,
 		cs35l33->core_supplies);
-
-	return 0;
 }
 
 static const struct of_device_id cs35l33_of_match[] = {
@@ -1272,7 +1264,7 @@ static const struct of_device_id cs35l33_of_match[] = {
 MODULE_DEVICE_TABLE(of, cs35l33_of_match);
 
 static const struct i2c_device_id cs35l33_id[] = {
-	{"cs35l33", 0},
+	{"cs35l33"},
 	{}
 };
 

@@ -324,7 +324,7 @@ err_irq_request:
 	return ret;
 }
 
-static int mc13xxx_rtc_remove(struct platform_device *pdev)
+static void mc13xxx_rtc_remove(struct platform_device *pdev)
 {
 	struct mc13xxx_rtc *priv = platform_get_drvdata(pdev);
 
@@ -334,8 +334,6 @@ static int mc13xxx_rtc_remove(struct platform_device *pdev)
 	mc13xxx_irq_free(priv->mc13xxx, MC13XXX_IRQ_RTCRST, priv);
 
 	mc13xxx_unlock(priv->mc13xxx);
-
-	return 0;
 }
 
 static const struct platform_device_id mc13xxx_rtc_idtable[] = {

@@ -15,7 +15,6 @@
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -44,7 +43,6 @@ struct gpio_rcar_priv {
 	spinlock_t lock;
 	struct device *dev;
 	struct gpio_chip gpio_chip;
-	struct irq_chip irq_chip;
 	unsigned int irq_parent;
 	atomic_t wakeup_path;
 	struct gpio_rcar_info info;
@@ -96,16 +94,20 @@ static void gpio_rcar_irq_disable(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct gpio_rcar_priv *p = gpiochip_get_data(gc);
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
 
-	gpio_rcar_write(p, INTMSK, ~BIT(irqd_to_hwirq(d)));
+	gpio_rcar_write(p, INTMSK, ~BIT(hwirq));
+	gpiochip_disable_irq(gc, hwirq);
 }
 
 static void gpio_rcar_irq_enable(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct gpio_rcar_priv *p = gpiochip_get_data(gc);
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
 
-	gpio_rcar_write(p, MSKCLR, BIT(irqd_to_hwirq(d)));
+	gpiochip_enable_irq(gc, hwirq);
+	gpio_rcar_write(p, MSKCLR, BIT(hwirq));
 }
 
 static void gpio_rcar_config_interrupt_input_mode(struct gpio_rcar_priv *p,
@@ -203,6 +205,17 @@ static int gpio_rcar_irq_set_wake(struct irq_data *d, unsigned int on)
 	return 0;
 }
 
+static const struct irq_chip gpio_rcar_irq_chip = {
+	.name		= "gpio-rcar",
+	.irq_mask	= gpio_rcar_irq_disable,
+	.irq_unmask	= gpio_rcar_irq_enable,
+	.irq_set_type	= gpio_rcar_irq_set_type,
+	.irq_set_wake	= gpio_rcar_irq_set_wake,
+	.flags		= IRQCHIP_IMMUTABLE | IRQCHIP_SET_TYPE_MASKED |
+			  IRQCHIP_MASK_ON_SUSPEND,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
+
 static irqreturn_t gpio_rcar_irq_handler(int irq, void *dev_id)
 {
 	struct gpio_rcar_priv *p = dev_id;
@@ -262,7 +275,7 @@ static int gpio_rcar_request(struct gpio_chip *chip, unsigned offset)
 		return error;
 	}
 
-	error = pinctrl_gpio_request(chip->base + offset);
+	error = pinctrl_gpio_request(chip, offset);
 	if (error)
 		pm_runtime_put(p->dev);
 
@@ -273,7 +286,7 @@ static void gpio_rcar_free(struct gpio_chip *chip, unsigned offset)
 {
 	struct gpio_rcar_priv *p = gpiochip_get_data(chip);
 
-	pinctrl_gpio_free(chip->base + offset);
+	pinctrl_gpio_free(chip, offset);
 
 	/*
 	 * Set the GPIO as an input to ensure that the next GPIO request won't
@@ -411,7 +424,7 @@ static const struct gpio_rcar_info gpio_rcar_info_gen3 = {
 	.has_inen = false,
 };
 
-static const struct gpio_rcar_info gpio_rcar_info_v3u = {
+static const struct gpio_rcar_info gpio_rcar_info_gen4 = {
 	.has_outdtsel = true,
 	.has_both_edge_trigger = true,
 	.has_always_in = true,
@@ -421,7 +434,7 @@ static const struct gpio_rcar_info gpio_rcar_info_v3u = {
 static const struct of_device_id gpio_rcar_of_table[] = {
 	{
 		.compatible = "renesas,gpio-r8a779a0",
-		.data = &gpio_rcar_info_v3u,
+		.data = &gpio_rcar_info_gen4,
 	}, {
 		.compatible = "renesas,rcar-gen1-gpio",
 		.data = &gpio_rcar_info_gen1,
@@ -431,6 +444,9 @@ static const struct of_device_id gpio_rcar_of_table[] = {
 	}, {
 		.compatible = "renesas,rcar-gen3-gpio",
 		.data = &gpio_rcar_info_gen3,
+	}, {
+		.compatible = "renesas,rcar-gen4-gpio",
+		.data = &gpio_rcar_info_gen4,
 	}, {
 		.compatible = "renesas,gpio-rcar",
 		.data = &gpio_rcar_info_gen1,
@@ -478,7 +494,6 @@ static int gpio_rcar_probe(struct platform_device *pdev)
 {
 	struct gpio_rcar_priv *p;
 	struct gpio_chip *gpio_chip;
-	struct irq_chip *irq_chip;
 	struct gpio_irq_chip *girq;
 	struct device *dev = &pdev->dev;
 	const char *name = dev_name(dev);
@@ -528,17 +543,8 @@ static int gpio_rcar_probe(struct platform_device *pdev)
 	gpio_chip->base = -1;
 	gpio_chip->ngpio = npins;
 
-	irq_chip = &p->irq_chip;
-	irq_chip->name = "gpio-rcar";
-	irq_chip->parent_device = dev;
-	irq_chip->irq_mask = gpio_rcar_irq_disable;
-	irq_chip->irq_unmask = gpio_rcar_irq_enable;
-	irq_chip->irq_set_type = gpio_rcar_irq_set_type;
-	irq_chip->irq_set_wake = gpio_rcar_irq_set_wake;
-	irq_chip->flags = IRQCHIP_SET_TYPE_MASKED | IRQCHIP_MASK_ON_SUSPEND;
-
 	girq = &gpio_chip->irq;
-	girq->chip = irq_chip;
+	gpio_irq_chip_set_chip(girq, &gpio_rcar_irq_chip);
 	/* This will let us handle the parent IRQ in the driver */
 	girq->parent_handler = NULL;
 	girq->num_parents = 0;
@@ -552,6 +558,7 @@ static int gpio_rcar_probe(struct platform_device *pdev)
 		goto err0;
 	}
 
+	irq_domain_set_pm_device(gpio_chip->irq.domain, dev);
 	ret = devm_request_irq(dev, p->irq_parent, gpio_rcar_irq_handler,
 			       IRQF_SHARED, name, p);
 	if (ret) {
@@ -576,14 +583,13 @@ err0:
 	return ret;
 }
 
-static int gpio_rcar_remove(struct platform_device *pdev)
+static void gpio_rcar_remove(struct platform_device *pdev)
 {
 	struct gpio_rcar_priv *p = platform_get_drvdata(pdev);
 
 	gpiochip_remove(&p->gpio_chip);
 
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -655,7 +661,7 @@ static struct platform_driver gpio_rcar_device_driver = {
 	.driver		= {
 		.name	= "gpio_rcar",
 		.pm     = &gpio_rcar_pm_ops,
-		.of_match_table = of_match_ptr(gpio_rcar_of_table),
+		.of_match_table = gpio_rcar_of_table,
 	}
 };
 

@@ -22,7 +22,7 @@
 
 #include <asm/cp15.h>
 #include <asm/system_info.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/opcodes.h>
 
 #include "fault.h"
@@ -934,6 +934,9 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 
 	if (type == TYPE_LDST)
 		do_alignment_finish_ldst(addr, instr, regs, offset);
+
+	if (thumb_mode(regs))
+		regs->ARM_cpsr = it_advance(regs->ARM_cpsr);
 
 	return 0;
 

@@ -27,29 +27,29 @@
 static void mock_insert_page(struct i915_address_space *vm,
 			     dma_addr_t addr,
 			     u64 offset,
-			     enum i915_cache_level level,
+			     unsigned int pat_index,
 			     u32 flags)
 {
 }
 
 static void mock_insert_entries(struct i915_address_space *vm,
-				struct i915_vma *vma,
-				enum i915_cache_level level, u32 flags)
+				struct i915_vma_resource *vma_res,
+				unsigned int pat_index, u32 flags)
 {
 }
 
 static void mock_bind_ppgtt(struct i915_address_space *vm,
 			    struct i915_vm_pt_stash *stash,
-			    struct i915_vma *vma,
-			    enum i915_cache_level cache_level,
+			    struct i915_vma_resource *vma_res,
+			    unsigned int pat_index,
 			    u32 flags)
 {
 	GEM_BUG_ON(flags & I915_VMA_GLOBAL_BIND);
-	set_bit(I915_VMA_LOCAL_BIND_BIT, __i915_vma_flags(vma));
+	vma_res->bound_flags |= flags;
 }
 
 static void mock_unbind_ppgtt(struct i915_address_space *vm,
-			      struct i915_vma *vma)
+			      struct i915_vma_resource *vma_res)
 {
 }
 
@@ -93,26 +93,26 @@ struct i915_ppgtt *mock_ppgtt(struct drm_i915_private *i915, const char *name)
 
 static void mock_bind_ggtt(struct i915_address_space *vm,
 			   struct i915_vm_pt_stash *stash,
-			   struct i915_vma *vma,
-			   enum i915_cache_level cache_level,
+			   struct i915_vma_resource *vma_res,
+			   unsigned int pat_index,
 			   u32 flags)
 {
 }
 
 static void mock_unbind_ggtt(struct i915_address_space *vm,
-			     struct i915_vma *vma)
+			     struct i915_vma_resource *vma_res)
 {
 }
 
-void mock_init_ggtt(struct drm_i915_private *i915, struct i915_ggtt *ggtt)
+void mock_init_ggtt(struct intel_gt *gt)
 {
-	memset(ggtt, 0, sizeof(*ggtt));
+	struct i915_ggtt *ggtt = gt->ggtt;
 
-	ggtt->vm.gt = to_gt(i915);
-	ggtt->vm.i915 = i915;
+	ggtt->vm.gt = gt;
+	ggtt->vm.i915 = gt->i915;
 	ggtt->vm.is_ggtt = true;
 
-	ggtt->gmadr = (struct resource) DEFINE_RES_MEM(0, 2048 * PAGE_SIZE);
+	ggtt->gmadr = DEFINE_RES_MEM(0, 2048 * PAGE_SIZE);
 	ggtt->mappable_end = resource_size(&ggtt->gmadr);
 	ggtt->vm.total = 4096 * PAGE_SIZE;
 
@@ -128,7 +128,6 @@ void mock_init_ggtt(struct drm_i915_private *i915, struct i915_ggtt *ggtt)
 	ggtt->vm.vma_ops.unbind_vma  = mock_unbind_ggtt;
 
 	i915_address_space_init(&ggtt->vm, VM_CLASS_GGTT);
-	to_gt(i915)->ggtt = ggtt;
 }
 
 void mock_fini_ggtt(struct i915_ggtt *ggtt)

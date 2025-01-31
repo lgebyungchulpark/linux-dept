@@ -9,7 +9,7 @@ title: Atmel AT91 True Random Number Generator
 maintainers:
   - Nicolas Ferre <nicolas.ferre@microchip.com>
   - Alexandre Belloni <alexandre.belloni@bootlin.com>
-  - Ludovic Desroches <ludovic.desroches@microchip.com>
+  - Claudiu Beznea <claudiu.beznea@microchip.com>
 
 properties:
   compatible:
@@ -21,6 +21,10 @@ properties:
           - enum:
               - microchip,sama7g5-trng
           - const: atmel,at91sam9g45-trng
+      - items:
+          - enum:
+              - microchip,sam9x7-trng
+          - const: microchip,sam9x60-trng
 
   clocks:
     maxItems: 1

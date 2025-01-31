@@ -10,7 +10,6 @@
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
-#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/err.h>
@@ -371,7 +370,7 @@ err_leds:
 	return ret;
 }
 
-static int p50_gpio_remove(struct platform_device *pdev)
+static void p50_gpio_remove(struct platform_device *pdev)
 {
 	struct p50_gpio *p50 = platform_get_drvdata(pdev);
 
@@ -379,8 +378,6 @@ static int p50_gpio_remove(struct platform_device *pdev)
 	platform_device_unregister(p50->leds_pdev);
 
 	gpiod_remove_lookup_table(&p50_gpio_led_table);
-
-	return 0;
 }
 
 static struct platform_driver p50_gpio_driver = {
@@ -406,11 +403,14 @@ MODULE_DEVICE_TABLE(dmi, dmi_ids);
 static int __init p50_module_init(void)
 {
 	struct resource res = DEFINE_RES_IO(P50_GPIO_IO_PORT_BASE, P50_PORT_CMD + 1);
+	int ret;
 
 	if (!dmi_first_match(dmi_ids))
 		return -ENODEV;
 
-	platform_driver_register(&p50_gpio_driver);
+	ret = platform_driver_register(&p50_gpio_driver);
+	if (ret)
+		return ret;
 
 	gpio_pdev = platform_device_register_simple(DRIVER_NAME, PLATFORM_DEVID_NONE, &res, 1);
 	if (IS_ERR(gpio_pdev)) {

@@ -1277,14 +1277,14 @@ static int cp_change_mtu(struct net_device *dev, int new_mtu)
 
 	/* if network interface not up, no need for complexity */
 	if (!netif_running(dev)) {
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 		cp_set_rxbufsize(cp);	/* set new rx buf size */
 		return 0;
 	}
 
 	/* network IS up, close it, reset MTU, and come up again. */
 	cp_close(dev);
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 	cp_set_rxbufsize(cp);
 	return cp_open(dev);
 }
@@ -1382,9 +1382,9 @@ static void cp_get_drvinfo (struct net_device *dev, struct ethtool_drvinfo *info
 {
 	struct cp_private *cp = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(cp->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(cp->pdev), sizeof(info->bus_info));
 }
 
 static void cp_get_ringparam(struct net_device *dev,
@@ -1986,7 +1986,7 @@ static int cp_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	eth_hw_addr_set(dev, (u8 *)addr);
 
 	dev->netdev_ops = &cp_netdev_ops;
-	netif_napi_add(dev, &cp->napi, cp_rx_poll, 16);
+	netif_napi_add_weight(dev, &cp->napi, cp_rx_poll, 16);
 	dev->ethtool_ops = &cp_ethtool_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
 

@@ -31,7 +31,7 @@ $schema
   Indicates the meta-schema the schema file adheres to.
 
 title
-  A one-line description on the contents of the binding schema.
+  A one-line description of the hardware being described in the binding schema.
 
 maintainers
   A DT specific property. Contains a list of email address(es)
@@ -39,9 +39,39 @@ maintainers
 
 description
   Optional. A multi-line text block containing any detailed
-  information about this binding. It should contain things such as what the block
+  information about this hardware. It should contain things such as what the block
   or device does, standards the device conforms to, and links to datasheets for
   more information.
+
+  The YAML format has several options for defining the formatting of the text
+  block. The options are controlled with indicator characters following the key
+  (e.g. "description: \|"). The minimum formatting needed for a block should be
+  used. The formatting controls can not only affect whether the YAML can be
+  parsed correctly, but are important when the text blocks are rendered to
+  another form. The options are as follows.
+
+  The default without any indicators is flowed, plain scalar style where single
+  line breaks and leading whitespace are stripped. Paragraphs are delimited by
+  blank lines (i.e. double line break). This style cannot contain ": " in it as
+  it will be interpretted as a key. Any " #" sequence will be interpretted as
+  a comment. There's other restrictions on characters as well. Most
+  restrictions are on what the first character can be.
+
+  The second style is folded which is indicated by ">" character. In addition
+  to maintaining line breaks on double line breaks, the folded style also
+  maintains leading whitespace beyond indentation of the first line. The line
+  breaks on indented lines are also maintained.
+
+  The third style is literal which is indicated by "\|" character. The literal
+  style maintains all line breaks and whitespace (beyond indentation of the
+  first line).
+
+  The above is not a complete description of YAML text blocks. More details on
+  multi-line YAML text blocks can be found online:
+
+  https://yaml-multiline.info/
+
+  https://www.yaml.info/learn/quote.html
 
 select
   Optional. A json-schema used to match nodes for applying the
@@ -71,9 +101,31 @@ required
   A list of DT properties from the 'properties' section that
   must always be present.
 
+additionalProperties / unevaluatedProperties
+  Keywords controlling how schema will validate properties not matched by this
+  schema's 'properties' or 'patternProperties'. Each schema is supposed to
+  have exactly one of these keywords in top-level part, so either
+  additionalProperties or unevaluatedProperties. Nested nodes, so properties
+  being objects, are supposed to have one as well.
+
+  * additionalProperties: false
+      Most common case, where no additional schema is referenced or if this
+      binding allows subset of properties from other referenced schemas.
+
+  * unevaluatedProperties: false
+      Used when this binding references other schema whose all properties
+      should be allowed.
+
+  * additionalProperties: true
+      Rare case, used for schemas implementing common set of properties. Such
+      schemas are supposed to be referenced by other schemas, which then use
+      'unevaluatedProperties: false'.  Typically bus or common-part schemas.
+
 examples
-  Optional. A list of one or more DTS hunks implementing the
-  binding. Note: YAML doesn't allow leading tabs, so spaces must be used instead.
+  Optional. A list of one or more DTS hunks implementing this binding only.
+  Example should not contain unrelated device nodes, e.g. consumer nodes in a
+  provider binding, other nodes referenced by phandle.
+  Note: YAML doesn't allow leading tabs, so spaces must be used instead.
 
 Unless noted otherwise, all properties are required.
 
@@ -108,6 +160,12 @@ The YAML Devicetree format also makes all string values an array and scalar
 values a matrix (in order to define groupings) even when only a single value
 is present. Single entries in schemas are fixed up to match this encoding.
 
+Coding style
+------------
+
+Use YAML coding style (two-space indentation). For DTS examples in the schema,
+preferred is four-space indentation.
+
 Testing
 -------
 
@@ -118,22 +176,17 @@ The DT schema project must be installed in order to validate the DT schema
 binding documents and validate DTS files using the DT schema. The DT schema
 project can be installed with pip::
 
-    pip3 install git+https://github.com/devicetree-org/dt-schema.git@master
+    pip3 install dtschema
+
+Note that 'dtschema' installation requires 'swig' and Python development files
+installed first. On Debian/Ubuntu systems::
+
+    apt install swig python3-dev
 
 Several executables (dt-doc-validate, dt-mk-schema, dt-validate) will be
 installed. Ensure they are in your PATH (~/.local/bin by default).
 
-dtc must also be built with YAML output support enabled. This requires that
-libyaml and its headers be installed on the host system. For some distributions
-that involves installing the development package, such as:
-
-Debian::
-
-  apt-get install libyaml-dev
-
-Fedora::
-
-  dnf -y install libyaml-devel
+Recommended is also to install yamllint (used by dtschema when present).
 
 Running checks
 ~~~~~~~~~~~~~~
@@ -157,13 +210,17 @@ It is possible to run both in a single command::
 
     make dt_binding_check dtbs_check
 
-It is also possible to run checks with a single schema file by setting the
-``DT_SCHEMA_FILES`` variable to a specific schema file.
+It is also possible to run checks with a subset of matching schema files by
+setting the ``DT_SCHEMA_FILES`` variable to 1 or more specific schema files or
+patterns (partial match of a fixed string). Each file or pattern should be
+separated by ':'.
 
 ::
 
-    make dt_binding_check DT_SCHEMA_FILES=Documentation/devicetree/bindings/trivial-devices.yaml
-    make dtbs_check DT_SCHEMA_FILES=Documentation/devicetree/bindings/trivial-devices.yaml
+    make dt_binding_check DT_SCHEMA_FILES=trivial-devices.yaml
+    make dt_binding_check DT_SCHEMA_FILES=trivial-devices.yaml:rtc.yaml
+    make dt_binding_check DT_SCHEMA_FILES=/gpio/
+    make dtbs_check DT_SCHEMA_FILES=trivial-devices.yaml
 
 
 json-schema Resources

@@ -42,7 +42,7 @@ static inline time64_t rtc_tm_sub(struct rtc_time *lhs, struct rtc_time *rhs)
 #include <linux/timerqueue.h>
 #include <linux/workqueue.h>
 
-extern struct class *rtc_class;
+extern const struct class rtc_class;
 
 /*
  * For these RTC methods the device parameter is the physical device
@@ -110,8 +110,6 @@ struct rtc_device {
 	struct hrtimer pie_timer; /* sub second exp, so needs hrtimer */
 	int pie_enabled;
 	struct work_struct irqwork;
-	/* Some hardware can't support UIE mode */
-	int uie_unsupported;
 
 	/*
 	 * This offset specifies the update timing of the RTC.
@@ -148,6 +146,7 @@ struct rtc_device {
 
 	time64_t range_min;
 	timeu64_t range_max;
+	timeu64_t alarm_offset_max;
 	time64_t start_secs;
 	time64_t offset_secs;
 	bool set_start_time;
@@ -224,6 +223,23 @@ void rtc_timer_do_work(struct work_struct *work);
 static inline bool is_leap_year(unsigned int year)
 {
 	return (!(year % 4) && (year % 100)) || !(year % 400);
+}
+
+/**
+ * rtc_bound_alarmtime() - Return alarm time bound by rtc limit
+ * @rtc: Pointer to rtc device structure
+ * @requested: Requested alarm timeout
+ *
+ * Return: Alarm timeout bound by maximum alarm time supported by rtc.
+ */
+static inline ktime_t rtc_bound_alarmtime(struct rtc_device *rtc,
+					  ktime_t requested)
+{
+	if (rtc->alarm_offset_max &&
+	    rtc->alarm_offset_max * MSEC_PER_SEC < ktime_to_ms(requested))
+		return ms_to_ktime(rtc->alarm_offset_max * MSEC_PER_SEC);
+
+	return requested;
 }
 
 #define devm_rtc_register_device(device) \

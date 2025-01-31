@@ -288,7 +288,7 @@ static const struct ata_port_info rdc_port_info = {
 	.port_ops	= &rdc_pata_ops,
 };
 
-static struct scsi_host_template rdc_sht = {
+static const struct scsi_host_template rdc_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -340,7 +340,7 @@ static int rdc_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return rc;
 	host->private_data = hpriv;
 
-	pci_intx(pdev, 1);
+	pcim_intx(pdev, 1);
 
 	host->flags |= ATA_HOST_PARALLEL_SCAN;
 

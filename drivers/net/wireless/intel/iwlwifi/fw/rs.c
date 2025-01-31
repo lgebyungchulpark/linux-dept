@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2021 Intel Corporation
+ * Copyright (C) 2021-2022 Intel Corporation
  */
 
 #include <net/mac80211.h>
@@ -91,6 +91,20 @@ const char *iwl_rs_pretty_bw(int bw)
 }
 IWL_EXPORT_SYMBOL(iwl_rs_pretty_bw);
 
+static u32 iwl_legacy_rate_to_fw_idx(u32 rate_n_flags)
+{
+	int rate = rate_n_flags & RATE_LEGACY_RATE_MSK_V1;
+	int idx;
+	bool ofdm = !(rate_n_flags & RATE_MCS_CCK_MSK_V1);
+	int offset = ofdm ? IWL_FIRST_OFDM_RATE : 0;
+	int last = ofdm ? IWL_RATE_COUNT_LEGACY : IWL_FIRST_OFDM_RATE;
+
+	for (idx = offset; idx < last; idx++)
+		if (iwl_fw_rate_idx_to_plcp(idx) == rate)
+			return idx - offset;
+	return IWL_RATE_INVALID;
+}
+
 u32 iwl_new_rate_from_v1(u32 rate_v1)
 {
 	u32 rate_v2 = 0;
@@ -112,7 +126,7 @@ u32 iwl_new_rate_from_v1(u32 rate_v1)
 		   rate_v1 & RATE_MCS_HE_MSK_V1) {
 		rate_v2 |= rate_v1 & RATE_VHT_MCS_RATE_CODE_MSK;
 
-		rate_v2 |= rate_v1 & RATE_VHT_MCS_MIMO2_MSK;
+		rate_v2 |= rate_v1 & RATE_MCS_NSS_MSK;
 
 		if (rate_v1 & RATE_MCS_HE_MSK_V1) {
 			u32 he_type_bits = rate_v1 & RATE_MCS_HE_TYPE_MSK_V1;
@@ -144,7 +158,10 @@ u32 iwl_new_rate_from_v1(u32 rate_v1)
 	} else {
 		u32 legacy_rate = iwl_legacy_rate_to_fw_idx(rate_v1);
 
-		WARN_ON(legacy_rate < 0);
+		if (WARN_ON_ONCE(legacy_rate == IWL_RATE_INVALID))
+			legacy_rate = (rate_v1 & RATE_MCS_CCK_MSK_V1) ?
+				IWL_FIRST_CCK_RATE : IWL_FIRST_OFDM_RATE;
+
 		rate_v2 |= legacy_rate;
 		if (!(rate_v1 & RATE_MCS_CCK_MSK_V1))
 			rate_v2 |= RATE_MCS_LEGACY_OFDM_MSK;
@@ -172,20 +189,6 @@ u32 iwl_new_rate_from_v1(u32 rate_v1)
 }
 IWL_EXPORT_SYMBOL(iwl_new_rate_from_v1);
 
-u32 iwl_legacy_rate_to_fw_idx(u32 rate_n_flags)
-{
-	int rate = rate_n_flags & RATE_LEGACY_RATE_MSK_V1;
-	int idx;
-	bool ofdm = !(rate_n_flags & RATE_MCS_CCK_MSK_V1);
-	int offset = ofdm ? IWL_FIRST_OFDM_RATE : 0;
-	int last = ofdm ? IWL_RATE_COUNT_LEGACY : IWL_FIRST_OFDM_RATE;
-
-	for (idx = offset; idx < last; idx++)
-		if (iwl_fw_rate_idx_to_plcp(idx) == rate)
-			return idx - offset;
-	return -1;
-}
-
 int rs_pretty_print_rate(char *buf, int bufsz, const u32 rate)
 {
 	char *type;
@@ -205,7 +208,6 @@ int rs_pretty_print_rate(char *buf, int bufsz, const u32 rate)
 
 		return scnprintf(buf, bufsz, "Legacy | ANT: %s Rate: %s Mbps",
 				 iwl_rs_pretty_ant(ant),
-				 index == IWL_RATE_INVALID ? "BAD" :
 				 iwl_rate_mcs(index)->mbps);
 	}
 
@@ -215,6 +217,8 @@ int rs_pretty_print_rate(char *buf, int bufsz, const u32 rate)
 		type = "HT";
 	else if (format == RATE_MCS_HE_MSK)
 		type = "HE";
+	else if (format == RATE_MCS_EHT_MSK)
+		type = "EHT";
 	else
 		type = "Unknown"; /* shouldn't happen */
 

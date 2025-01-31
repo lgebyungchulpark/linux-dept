@@ -36,12 +36,17 @@ static const struct of_device_id of_match_clk_mt8195_scp_adsp[] = {
 		/* sentinel */
 	}
 };
+MODULE_DEVICE_TABLE(of, of_match_clk_mt8195_scp_adsp);
 
 static struct platform_driver clk_mt8195_scp_adsp_drv = {
 	.probe = mtk_clk_simple_probe,
+	.remove = mtk_clk_simple_remove,
 	.driver = {
 		.name = "clk-mt8195-scp_adsp",
 		.of_match_table = of_match_clk_mt8195_scp_adsp,
 	},
 };
-builtin_platform_driver(clk_mt8195_scp_adsp_drv);
+module_platform_driver(clk_mt8195_scp_adsp_drv);
+
+MODULE_DESCRIPTION("MediaTek MT8195 SCP AudioDSP clocks driver");
+MODULE_LICENSE("GPL");

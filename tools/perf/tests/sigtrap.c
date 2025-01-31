@@ -22,19 +22,6 @@
 #include "tests.h"
 #include "../perf-sys.h"
 
-/*
- * PowerPC and S390 do not support creation of instruction breakpoints using the
- * perf_event interface.
- *
- * Just disable the test for these architectures until these issues are
- * resolved.
- */
-#if defined(__powerpc__) || defined(__s390x__)
-#define BP_ACCOUNT_IS_SUPPORTED 0
-#else
-#define BP_ACCOUNT_IS_SUPPORTED 1
-#endif
-
 #define NUM_THREADS 5
 
 static struct {
@@ -66,6 +53,101 @@ static struct perf_event_attr make_event_attr(void)
 	};
 	return attr;
 }
+
+#ifdef HAVE_BPF_SKEL
+#include <bpf/btf.h>
+#include <util/btf.h>
+
+static struct btf *btf;
+
+static bool btf__available(void)
+{
+	if (btf == NULL)
+		btf = btf__load_vmlinux_btf();
+
+	return btf != NULL;
+}
+
+static void btf__exit(void)
+{
+	btf__free(btf);
+	btf = NULL;
+}
+
+static bool attr_has_sigtrap(void)
+{
+	int id;
+
+	if (!btf__available()) {
+		/* should be an old kernel */
+		return false;
+	}
+
+	id = btf__find_by_name_kind(btf, "perf_event_attr", BTF_KIND_STRUCT);
+	if (id < 0)
+		return false;
+
+	return __btf_type__find_member_by_name(btf, id, "sigtrap") != NULL;
+}
+
+static bool kernel_with_sleepable_spinlocks(void)
+{
+	const struct btf_member *member;
+	const struct btf_type *type;
+	const char *type_name;
+	int id;
+
+	if (!btf__available())
+		return false;
+
+	id = btf__find_by_name_kind(btf, "spinlock", BTF_KIND_STRUCT);
+	if (id < 0)
+		return false;
+
+	// Only RT has a "lock" member for "struct spinlock"
+	member = __btf_type__find_member_by_name(btf, id, "lock");
+	if (member == NULL)
+		return false;
+
+	// But check its type as well
+	type = btf__type_by_id(btf, member->type);
+	if (!type || !btf_is_struct(type))
+		return false;
+
+	type_name = btf__name_by_offset(btf, type->name_off);
+	return type_name && !strcmp(type_name, "rt_mutex_base");
+}
+#else  /* !HAVE_BPF_SKEL */
+static bool attr_has_sigtrap(void)
+{
+	struct perf_event_attr attr = {
+		.type		= PERF_TYPE_SOFTWARE,
+		.config		= PERF_COUNT_SW_DUMMY,
+		.size		= sizeof(attr),
+		.remove_on_exec = 1, /* Required by sigtrap. */
+		.sigtrap	= 1, /* Request synchronous SIGTRAP on event. */
+	};
+	int fd;
+	bool ret = false;
+
+	fd = sys_perf_event_open(&attr, 0, -1, -1, perf_event_open_cloexec_flag());
+	if (fd >= 0) {
+		ret = true;
+		close(fd);
+	}
+
+	return ret;
+}
+
+static bool kernel_with_sleepable_spinlocks(void)
+{
+	return false;
+}
+
+static void btf__exit(void)
+{
+}
+#endif  /* HAVE_BPF_SKEL */
 
 static void
 sigtrap_handler(int signum __maybe_unused, siginfo_t *info, void *ucontext __maybe_unused)
@@ -103,7 +185,7 @@ static int run_test_threads(pthread_t *threads, pthread_barrier_t *barrier)
 
 static int run_stress_test(int fd, pthread_t *threads, pthread_barrier_t *barrier)
 {
-	int ret;
+	int ret, expected_sigtraps;
 
 	ctx.iterate_on = 3000;
 
@@ -112,7 +194,16 @@ static int run_stress_test(int fd, pthread_t *threads, pthread_barrier_t *barrie
 	ret = run_test_threads(threads, barrier);
 	TEST_ASSERT_EQUAL("disable failed", ioctl(fd, PERF_EVENT_IOC_DISABLE, 0), 0);
 
-	TEST_ASSERT_EQUAL("unexpected sigtraps", ctx.signal_count, NUM_THREADS * ctx.iterate_on);
+	expected_sigtraps = NUM_THREADS * ctx.iterate_on;
+
+	if (ctx.signal_count < expected_sigtraps && kernel_with_sleepable_spinlocks()) {
+		pr_debug("Expected %d sigtraps, got %d, running on a kernel with sleepable spinlocks.\n",
+			 expected_sigtraps, ctx.signal_count);
+		pr_debug("See https://lore.kernel.org/all/e368f2c848d77fbc8d259f44e2055fe469c219cf.camel@gmx.de/\n");
+		return TEST_SKIP;
+	} else
+		TEST_ASSERT_EQUAL("unexpected sigtraps", ctx.signal_count, expected_sigtraps);
+
 	TEST_ASSERT_EQUAL("missing signals or incorrectly delivered", ctx.tids_want_signal, 0);
 	TEST_ASSERT_VAL("unexpected si_addr", ctx.first_siginfo.si_addr == &ctx.iterate_on);
 #if 0 /* FIXME: enable when libc's signal.h has si_perf_{type,data} */
@@ -135,7 +226,7 @@ static int test__sigtrap(struct test_suite *test __maybe_unused, int subtest __m
 	char sbuf[STRERR_BUFSIZE];
 	int i, fd, ret = TEST_FAIL;
 
-	if (!BP_ACCOUNT_IS_SUPPORTED) {
+	if (!BP_SIGNAL_IS_SUPPORTED) {
 		pr_debug("Test not supported on this architecture");
 		return TEST_SKIP;
 	}
@@ -152,7 +243,13 @@ static int test__sigtrap(struct test_suite *test __maybe_unused, int subtest __m
 
 	fd = sys_perf_event_open(&attr, 0, -1, -1, perf_event_open_cloexec_flag());
 	if (fd < 0) {
-		pr_debug("FAILED sys_perf_event_open(): %s\n", str_error_r(errno, sbuf, sizeof(sbuf)));
+		if (attr_has_sigtrap()) {
+			pr_debug("FAILED sys_perf_event_open(): %s\n",
+				 str_error_r(errno, sbuf, sizeof(sbuf)));
+		} else {
+			pr_debug("perf_event_attr doesn't have sigtrap\n");
+			ret = TEST_SKIP;
+		}
 		goto out_restore_sigaction;
 	}
 
@@ -171,6 +268,7 @@ out_restore_sigaction:
 	sigaction(SIGTRAP, &oldact, NULL);
 out:
 	pthread_barrier_destroy(&barrier);
+	btf__exit();
 	return ret;
 }
 

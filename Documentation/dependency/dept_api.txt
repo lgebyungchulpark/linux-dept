@@ -1,0 +1,117 @@
+DEPT(DEPendency Tracker) APIs
+=============================
+
+Started by Byungchul Park <max.byungchul.park@sk.com>
+
+SDT(Single-event Dependency Tracker) APIs
+-----------------------------------------
+Use these APIs to annotate on either wait or event.  These have been
+already applied into the existing synchronization primitives e.g.
+waitqueue, swait, wait_for_completion(), dma fence and so on.  The basic
+APIs of SDT are:
+
+   /*
+    * After defining 'struct dept_map map', initialize the instance.
+    */
+   sdt_map_init(map);
+
+   /*
+    * Place just before the interesting wait.
+    */
+   sdt_wait(map);
+
+   /*
+    * Place just before the interesting event.
+    */
+   sdt_event(map);
+
+The advanced APIs of SDT are:
+
+   /*
+    * After defining 'struct dept_map map', initialize the instance
+    * using an external key.
+    */
+   sdt_map_init_key(map, key);
+
+   /*
+    * Place just before the interesting timeout wait.
+    */
+   sdt_wait_timeout(map, time);
+
+   /*
+    * Use sdt_might_sleep_start() and sdt_might_sleep_end() in pair.
+    * Place at the start of the interesting section that might enter
+    * schedule() or its family that needs to be woken up by
+    * try_to_wake_up().
+    */
+   sdt_might_sleep_start(map);
+
+   /*
+    * Use sdt_might_sleep_start_timeout() and sdt_might_sleep_end() in
+    * pair.  Place at the start of the interesting section that might
+    * enter schedule_timeout() or its family that needs to be woken up
+    * by try_to_wake_up().
+    */
+   sdt_might_sleep_start_timeout(map, time);
+
+   /*
+    * Use sdt_might_sleep_start() and sdt_might_sleep_end() in pair.
+    * Place at the end of the interesting section that might enter
+    * schedule(), schedule_timeout() or its family that needs to be
+    * woken up by try_to_wake_up().
+    */
+   sdt_might_sleep_end();
+
+   /*
+    * Use sdt_ecxt_enter() and sdt_ecxt_exit() in pair.  Place at the
+    * start of the interesting section where the interesting event might
+    * be triggered.
+    */
+   sdt_ecxt_enter(map);
+
+   /*
+    * Use sdt_ecxt_enter() and sdt_ecxt_exit() in pair.  Place at the
+    * end of the interesting section where the interesting event might
+    * be triggered.
+    */
+   sdt_ecxt_exit(map);
+
+
+LDT(Lock Dependency Tracker) APIs
+---------------------------------
+Do not use these APIs directly.  These are the wrappers for typical
+locks, that have been already applied into major locks internally e.g.
+spin lock, mutex, rwlock and so on.  The APIs of LDT are:
+
+   ldt_init(map, key, sub, name);
+   ldt_lock(map, sub_local, try, nest, ip);
+   ldt_rlock(map, sub_local, try, nest, ip, queued);
+   ldt_wlock(map, sub_local, try, nest, ip);
+   ldt_unlock(map, ip);
+   ldt_downgrade(map, ip);
+   ldt_set_class(map, name, key, sub_local, ip);
+
+
+Raw APIs
+--------
+Do not use these APIs directly.  The raw APIs of dept are:
+
+   dept_free_range(start, size);
+   dept_map_init(map, key, sub, name);
+   dept_map_reinit(map, key, sub, name);
+   dept_ext_wgen_init(ext_wgen);
+   dept_map_copy(map_to, map_from);
+   dept_wait(map, wait_flags, ip, wait_func, sub_local, time);
+   dept_stage_wait(map, key, ip, wait_func, time);
+   dept_request_event_wait_commit();
+   dept_clean_stage();
+   dept_stage_event(task, ip);
+   dept_ecxt_enter(map, evt_flags, ip, ecxt_func, evt_func, sub_local);
+   dept_ecxt_holding(map, evt_flags);
+   dept_request_event(map, ext_wgen);
+   dept_event(map, evt_flags, ip, evt_func, ext_wgen);
+   dept_ecxt_exit(map, evt_flags, ip);
+   dept_ecxt_enter_nokeep(map);
+   dept_key_init(key);
+   dept_key_destroy(key);
+   dept_map_ecxt_modify(map, cur_evt_flags, key, evt_flags, ip, ecxt_func, evt_func, sub_local);

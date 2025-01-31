@@ -13,6 +13,7 @@
 #include <linux/binfmts.h>
 #include <linux/sched/coredump.h>
 #include <linux/sched/task.h>
+#include <linux/mm.h>
 
 struct ctl_table_header;
 struct mempolicy;
@@ -79,6 +80,11 @@ static inline bool pde_is_permanent(const struct proc_dir_entry *pde)
 	return pde->flags & PROC_ENTRY_PERMANENT;
 }
 
+static inline void pde_make_permanent(struct proc_dir_entry *pde)
+{
+	pde->flags |= PROC_ENTRY_PERMANENT;
+}
+
 extern struct kmem_cache *proc_dir_entry_cache;
 void pde_free(struct proc_dir_entry *pde);
 
@@ -87,7 +93,7 @@ union proc_op {
 	int (*proc_show)(struct seq_file *m,
 		struct pid_namespace *ns, struct pid *pid,
 		struct task_struct *task);
-	const char *lsm;
+	int lsmid;
 };
 
 struct proc_inode {
@@ -96,7 +102,7 @@ struct proc_inode {
 	union proc_op op;
 	struct proc_dir_entry *pde;
 	struct ctl_table_header *sysctl;
-	struct ctl_table *sysctl_entry;
+	const struct ctl_table *sysctl_entry;
 	struct hlist_node sibling_inodes;
 	const struct proc_ns_operations *ns_ops;
 	struct inode vfs_inode;
@@ -137,6 +143,37 @@ unsigned name_to_int(const struct qstr *qstr);
 /* Worst case buffer size needed for holding an integer. */
 #define PROC_NUMBUF 13
 
+/**
+ * folio_precise_page_mapcount() - Number of mappings of this folio page.
+ * @folio: The folio.
+ * @page: The page.
+ *
+ * The number of present user page table entries that reference this page
+ * as tracked via the RMAP: either referenced directly (PTE) or as part of
+ * a larger area that covers this page (e.g., PMD).
+ *
+ * Use this function only for the calculation of existing statistics
+ * (USS, PSS, mapcount_max) and for debugging purposes (/proc/kpagecount).
+ *
+ * Do not add new users.
+ *
+ * Returns: The number of mappings of this folio page. 0 for
+ * folios that are not mapped to user space or are not tracked via the RMAP
+ * (e.g., shared zeropage).
+ */
+static inline int folio_precise_page_mapcount(struct folio *folio,
+		struct page *page)
+{
+	int mapcount = atomic_read(&page->_mapcount) + 1;
+
+	if (page_mapcount_is_type(mapcount))
+		mapcount = 0;
+	if (folio_test_large(folio))
+		mapcount += folio_entire_mapcount(folio);
+
+	return mapcount;
+}
+
 /*
  * array.c
  */
@@ -157,9 +194,9 @@ extern int proc_pid_statm(struct seq_file *, struct pid_namespace *,
  * base.c
  */
 extern const struct dentry_operations pid_dentry_operations;
-extern int pid_getattr(struct user_namespace *, const struct path *,
+extern int pid_getattr(struct mnt_idmap *, const struct path *,
 		       struct kstat *, u32, unsigned int);
-extern int proc_setattr(struct user_namespace *, struct dentry *,
+extern int proc_setattr(struct mnt_idmap *, struct dentry *,
 			struct iattr *);
 extern void proc_pid_evict_inode(struct proc_inode *);
 extern struct inode *proc_pid_make_inode(struct super_block *, struct task_struct *, umode_t);
@@ -284,9 +321,7 @@ struct proc_maps_private {
 	struct inode *inode;
 	struct task_struct *task;
 	struct mm_struct *mm;
-#ifdef CONFIG_MMU
-	struct vm_area_struct *tail_vma;
-#endif
+	struct vma_iterator iter;
 #ifdef CONFIG_NUMA
 	struct mempolicy *task_mempolicy;
 #endif
@@ -312,4 +347,17 @@ static inline void pde_force_lookup(struct proc_dir_entry *pde)
 {
 	/* /proc/net/ entries can be changed under us by setns(CLONE_NEWNET) */
 	pde->proc_dops = &proc_net_dentry_ops;
+}
+
+/*
+ * Add a new procfs dentry that can't serve as a mountpoint. That should
+ * encompass anything that is ephemeral and can just disappear while the
+ * process is still around.
+ */
+static inline struct dentry *proc_splice_unmountable(struct inode *inode,
+		struct dentry *dentry, const struct dentry_operations *d_ops)
+{
+	d_set_d_op(dentry, d_ops);
+	dont_mount(dentry);
+	return d_splice_alias(inode, dentry);
 }

@@ -12,6 +12,9 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -19,9 +22,6 @@
 #include <scsi/scsi_cmnd.h>
 #include <linux/libata.h>
 #include <asm/io.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/of_platform.h>
 
 static unsigned int intr_coalescing_count;
 module_param(intr_coalescing_count, int, S_IRUGO);
@@ -322,7 +322,7 @@ static void fsl_sata_set_irq_coalescing(struct ata_host *host,
 static ssize_t fsl_sata_intr_coalescing_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%d	%d\n",
+	return sysfs_emit(buf, "%u	%u\n",
 			intr_coalescing_count, intr_coalescing_ticks);
 }
 
@@ -332,10 +332,8 @@ static ssize_t fsl_sata_intr_coalescing_store(struct device *dev,
 {
 	unsigned int coalescing_count,	coalescing_ticks;
 
-	if (sscanf(buf, "%d%d",
-				&coalescing_count,
-				&coalescing_ticks) != 2) {
-		printk(KERN_ERR "fsl-sata: wrong parameter format.\n");
+	if (sscanf(buf, "%u%u", &coalescing_count, &coalescing_ticks) != 2) {
+		dev_err(dev, "fsl-sata: wrong parameter format.\n");
 		return -EINVAL;
 	}
 
@@ -359,7 +357,7 @@ static ssize_t fsl_sata_rx_watermark_show(struct device *dev,
 	rx_watermark &= 0x1f;
 	spin_unlock_irqrestore(&host->lock, flags);
 
-	return sysfs_emit(buf, "%d\n", rx_watermark);
+	return sysfs_emit(buf, "%u\n", rx_watermark);
 }
 
 static ssize_t fsl_sata_rx_watermark_store(struct device *dev,
@@ -373,8 +371,8 @@ static ssize_t fsl_sata_rx_watermark_store(struct device *dev,
 	void __iomem *csr_base = host_priv->csr_base;
 	u32 temp;
 
-	if (sscanf(buf, "%d", &rx_watermark) != 1) {
-		printk(KERN_ERR "fsl-sata: wrong parameter format.\n");
+	if (kstrtouint(buf, 10, &rx_watermark) < 0) {
+		dev_err(dev, "fsl-sata: wrong parameter format.\n");
 		return -EINVAL;
 	}
 
@@ -382,8 +380,8 @@ static ssize_t fsl_sata_rx_watermark_store(struct device *dev,
 	temp = ioread32(csr_base + TRANSCFG);
 	temp &= 0xffffffe0;
 	iowrite32(temp | rx_watermark, csr_base + TRANSCFG);
-
 	spin_unlock_irqrestore(&host->lock, flags);
+
 	return strlen(buf);
 }
 
@@ -568,7 +566,7 @@ static unsigned int sata_fsl_qc_issue(struct ata_queued_cmd *qc)
 	return 0;
 }
 
-static bool sata_fsl_qc_fill_rtf(struct ata_queued_cmd *qc)
+static void sata_fsl_qc_fill_rtf(struct ata_queued_cmd *qc)
 {
 	struct sata_fsl_port_priv *pp = qc->ap->private_data;
 	struct sata_fsl_host_priv *host_priv = qc->ap->host->private_data;
@@ -579,7 +577,6 @@ static bool sata_fsl_qc_fill_rtf(struct ata_queued_cmd *qc)
 	cd = pp->cmdentry + tag;
 
 	ata_tf_from_fis(cd->sfis, &qc->result_tf);
-	return true;
 }
 
 static int sata_fsl_scr_write(struct ata_link *link,
@@ -1044,7 +1041,7 @@ static void sata_fsl_error_handler(struct ata_port *ap)
 
 static void sata_fsl_post_internal_cmd(struct ata_queued_cmd *qc)
 {
-	if (qc->flags & ATA_QCFLAG_FAILED)
+	if (qc->flags & ATA_QCFLAG_EH)
 		qc->err_mask |= AC_ERR_OTHER;
 
 	if (qc->err_mask) {
@@ -1379,7 +1376,7 @@ static void sata_fsl_host_stop(struct ata_host *host)
 /*
  * scsi mid-layer and libata interface structures
  */
-static struct scsi_host_template sata_fsl_sht = {
+static const struct scsi_host_template sata_fsl_sht = {
 	ATA_NCQ_SHT_QD("sata_fsl", SATA_FSL_QUEUE_DEPTH),
 	.sg_tablesize = SATA_FSL_MAX_PRD_USABLE,
 	.dma_boundary = ATA_DMA_BOUNDARY,
@@ -1529,7 +1526,7 @@ error_exit_with_cleanup:
 	return retval;
 }
 
-static int sata_fsl_remove(struct platform_device *ofdev)
+static void sata_fsl_remove(struct platform_device *ofdev)
 {
 	struct ata_host *host = platform_get_drvdata(ofdev);
 	struct sata_fsl_host_priv *host_priv = host->private_data;
@@ -1538,15 +1535,15 @@ static int sata_fsl_remove(struct platform_device *ofdev)
 	device_remove_file(&ofdev->dev, &host_priv->rx_watermark);
 
 	ata_host_detach(host);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
 static int sata_fsl_suspend(struct platform_device *op, pm_message_t state)
 {
 	struct ata_host *host = platform_get_drvdata(op);
-	return ata_host_suspend(host, state);
+
+	ata_host_suspend(host, state);
+	return 0;
 }
 
 static int sata_fsl_resume(struct platform_device *op)
@@ -1579,13 +1576,9 @@ static int sata_fsl_resume(struct platform_device *op)
 #endif
 
 static const struct of_device_id fsl_sata_match[] = {
-	{
-		.compatible = "fsl,pq-sata",
-	},
-	{
-		.compatible = "fsl,pq-sata-v2",
-	},
-	{},
+	{ .compatible = "fsl,pq-sata", },
+	{ .compatible = "fsl,pq-sata-v2", },
+	{ /* sentinel */ }
 };
 
 MODULE_DEVICE_TABLE(of, fsl_sata_match);

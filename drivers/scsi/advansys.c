@@ -2277,6 +2277,15 @@ struct asc_board {
 							dvc_var.adv_dvc_var)
 #define adv_dvc_to_pdev(adv_dvc) to_pci_dev(adv_dvc_to_board(adv_dvc)->dev)
 
+struct advansys_cmd {
+	dma_addr_t dma_handle;
+};
+
+static struct advansys_cmd *advansys_cmd(struct scsi_cmnd *cmd)
+{
+	return scsi_cmd_priv(cmd);
+}
+
 #ifdef ADVANSYS_DEBUG
 static int asc_dbglvl = 3;
 
@@ -4487,7 +4496,7 @@ static int AdvInitAsc3550Driver(ADV_DVC_VAR *asc_dvc)
 
 	/*
 	 * Microcode operating variables for WDTR, SDTR, and command tag
-	 * queuing will be set in slave_configure() based on what a
+	 * queuing will be set in sdev_configure() based on what a
 	 * device reports it is capable of in Inquiry byte 7.
 	 *
 	 * If SCSI Bus Resets have been disabled, then directly set
@@ -5004,7 +5013,7 @@ static int AdvInitAsc38C0800Driver(ADV_DVC_VAR *asc_dvc)
 
 	/*
 	 * Microcode operating variables for WDTR, SDTR, and command tag
-	 * queuing will be set in slave_configure() based on what a
+	 * queuing will be set in sdev_configure() based on what a
 	 * device reports it is capable of in Inquiry byte 7.
 	 *
 	 * If SCSI Bus Resets have been disabled, then directly set
@@ -5499,7 +5508,7 @@ static int AdvInitAsc38C1600Driver(ADV_DVC_VAR *asc_dvc)
 
 	/*
 	 * Microcode operating variables for WDTR, SDTR, and command tag
-	 * queuing will be set in slave_configure() based on what a
+	 * queuing will be set in sdev_configure() based on what a
 	 * device reports it is capable of in Inquiry byte 7.
 	 *
 	 * If SCSI Bus Resets have been disabled, then directly set
@@ -6681,7 +6690,7 @@ static void asc_isr_callback(ASC_DVC_VAR *asc_dvc_varp, ASC_QDONE_INFO *qdonep)
 
 	ASC_STATS(boardp->shost, callback);
 
-	dma_unmap_single(boardp->dev, scp->SCp.dma_handle,
+	dma_unmap_single(boardp->dev, advansys_cmd(scp)->dma_handle,
 			 SCSI_SENSE_BUFFERSIZE, DMA_FROM_DEVICE);
 	/*
 	 * 'qdonep' contains the command's ending status.
@@ -7210,7 +7219,7 @@ static void AscAsyncFix(ASC_DVC_VAR *asc_dvc, struct scsi_device *sdev)
 }
 
 static void
-advansys_narrow_slave_configure(struct scsi_device *sdev, ASC_DVC_VAR *asc_dvc)
+advansys_narrow_sdev_configure(struct scsi_device *sdev, ASC_DVC_VAR *asc_dvc)
 {
 	ASC_SCSI_BIT_ID_TYPE tid_bit = 1 << sdev->id;
 	ASC_SCSI_BIT_ID_TYPE orig_use_tagged_qng = asc_dvc->use_tagged_qng;
@@ -7336,7 +7345,7 @@ static void advansys_wide_enable_ppr(ADV_DVC_VAR *adv_dvc,
 }
 
 static void
-advansys_wide_slave_configure(struct scsi_device *sdev, ADV_DVC_VAR *adv_dvc)
+advansys_wide_sdev_configure(struct scsi_device *sdev, ADV_DVC_VAR *adv_dvc)
 {
 	AdvPortAddr iop_base = adv_dvc->iop_base;
 	unsigned short tidmask = 1 << sdev->id;
@@ -7382,16 +7391,17 @@ advansys_wide_slave_configure(struct scsi_device *sdev, ADV_DVC_VAR *adv_dvc)
  * Set the number of commands to queue per device for the
  * specified host adapter.
  */
-static int advansys_slave_configure(struct scsi_device *sdev)
+static int advansys_sdev_configure(struct scsi_device *sdev,
+				   struct queue_limits *lim)
 {
 	struct asc_board *boardp = shost_priv(sdev->host);
 
 	if (ASC_NARROW_BOARD(boardp))
-		advansys_narrow_slave_configure(sdev,
-						&boardp->dvc_var.asc_dvc_var);
+		advansys_narrow_sdev_configure(sdev,
+					       &boardp->dvc_var.asc_dvc_var);
 	else
-		advansys_wide_slave_configure(sdev,
-						&boardp->dvc_var.adv_dvc_var);
+		advansys_wide_sdev_configure(sdev,
+					     &boardp->dvc_var.adv_dvc_var);
 
 	return 0;
 }
@@ -7399,15 +7409,15 @@ static int advansys_slave_configure(struct scsi_device *sdev)
 static __le32 asc_get_sense_buffer_dma(struct scsi_cmnd *scp)
 {
 	struct asc_board *board = shost_priv(scp->device->host);
+	struct advansys_cmd *acmd = advansys_cmd(scp);
 
-	scp->SCp.dma_handle = dma_map_single(board->dev, scp->sense_buffer,
-					     SCSI_SENSE_BUFFERSIZE,
-					     DMA_FROM_DEVICE);
-	if (dma_mapping_error(board->dev, scp->SCp.dma_handle)) {
+	acmd->dma_handle = dma_map_single(board->dev, scp->sense_buffer,
+					SCSI_SENSE_BUFFERSIZE, DMA_FROM_DEVICE);
+	if (dma_mapping_error(board->dev, acmd->dma_handle)) {
 		ASC_DBG(1, "failed to map sense buffer\n");
 		return 0;
 	}
-	return cpu_to_le32(scp->SCp.dma_handle);
+	return cpu_to_le32(acmd->dma_handle);
 }
 
 static int asc_build_req(struct asc_board *boardp, struct scsi_cmnd *scp,
@@ -10593,7 +10603,7 @@ static int AdvInitGetConfig(struct pci_dev *pdev, struct Scsi_Host *shost)
 }
 #endif
 
-static struct scsi_host_template advansys_template = {
+static const struct scsi_host_template advansys_template = {
 	.proc_name = DRV_NAME,
 #ifdef CONFIG_PROC_FS
 	.show_info = advansys_show_info,
@@ -10603,7 +10613,8 @@ static struct scsi_host_template advansys_template = {
 	.queuecommand = advansys_queuecommand,
 	.eh_host_reset_handler = advansys_reset,
 	.bios_param = advansys_biosparam,
-	.slave_configure = advansys_slave_configure,
+	.sdev_configure = advansys_sdev_configure,
+	.cmd_size = sizeof(struct advansys_cmd),
 };
 
 static int advansys_wide_init_chip(struct Scsi_Host *shost)
@@ -11398,7 +11409,7 @@ static struct eisa_driver advansys_eisa_driver = {
 };
 
 /* PCI Devices supported by this driver */
-static struct pci_device_id advansys_pci_tbl[] = {
+static const struct pci_device_id advansys_pci_tbl[] = {
 	{PCI_VENDOR_ID_ASP, PCI_DEVICE_ID_ASP_1200A,
 	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{PCI_VENDOR_ID_ASP, PCI_DEVICE_ID_ASP_ABP940,
@@ -11535,6 +11546,7 @@ static void __exit advansys_exit(void)
 module_init(advansys_init);
 module_exit(advansys_exit);
 
+MODULE_DESCRIPTION("AdvanSys SCSI Adapter driver");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE("advansys/mcode.bin");
 MODULE_FIRMWARE("advansys/3550.bin");

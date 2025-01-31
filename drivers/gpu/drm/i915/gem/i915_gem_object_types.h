@@ -10,11 +10,14 @@
 #include <linux/mmu_notifier.h>
 
 #include <drm/drm_gem.h>
-#include <drm/ttm/ttm_bo_api.h>
+#include <drm/ttm/ttm_bo.h>
 #include <uapi/drm/i915_drm.h>
 
 #include "i915_active.h"
 #include "i915_selftest.h"
+#include "i915_vma_resource.h"
+
+#include "gt/intel_gt_defines.h"
 
 struct drm_i915_gem_object;
 struct intel_fronbuffer;
@@ -57,10 +60,26 @@ struct drm_i915_gem_object_ops {
 	void (*put_pages)(struct drm_i915_gem_object *obj,
 			  struct sg_table *pages);
 	int (*truncate)(struct drm_i915_gem_object *obj);
-	void (*writeback)(struct drm_i915_gem_object *obj);
-	int (*shrinker_release_pages)(struct drm_i915_gem_object *obj,
-				      bool no_gpu_wait,
-				      bool should_writeback);
+	/**
+	 * shrink - Perform further backend specific actions to facilate
+	 * shrinking.
+	 * @obj: The gem object
+	 * @flags: Extra flags to control shrinking behaviour in the backend
+	 *
+	 * Possible values for @flags:
+	 *
+	 * I915_GEM_OBJECT_SHRINK_WRITEBACK - Try to perform writeback of the
+	 * backing pages, if supported.
+	 *
+	 * I915_GEM_OBJECT_SHRINK_NO_GPU_WAIT - Don't wait for the object to
+	 * idle.  Active objects can be considered later. The TTM backend for
+	 * example might have aync migrations going on, which don't use any
+	 * i915_vma to track the active GTT binding, and hence having an unbound
+	 * object might not be enough.
+	 */
+#define I915_GEM_OBJECT_SHRINK_WRITEBACK   BIT(0)
+#define I915_GEM_OBJECT_SHRINK_NO_GPU_WAIT BIT(1)
+	int (*shrink)(struct drm_i915_gem_object *obj, unsigned int flags);
 
 	int (*pread)(struct drm_i915_gem_object *obj,
 		     const struct drm_i915_gem_pread *arg);
@@ -90,7 +109,8 @@ struct drm_i915_gem_object_ops {
 	 * pinning or for as long as the object lock is held.
 	 */
 	int (*migrate)(struct drm_i915_gem_object *obj,
-		       struct intel_memory_region *mr);
+		       struct intel_memory_region *mr,
+		       unsigned int flags);
 
 	void (*release)(struct drm_i915_gem_object *obj);
 
@@ -176,6 +196,13 @@ enum i915_cache_level {
 	 * engine.
 	 */
 	I915_CACHE_WT,
+	/**
+	 * @I915_MAX_CACHE_LEVEL:
+	 *
+	 * Mark the last entry in the enum. Used for defining cachelevel_to_pat
+	 * array for cache_level to pat translation table.
+	 */
+	I915_MAX_CACHE_LEVEL,
 };
 
 enum i915_map_type {
@@ -275,13 +302,26 @@ struct drm_i915_gem_object {
 	 */
 	struct i915_address_space *shares_resv_from;
 
+#ifdef CONFIG_PROC_FS
+	/**
+	 * @client: @i915_drm_client which created the object
+	 */
+	struct i915_drm_client *client;
+
+	/**
+	 * @client_link: Link into @i915_drm_client.objects_list
+	 */
+	struct list_head client_link;
+#endif
+
 	union {
 		struct rcu_head rcu;
 		struct llist_node freed;
 	};
 
 	/**
-	 * Whether the object is currently in the GGTT mmap.
+	 * Whether the object is currently in the GGTT or any other supported
+	 * fake offset mmap backed by lmem.
 	 */
 	unsigned int userfault_count;
 	struct list_head userfault_link;
@@ -302,15 +342,31 @@ struct drm_i915_gem_object {
 #define I915_BO_ALLOC_PM_VOLATILE BIT(4)
 /* Object needs to be restored early using memcpy during resume */
 #define I915_BO_ALLOC_PM_EARLY    BIT(5)
+/*
+ * Object is likely never accessed by the CPU. This will prioritise the BO to be
+ * allocated in the non-mappable portion of lmem. This is merely a hint, and if
+ * dealing with userspace objects the CPU fault handler is free to ignore this.
+ */
+#define I915_BO_ALLOC_GPU_ONLY	  BIT(6)
+#define I915_BO_ALLOC_CCS_AUX	  BIT(7)
+/*
+ * Object is allowed to retain its initial data and will not be cleared on first
+ * access if used along with I915_BO_ALLOC_USER. This is mainly to keep
+ * preallocated framebuffer data intact while transitioning it to i915drmfb.
+ */
+#define I915_BO_PREALLOC	  BIT(8)
 #define I915_BO_ALLOC_FLAGS (I915_BO_ALLOC_CONTIGUOUS | \
 			     I915_BO_ALLOC_VOLATILE | \
 			     I915_BO_ALLOC_CPU_CLEAR | \
 			     I915_BO_ALLOC_USER | \
 			     I915_BO_ALLOC_PM_VOLATILE | \
-			     I915_BO_ALLOC_PM_EARLY)
-#define I915_BO_READONLY          BIT(6)
-#define I915_TILING_QUIRK_BIT     7 /* unknown swizzling; do not release! */
-#define I915_BO_PROTECTED         BIT(8)
+			     I915_BO_ALLOC_PM_EARLY | \
+			     I915_BO_ALLOC_GPU_ONLY | \
+			     I915_BO_ALLOC_CCS_AUX | \
+			     I915_BO_PREALLOC)
+#define I915_BO_READONLY          BIT(9)
+#define I915_TILING_QUIRK_BIT     10 /* unknown swizzling; do not release! */
+#define I915_BO_PROTECTED         BIT(11)
 	/**
 	 * @mem_flags - Mutable placement-related flags
 	 *
@@ -322,14 +378,42 @@ struct drm_i915_gem_object {
 #define I915_BO_FLAG_STRUCT_PAGE BIT(0) /* Object backed by struct pages */
 #define I915_BO_FLAG_IOMEM       BIT(1) /* Object backed by IO memory */
 	/**
-	 * @cache_level: The desired GTT caching level.
+	 * @pat_index: The desired PAT index.
 	 *
-	 * See enum i915_cache_level for possible values, along with what
-	 * each does.
+	 * See hardware specification for valid PAT indices for each platform.
+	 * This field replaces the @cache_level that contains a value of enum
+	 * i915_cache_level since PAT indices are being used by both userspace
+	 * and kernel mode driver for caching policy control after GEN12.
+	 * In the meantime platform specific tables are created to translate
+	 * i915_cache_level into pat index, for more details check the macros
+	 * defined i915/i915_pci.c, e.g. TGL_CACHELEVEL.
+	 * For backward compatibility, this field contains values exactly match
+	 * the entries of enum i915_cache_level for pre-GEN12 platforms (See
+	 * LEGACY_CACHELEVEL), so that the PTE encode functions for these
+	 * legacy platforms can stay the same.
 	 */
-	unsigned int cache_level:3;
+	unsigned int pat_index:6;
+	/**
+	 * @pat_set_by_user: Indicate whether pat_index is set by user space
+	 *
+	 * This field is set to false by default, only set to true if the
+	 * pat_index is set by user space. By design, user space is capable of
+	 * managing caching behavior by setting pat_index, in which case this
+	 * kernel mode driver should never touch the pat_index.
+	 */
+	unsigned int pat_set_by_user:1;
 	/**
 	 * @cache_coherent:
+	 *
+	 * Note: with the change above which replaced @cache_level with pat_index,
+	 * the use of @cache_coherent is limited to the objects created by kernel
+	 * or by userspace without pat index specified.
+	 * Check for @pat_set_by_user to find out if an object has pat index set
+	 * by userspace. The ioctl's to change cache settings have also been
+	 * disabled for the objects with pat index set by userspace. Please don't
+	 * assume @cache_coherent having the flags set as describe here. A helper
+	 * function i915_gem_object_has_cache_level() provides one way to bypass
+	 * the use of this field.
 	 *
 	 * Track whether the pages are coherent with the GPU if reading or
 	 * writing through the CPU caches. The largely depends on the
@@ -404,6 +488,16 @@ struct drm_i915_gem_object {
 	/**
 	 * @cache_dirty:
 	 *
+	 * Note: with the change above which replaced cache_level with pat_index,
+	 * the use of @cache_dirty is limited to the objects created by kernel
+	 * or by userspace without pat index specified.
+	 * Check for @pat_set_by_user to find out if an object has pat index set
+	 * by userspace. The ioctl's to change cache settings have also been
+	 * disabled for the objects with pat_index set by userspace. Please don't
+	 * assume @cache_dirty is set as describe here. Also see helper function
+	 * i915_gem_object_has_cache_level() for possible ways to bypass the use
+	 * of this field.
+	 *
 	 * Track if we are we dirty with writes through the CPU cache for this
 	 * object. As a result reading directly from main memory might yield
 	 * stale data.
@@ -441,7 +535,7 @@ struct drm_i915_gem_object {
 	 *   I915_CACHE_NONE. The only exception is userptr objects, where we
 	 *   instead force I915_CACHE_LLC, but we also don't allow userspace to
 	 *   ever change the @cache_level for such objects. Another special case
-	 *   is dma-buf, which doesn't rely on @cache_dirty,  but there we
+	 *   is dma-buf, which doesn't rely on @cache_dirty, but there we
 	 *   always do a forced flush when acquiring the pages, if there is a
 	 *   chance that the pages can be read directly from main memory with
 	 *   the GPU.
@@ -462,6 +556,9 @@ struct drm_i915_gem_object {
 	 *   critical, i.e userspace is free to race against itself.
 	 */
 	unsigned int cache_dirty:1;
+
+	/* @is_dpt: Object houses a display page table (DPT) */
+	unsigned int is_dpt:1;
 
 	/**
 	 * @read_domains: Read memory domains.
@@ -523,6 +620,24 @@ struct drm_i915_gem_object {
 		bool ttm_shrinkable;
 
 		/**
+		 * @unknown_state: Indicate that the object is effectively
+		 * borked. This is write-once and set if we somehow encounter a
+		 * fatal error when moving/clearing the pages, and we are not
+		 * able to fallback to memcpy/memset, like on small-BAR systems.
+		 * The GPU should also be wedged (or in the process) at this
+		 * point.
+		 *
+		 * Only valid to read this after acquiring the dma-resv lock and
+		 * waiting for all DMA_RESV_USAGE_KERNEL fences to be signalled,
+		 * or if we otherwise know that the moving fence has signalled,
+		 * and we are certain the pages underneath are valid for
+		 * immediate access (under normal operation), like just prior to
+		 * binding the object or when setting up the CPU fault handler.
+		 * See i915_gem_object_has_unknown_state();
+		 */
+		bool unknown_state;
+
+		/**
 		 * Priority list of potential placements for this object.
 		 */
 		struct intel_memory_region **placements;
@@ -550,31 +665,7 @@ struct drm_i915_gem_object {
 		struct sg_table *pages;
 		void *mapping;
 
-		struct i915_page_sizes {
-			/**
-			 * The sg mask of the pages sg_table. i.e the mask of
-			 * of the lengths for each sg entry.
-			 */
-			unsigned int phys;
-
-			/**
-			 * The gtt page sizes we are allowed to use given the
-			 * sg mask and the supported page sizes. This will
-			 * express the smallest unit we can use for the whole
-			 * object, as well as the larger sizes we may be able
-			 * to use opportunistically.
-			 */
-			unsigned int sg;
-
-			/**
-			 * The actual gtt page size usage. Since we can have
-			 * multiple vma associated with this object we need to
-			 * prevent any trampling of state, hence a copy of this
-			 * struct also lives in each vma, therefore the gtt
-			 * value here should only be read/write through the vma.
-			 */
-			unsigned int gtt;
-		} page_sizes;
+		struct i915_page_sizes page_sizes;
 
 		I915_SELFTEST_DECLARE(unsigned int page_mask);
 
@@ -597,6 +688,8 @@ struct drm_i915_gem_object {
 		 * pages were last acquired.
 		 */
 		bool dirty:1;
+
+		u32 tlb[I915_MAX_GT];
 	} mm;
 
 	struct {
@@ -630,12 +723,17 @@ struct drm_i915_gem_object {
 
 		struct drm_mm_node *stolen;
 
+		resource_size_t bo_offset;
+
 		unsigned long scratch;
 		u64 encode;
 
 		void *gvt_info;
 	};
 };
+
+#define intel_bo_to_drm_bo(bo) (&(bo)->base)
+#define intel_bo_to_i915(bo) to_i915(intel_bo_to_drm_bo(bo)->dev)
 
 static inline struct drm_i915_gem_object *
 to_intel_bo(struct drm_gem_object *gem)

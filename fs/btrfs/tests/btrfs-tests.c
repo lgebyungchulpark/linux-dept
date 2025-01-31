@@ -16,6 +16,7 @@
 #include "../disk-io.h"
 #include "../qgroup.h"
 #include "../block-group.h"
+#include "../fs.h"
 
 static struct vfsmount *test_mnt = NULL;
 
@@ -27,6 +28,9 @@ const char *test_error[] = {
 	[TEST_ALLOC_INODE]	     = "cannot allocate inode",
 	[TEST_ALLOC_BLOCK_GROUP]     = "cannot allocate block group",
 	[TEST_ALLOC_EXTENT_MAP]      = "cannot allocate extent map",
+	[TEST_ALLOC_CHUNK_MAP]       = "cannot allocate chunk map",
+	[TEST_ALLOC_IO_CONTEXT]	     = "cannot allocate io context",
+	[TEST_ALLOC_TRANSACTION]     = "cannot allocate transaction",
 };
 
 static const struct super_operations btrfs_test_super_ops = {
@@ -59,10 +63,8 @@ struct inode *btrfs_new_test_inode(void)
 		return NULL;
 
 	inode->i_mode = S_IFREG;
-	BTRFS_I(inode)->location.type = BTRFS_INODE_ITEM_KEY;
-	BTRFS_I(inode)->location.objectid = BTRFS_FIRST_FREE_OBJECTID;
-	BTRFS_I(inode)->location.offset = 0;
-	inode_init_owner(&init_user_ns, inode, NULL, S_IFREG);
+	btrfs_set_inode_number(BTRFS_I(inode), BTRFS_FIRST_FREE_OBJECTID);
+	inode_init_owner(&nop_mnt_idmap, inode, NULL, S_IFREG);
 
 	return inode;
 }
@@ -100,7 +102,7 @@ struct btrfs_device *btrfs_alloc_dummy_device(struct btrfs_fs_info *fs_info)
 	if (!dev)
 		return ERR_PTR(-ENOMEM);
 
-	extent_io_tree_init(NULL, &dev->alloc_state, 0, NULL);
+	extent_io_tree_init(fs_info, &dev->alloc_state, 0);
 	INIT_LIST_HEAD(&dev->dev_list);
 	list_add(&dev->dev_list, &fs_info->fs_devices->devices);
 
@@ -141,6 +143,11 @@ struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(u32 nodesize, u32 sectorsize)
 	fs_info->nodesize = nodesize;
 	fs_info->sectorsize = sectorsize;
 	fs_info->sectorsize_bits = ilog2(sectorsize);
+
+	/* CRC32C csum size. */
+	fs_info->csum_size = 4;
+	fs_info->csums_per_leaf = BTRFS_MAX_ITEM_SIZE(fs_info) /
+		fs_info->csum_size;
 	set_bit(BTRFS_FS_STATE_DUMMY_FS_INFO, &fs_info->fs_state);
 
 	test_mnt->mnt_sb->s_fs_info = fs_info;
@@ -157,8 +164,7 @@ void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 	if (!fs_info)
 		return;
 
-	if (WARN_ON(!test_bit(BTRFS_FS_STATE_DUMMY_FS_INFO,
-			      &fs_info->fs_state)))
+	if (WARN_ON(!btrfs_is_testing(fs_info)))
 		return;
 
 	test_mnt->mnt_sb->s_fs_info = NULL;
@@ -183,7 +189,7 @@ void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 	}
 	spin_unlock(&fs_info->buffer_lock);
 
-	btrfs_mapping_tree_free(&fs_info->mapping_tree);
+	btrfs_mapping_tree_free(fs_info);
 	list_for_each_entry_safe(dev, tmp, &fs_info->fs_devices->devices,
 				 dev_list) {
 		btrfs_free_dummy_device(dev);
@@ -199,7 +205,7 @@ void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 
 void btrfs_free_dummy_root(struct btrfs_root *root)
 {
-	if (!root)
+	if (IS_ERR_OR_NULL(root))
 		return;
 	/* Will be freed by btrfs_free_fs_roots */
 	if (WARN_ON(test_bit(BTRFS_ROOT_IN_RADIX, &root->state)))
@@ -242,9 +248,18 @@ void btrfs_free_dummy_block_group(struct btrfs_block_group *cache)
 {
 	if (!cache)
 		return;
-	__btrfs_remove_free_space_cache(cache->free_space_ctl);
+	btrfs_remove_free_space_cache(cache);
 	kfree(cache->free_space_ctl);
 	kfree(cache);
+}
+
+void btrfs_init_dummy_transaction(struct btrfs_transaction *trans, struct btrfs_fs_info *fs_info)
+{
+	memset(trans, 0, sizeof(*trans));
+	trans->fs_info = fs_info;
+	xa_init(&trans->delayed_refs.head_refs);
+	xa_init(&trans->delayed_refs.dirty_extents);
+	spin_lock_init(&trans->delayed_refs.lock);
 }
 
 void btrfs_init_dummy_trans(struct btrfs_trans_handle *trans,
@@ -290,6 +305,12 @@ int btrfs_run_sanity_tests(void)
 			if (ret)
 				goto out;
 			ret = btrfs_test_free_space_tree(sectorsize, nodesize);
+			if (ret)
+				goto out;
+			ret = btrfs_test_raid_stripe_tree(sectorsize, nodesize);
+			if (ret)
+				goto out;
+			ret = btrfs_test_delayed_refs(sectorsize, nodesize);
 			if (ret)
 				goto out;
 		}

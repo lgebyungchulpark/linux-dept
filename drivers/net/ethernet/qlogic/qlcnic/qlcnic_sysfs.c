@@ -12,7 +12,6 @@
 #include <linux/ipv6.h>
 #include <linux/inetdevice.h>
 #include <linux/sysfs.h>
-#include <linux/aer.h>
 #include <linux/log2.h>
 #ifdef CONFIG_QLCNIC_HWMON
 #include <linux/hwmon.h>
@@ -265,7 +264,7 @@ static int qlcnic_sysfs_validate_crb(struct qlcnic_adapter *adapter,
 }
 
 static ssize_t qlcnic_sysfs_read_crb(struct file *filp, struct kobject *kobj,
-				     struct bin_attribute *attr, char *buf,
+				     const struct bin_attribute *attr, char *buf,
 				     loff_t offset, size_t size)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -282,7 +281,7 @@ static ssize_t qlcnic_sysfs_read_crb(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t qlcnic_sysfs_write_crb(struct file *filp, struct kobject *kobj,
-				      struct bin_attribute *attr, char *buf,
+				      const struct bin_attribute *attr, char *buf,
 				      loff_t offset, size_t size)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -311,7 +310,7 @@ static int qlcnic_sysfs_validate_mem(struct qlcnic_adapter *adapter,
 }
 
 static ssize_t qlcnic_sysfs_read_mem(struct file *filp, struct kobject *kobj,
-				     struct bin_attribute *attr, char *buf,
+				     const struct bin_attribute *attr, char *buf,
 				     loff_t offset, size_t size)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -333,7 +332,7 @@ static ssize_t qlcnic_sysfs_read_mem(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t qlcnic_sysfs_write_mem(struct file *filp, struct kobject *kobj,
-				      struct bin_attribute *attr, char *buf,
+				      const struct bin_attribute *attr, char *buf,
 				      loff_t offset, size_t size)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -397,7 +396,7 @@ static int validate_pm_config(struct qlcnic_adapter *adapter,
 
 static ssize_t qlcnic_sysfs_write_pm_config(struct file *filp,
 					    struct kobject *kobj,
-					    struct bin_attribute *attr,
+					    const struct bin_attribute *attr,
 					    char *buf, loff_t offset,
 					    size_t size)
 {
@@ -447,7 +446,7 @@ static ssize_t qlcnic_sysfs_write_pm_config(struct file *filp,
 
 static ssize_t qlcnic_sysfs_read_pm_config(struct file *filp,
 					   struct kobject *kobj,
-					   struct bin_attribute *attr,
+					   const struct bin_attribute *attr,
 					   char *buf, loff_t offset,
 					   size_t size)
 {
@@ -540,7 +539,7 @@ static int validate_esw_config(struct qlcnic_adapter *adapter,
 
 static ssize_t qlcnic_sysfs_write_esw_config(struct file *file,
 					     struct kobject *kobj,
-					     struct bin_attribute *attr,
+					     const struct bin_attribute *attr,
 					     char *buf, loff_t offset,
 					     size_t size)
 {
@@ -624,7 +623,7 @@ out:
 
 static ssize_t qlcnic_sysfs_read_esw_config(struct file *file,
 					    struct kobject *kobj,
-					    struct bin_attribute *attr,
+					    const struct bin_attribute *attr,
 					    char *buf, loff_t offset,
 					    size_t size)
 {
@@ -676,7 +675,7 @@ static int validate_npar_config(struct qlcnic_adapter *adapter,
 
 static ssize_t qlcnic_sysfs_write_npar_config(struct file *file,
 					      struct kobject *kobj,
-					      struct bin_attribute *attr,
+					      const struct bin_attribute *attr,
 					      char *buf, loff_t offset,
 					      size_t size)
 {
@@ -723,7 +722,7 @@ static ssize_t qlcnic_sysfs_write_npar_config(struct file *file,
 
 static ssize_t qlcnic_sysfs_read_npar_config(struct file *file,
 					     struct kobject *kobj,
-					     struct bin_attribute *attr,
+					     const struct bin_attribute *attr,
 					     char *buf, loff_t offset,
 					     size_t size)
 {
@@ -770,7 +769,7 @@ static ssize_t qlcnic_sysfs_read_npar_config(struct file *file,
 
 static ssize_t qlcnic_sysfs_get_port_stats(struct file *file,
 					   struct kobject *kobj,
-					   struct bin_attribute *attr,
+					   const struct bin_attribute *attr,
 					   char *buf, loff_t offset,
 					   size_t size)
 {
@@ -805,7 +804,7 @@ static ssize_t qlcnic_sysfs_get_port_stats(struct file *file,
 
 static ssize_t qlcnic_sysfs_get_esw_stats(struct file *file,
 					  struct kobject *kobj,
-					  struct bin_attribute *attr,
+					  const struct bin_attribute *attr,
 					  char *buf, loff_t offset,
 					  size_t size)
 {
@@ -840,7 +839,7 @@ static ssize_t qlcnic_sysfs_get_esw_stats(struct file *file,
 
 static ssize_t qlcnic_sysfs_clear_esw_stats(struct file *file,
 					    struct kobject *kobj,
-					    struct bin_attribute *attr,
+					    const struct bin_attribute *attr,
 					    char *buf, loff_t offset,
 					    size_t size)
 {
@@ -869,7 +868,7 @@ static ssize_t qlcnic_sysfs_clear_esw_stats(struct file *file,
 
 static ssize_t qlcnic_sysfs_clear_port_stats(struct file *file,
 					     struct kobject *kobj,
-					     struct bin_attribute *attr,
+					     const struct bin_attribute *attr,
 					     char *buf, loff_t offset,
 					     size_t size)
 {
@@ -899,7 +898,7 @@ static ssize_t qlcnic_sysfs_clear_port_stats(struct file *file,
 
 static ssize_t qlcnic_sysfs_read_pci_config(struct file *file,
 					    struct kobject *kobj,
-					    struct bin_attribute *attr,
+					    const struct bin_attribute *attr,
 					    char *buf, loff_t offset,
 					    size_t size)
 {
@@ -939,7 +938,7 @@ static ssize_t qlcnic_sysfs_read_pci_config(struct file *file,
 
 static ssize_t qlcnic_83xx_sysfs_flash_read_handler(struct file *filp,
 						    struct kobject *kobj,
-						    struct bin_attribute *attr,
+						    const struct bin_attribute *attr,
 						    char *buf, loff_t offset,
 						    size_t size)
 {
@@ -1116,7 +1115,7 @@ static int qlcnic_83xx_sysfs_flash_write(struct qlcnic_adapter *adapter,
 
 static ssize_t qlcnic_83xx_sysfs_flash_write_handler(struct file *filp,
 						     struct kobject *kobj,
-						     struct bin_attribute *attr,
+						     const struct bin_attribute *attr,
 						     char *buf, loff_t offset,
 						     size_t size)
 {
@@ -1196,64 +1195,63 @@ static const struct device_attribute dev_attr_beacon = {
 static const struct bin_attribute bin_attr_crb = {
 	.attr = { .name = "crb", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_read_crb,
-	.write = qlcnic_sysfs_write_crb,
+	.read_new = qlcnic_sysfs_read_crb,
+	.write_new = qlcnic_sysfs_write_crb,
 };
 
 static const struct bin_attribute bin_attr_mem = {
 	.attr = { .name = "mem", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_read_mem,
-	.write = qlcnic_sysfs_write_mem,
+	.read_new = qlcnic_sysfs_read_mem,
+	.write_new = qlcnic_sysfs_write_mem,
 };
 
 static const struct bin_attribute bin_attr_npar_config = {
 	.attr = { .name = "npar_config", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_read_npar_config,
-	.write = qlcnic_sysfs_write_npar_config,
+	.read_new = qlcnic_sysfs_read_npar_config,
+	.write_new = qlcnic_sysfs_write_npar_config,
 };
 
 static const struct bin_attribute bin_attr_pci_config = {
 	.attr = { .name = "pci_config", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_read_pci_config,
-	.write = NULL,
+	.read_new = qlcnic_sysfs_read_pci_config,
 };
 
 static const struct bin_attribute bin_attr_port_stats = {
 	.attr = { .name = "port_stats", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_get_port_stats,
-	.write = qlcnic_sysfs_clear_port_stats,
+	.read_new = qlcnic_sysfs_get_port_stats,
+	.write_new = qlcnic_sysfs_clear_port_stats,
 };
 
 static const struct bin_attribute bin_attr_esw_stats = {
 	.attr = { .name = "esw_stats", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_get_esw_stats,
-	.write = qlcnic_sysfs_clear_esw_stats,
+	.read_new = qlcnic_sysfs_get_esw_stats,
+	.write_new = qlcnic_sysfs_clear_esw_stats,
 };
 
 static const struct bin_attribute bin_attr_esw_config = {
 	.attr = { .name = "esw_config", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_read_esw_config,
-	.write = qlcnic_sysfs_write_esw_config,
+	.read_new = qlcnic_sysfs_read_esw_config,
+	.write_new = qlcnic_sysfs_write_esw_config,
 };
 
 static const struct bin_attribute bin_attr_pm_config = {
 	.attr = { .name = "pm_config", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_sysfs_read_pm_config,
-	.write = qlcnic_sysfs_write_pm_config,
+	.read_new = qlcnic_sysfs_read_pm_config,
+	.write_new = qlcnic_sysfs_write_pm_config,
 };
 
 static const struct bin_attribute bin_attr_flash = {
 	.attr = { .name = "flash", .mode = 0644 },
 	.size = 0,
-	.read = qlcnic_83xx_sysfs_flash_read_handler,
-	.write = qlcnic_83xx_sysfs_flash_write_handler,
+	.read_new = qlcnic_83xx_sysfs_flash_read_handler,
+	.write_new = qlcnic_83xx_sysfs_flash_write_handler,
 };
 
 #ifdef CONFIG_QLCNIC_HWMON

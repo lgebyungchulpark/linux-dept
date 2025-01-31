@@ -9,7 +9,7 @@
 #include <linux/clk-provider.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 
 #include "ccu_common.h"
@@ -421,82 +421,6 @@ static struct ccu_common *sun8i_v3s_ccu_clks[] = {
 	&bus_de_clk.common,
 	&bus_codec_clk.common,
 	&bus_pio_clk.common,
-	&bus_i2c0_clk.common,
-	&bus_i2c1_clk.common,
-	&bus_uart0_clk.common,
-	&bus_uart1_clk.common,
-	&bus_uart2_clk.common,
-	&bus_ephy_clk.common,
-	&bus_dbg_clk.common,
-	&mmc0_clk.common,
-	&mmc0_sample_clk.common,
-	&mmc0_output_clk.common,
-	&mmc1_clk.common,
-	&mmc1_sample_clk.common,
-	&mmc1_output_clk.common,
-	&mmc2_clk.common,
-	&mmc2_sample_clk.common,
-	&mmc2_output_clk.common,
-	&ce_clk.common,
-	&spi0_clk.common,
-	&usb_phy0_clk.common,
-	&usb_ohci0_clk.common,
-	&dram_clk.common,
-	&dram_ve_clk.common,
-	&dram_csi_clk.common,
-	&dram_ohci_clk.common,
-	&dram_ehci_clk.common,
-	&de_clk.common,
-	&tcon_clk.common,
-	&csi_misc_clk.common,
-	&csi0_mclk_clk.common,
-	&csi1_sclk_clk.common,
-	&csi1_mclk_clk.common,
-	&ve_clk.common,
-	&ac_dig_clk.common,
-	&avs_clk.common,
-	&mbus_clk.common,
-	&mipi_csi_clk.common,
-};
-
-static const struct clk_hw *clk_parent_pll_audio[] = {
-	&pll_audio_base_clk.common.hw
-};
-
-static struct ccu_common *sun8i_v3_ccu_clks[] = {
-	&pll_cpu_clk.common,
-	&pll_audio_base_clk.common,
-	&pll_video_clk.common,
-	&pll_ve_clk.common,
-	&pll_ddr0_clk.common,
-	&pll_periph0_clk.common,
-	&pll_isp_clk.common,
-	&pll_periph1_clk.common,
-	&pll_ddr1_clk.common,
-	&cpu_clk.common,
-	&axi_clk.common,
-	&ahb1_clk.common,
-	&apb1_clk.common,
-	&apb2_clk.common,
-	&ahb2_clk.common,
-	&bus_ce_clk.common,
-	&bus_dma_clk.common,
-	&bus_mmc0_clk.common,
-	&bus_mmc1_clk.common,
-	&bus_mmc2_clk.common,
-	&bus_dram_clk.common,
-	&bus_emac_clk.common,
-	&bus_hstimer_clk.common,
-	&bus_spi0_clk.common,
-	&bus_otg_clk.common,
-	&bus_ehci0_clk.common,
-	&bus_ohci0_clk.common,
-	&bus_ve_clk.common,
-	&bus_tcon0_clk.common,
-	&bus_csi_clk.common,
-	&bus_de_clk.common,
-	&bus_codec_clk.common,
-	&bus_pio_clk.common,
 	&bus_i2s0_clk.common,
 	&bus_i2c0_clk.common,
 	&bus_i2c1_clk.common,
@@ -535,6 +459,10 @@ static struct ccu_common *sun8i_v3_ccu_clks[] = {
 	&avs_clk.common,
 	&mbus_clk.common,
 	&mipi_csi_clk.common,
+};
+
+static const struct clk_hw *clk_parent_pll_audio[] = {
+	&pll_audio_base_clk.common.hw
 };
 
 /* We hardcode the divider to 1 for SDM support */
@@ -716,7 +644,7 @@ static struct clk_hw_onecell_data sun8i_v3_hw_clks = {
 	.num	= CLK_I2S0 + 1,
 };
 
-static struct ccu_reset_map sun8i_v3s_ccu_resets[] = {
+static const struct ccu_reset_map sun8i_v3s_ccu_resets[] = {
 	[RST_USB_PHY0]		=  { 0x0cc, BIT(0) },
 
 	[RST_MBUS]		=  { 0x0fc, BIT(31) },
@@ -751,7 +679,7 @@ static struct ccu_reset_map sun8i_v3s_ccu_resets[] = {
 	[RST_BUS_UART2]		=  { 0x2d8, BIT(18) },
 };
 
-static struct ccu_reset_map sun8i_v3_ccu_resets[] = {
+static const struct ccu_reset_map sun8i_v3_ccu_resets[] = {
 	[RST_USB_PHY0]		=  { 0x0cc, BIT(0) },
 
 	[RST_MBUS]		=  { 0x0fc, BIT(31) },
@@ -798,8 +726,8 @@ static const struct sunxi_ccu_desc sun8i_v3s_ccu_desc = {
 };
 
 static const struct sunxi_ccu_desc sun8i_v3_ccu_desc = {
-	.ccu_clks	= sun8i_v3_ccu_clks,
-	.num_ccu_clks	= ARRAY_SIZE(sun8i_v3_ccu_clks),
+	.ccu_clks	= sun8i_v3s_ccu_clks,
+	.num_ccu_clks	= ARRAY_SIZE(sun8i_v3s_ccu_clks),
 
 	.hw_clks	= &sun8i_v3_hw_clks,
 
@@ -840,6 +768,7 @@ static const struct of_device_id sun8i_v3s_ccu_ids[] = {
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sun8i_v3s_ccu_ids);
 
 static struct platform_driver sun8i_v3s_ccu_driver = {
 	.probe	= sun8i_v3s_ccu_probe,
@@ -851,5 +780,6 @@ static struct platform_driver sun8i_v3s_ccu_driver = {
 };
 module_platform_driver(sun8i_v3s_ccu_driver);
 
-MODULE_IMPORT_NS(SUNXI_CCU);
+MODULE_IMPORT_NS("SUNXI_CCU");
+MODULE_DESCRIPTION("Support for the Allwinner V3s CCU");
 MODULE_LICENSE("GPL");

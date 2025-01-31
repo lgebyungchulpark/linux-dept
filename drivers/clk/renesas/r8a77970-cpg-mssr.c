@@ -18,6 +18,7 @@
 #include <dt-bindings/clock/r8a77970-cpg-mssr.h>
 
 #include "renesas-cpg-mssr.h"
+#include "rcar-cpg-lib.h"
 #include "rcar-gen3-cpg.h"
 
 #define CPG_SD0CKCR		0x0074
@@ -47,8 +48,6 @@ enum clk_ids {
 	MOD_CLK_BASE
 };
 
-static spinlock_t cpg_lock;
-
 static const struct clk_div_table cpg_sd0h_div_table[] = {
 	{  0,  2 }, {  1,  3 }, {  2,  4 }, {  3,  6 },
 	{  4,  8 }, {  5, 12 }, {  6, 16 }, {  7, 18 },
@@ -76,6 +75,7 @@ static const struct cpg_core_clk r8a77970_core_clks[] __initconst = {
 	DEF_FIXED(".pll1_div4",	CLK_PLL1_DIV4,	CLK_PLL1_DIV2,	2, 1),
 
 	/* Core Clock Outputs */
+	DEF_FIXED("z2",		R8A77970_CLK_Z2,    CLK_PLL1_DIV4,  1, 1),
 	DEF_FIXED("ztr",	R8A77970_CLK_ZTR,   CLK_PLL1_DIV2,  6, 1),
 	DEF_FIXED("ztrd2",	R8A77970_CLK_ZTRD2, CLK_PLL1_DIV2, 12, 1),
 	DEF_FIXED("zt",		R8A77970_CLK_ZT,    CLK_PLL1_DIV2,  4, 1),
@@ -211,8 +211,6 @@ static int __init r8a77970_cpg_mssr_init(struct device *dev)
 	error = rcar_rst_read_mode_pins(&cpg_mode);
 	if (error)
 		return error;
-
-	spin_lock_init(&cpg_lock);
 
 	cpg_pll_config = &cpg_pll_configs[CPG_PLL_CONFIG_INDEX(cpg_mode)];
 

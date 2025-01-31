@@ -14,7 +14,7 @@
 #include <linux/delay.h>
 #include "pci.h"
 
-#define VIRTFN_ID_LEN	16
+#define VIRTFN_ID_LEN	17	/* "virtfn%u\0" for 2^32 - 1 */
 
 int pci_iov_virtfn_bus(struct pci_dev *dev, int vf_id)
 {
@@ -32,6 +32,48 @@ int pci_iov_virtfn_devfn(struct pci_dev *dev, int vf_id)
 		dev->sriov->stride * vf_id) & 0xff;
 }
 EXPORT_SYMBOL_GPL(pci_iov_virtfn_devfn);
+
+int pci_iov_vf_id(struct pci_dev *dev)
+{
+	struct pci_dev *pf;
+
+	if (!dev->is_virtfn)
+		return -EINVAL;
+
+	pf = pci_physfn(dev);
+	return (pci_dev_id(dev) - (pci_dev_id(pf) + pf->sriov->offset)) /
+	       pf->sriov->stride;
+}
+EXPORT_SYMBOL_GPL(pci_iov_vf_id);
+
+/**
+ * pci_iov_get_pf_drvdata - Return the drvdata of a PF
+ * @dev: VF pci_dev
+ * @pf_driver: Device driver required to own the PF
+ *
+ * This must be called from a context that ensures that a VF driver is attached.
+ * The value returned is invalid once the VF driver completes its remove()
+ * callback.
+ *
+ * Locking is achieved by the driver core. A VF driver cannot be probed until
+ * pci_enable_sriov() is called and pci_disable_sriov() does not return until
+ * all VF drivers have completed their remove().
+ *
+ * The PF driver must call pci_disable_sriov() before it begins to destroy the
+ * drvdata.
+ */
+void *pci_iov_get_pf_drvdata(struct pci_dev *dev, struct pci_driver *pf_driver)
+{
+	struct pci_dev *pf_dev;
+
+	if (!dev->is_virtfn)
+		return ERR_PTR(-EINVAL);
+	pf_dev = dev->physfn;
+	if (pf_dev->driver != pf_driver)
+		return ERR_PTR(-EINVAL);
+	return pci_get_drvdata(pf_dev);
+}
+EXPORT_SYMBOL_GPL(pci_iov_get_pf_drvdata);
 
 /*
  * Per SR-IOV spec sec 3.3.10 and 3.3.11, First VF Offset and VF Stride may
@@ -285,8 +327,8 @@ int pci_iov_add_virtfn(struct pci_dev *dev, int id)
 		virtfn->resource[i].name = pci_name(virtfn);
 		virtfn->resource[i].flags = res->flags;
 		size = pci_iov_resource_size(dev, i + PCI_IOV_RESOURCES);
-		virtfn->resource[i].start = res->start + size * id;
-		virtfn->resource[i].end = virtfn->resource[i].start + size - 1;
+		resource_set_range(&virtfn->resource[i],
+				   res->start + size * id, size);
 		rc = request_resource(res, &virtfn->resource[i]);
 		BUG_ON(rc);
 	}
@@ -703,7 +745,9 @@ static int sriov_init(struct pci_dev *dev, int pos)
 	u16 ctrl, total;
 	struct pci_sriov *iov;
 	struct resource *res;
+	const char *res_name;
 	struct pci_dev *pdev;
+	u32 sriovbars[PCI_SRIOV_NUM_BARS];
 
 	pci_read_config_word(dev, pos + PCI_SRIOV_CTRL, &ctrl);
 	if (ctrl & PCI_SRIOV_CTRL_VFE) {
@@ -740,9 +784,15 @@ found:
 	if (!iov)
 		return -ENOMEM;
 
+	/* Sizing SR-IOV BARs with VF Enable cleared - no decode */
+	__pci_size_stdbars(dev, PCI_SRIOV_NUM_BARS,
+			   pos + PCI_SRIOV_BAR, sriovbars);
+
 	nres = 0;
 	for (i = 0; i < PCI_SRIOV_NUM_BARS; i++) {
 		res = &dev->resource[i + PCI_IOV_RESOURCES];
+		res_name = pci_resource_name(dev, i + PCI_IOV_RESOURCES);
+
 		/*
 		 * If it is already FIXED, don't change it, something
 		 * (perhaps EA or header fixups) wants it this way.
@@ -751,7 +801,8 @@ found:
 			bar64 = (res->flags & IORESOURCE_MEM_64) ? 1 : 0;
 		else
 			bar64 = __pci_read_base(dev, pci_bar_unknown, res,
-						pos + PCI_SRIOV_BAR + i * 4);
+						pos + PCI_SRIOV_BAR + i * 4,
+						&sriovbars[i]);
 		if (!res->flags)
 			continue;
 		if (resource_size(res) & (PAGE_SIZE - 1)) {
@@ -759,9 +810,9 @@ found:
 			goto failed;
 		}
 		iov->barsz[i] = resource_size(res);
-		res->end = res->start + resource_size(res) * total - 1;
-		pci_info(dev, "VF(n) BAR%d space: %pR (contains BAR%d for %d VFs)\n",
-			 i, res, i, total);
+		resource_set_size(res, resource_size(res) * total);
+		pci_info(dev, "%s %pR: contains BAR %d for %d VFs\n",
+			 res_name, res, i, total);
 		i += bar64;
 		nres++;
 	}

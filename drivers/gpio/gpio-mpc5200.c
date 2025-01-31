@@ -8,9 +8,9 @@
 #include <linux/of.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/legacy-of-mm-gpiochip.h>
 #include <linux/io.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/module.h>
 
 #include <asm/mpc52xx.h>
@@ -165,13 +165,11 @@ static int mpc52xx_wkup_gpiochip_probe(struct platform_device *ofdev)
 	return 0;
 }
 
-static int mpc52xx_gpiochip_remove(struct platform_device *ofdev)
+static void mpc52xx_gpiochip_remove(struct platform_device *ofdev)
 {
 	struct mpc52xx_gpiochip *chip = platform_get_drvdata(ofdev);
 
 	of_mm_gpiochip_remove(&chip->mmchip);
-
-	return 0;
 }
 
 static const struct of_device_id mpc52xx_wkup_gpiochip_match[] = {

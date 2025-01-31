@@ -383,7 +383,7 @@ int saa7164_s_frequency(struct saa7164_port *port,
 	else if (port->nr == SAA7164_PORT_ENC2)
 		tsport = &dev->ports[SAA7164_PORT_TS2];
 	else
-		BUG();
+		return -EINVAL; /* should not happen */
 
 	fe = tsport->dvb.frontend;
 
@@ -490,7 +490,6 @@ static int vidioc_querycap(struct file *file, void  *priv,
 	strscpy(cap->driver, dev->name, sizeof(cap->driver));
 	strscpy(cap->card, saa7164_boards[dev->board].name,
 		sizeof(cap->card));
-	sprintf(cap->bus_info, "PCI:%s", pci_name(dev->pci));
 	cap->capabilities = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_READWRITE |
 			    V4L2_CAP_TUNER | V4L2_CAP_VBI_CAPTURE |
 			    V4L2_CAP_DEVICE_CAPS;

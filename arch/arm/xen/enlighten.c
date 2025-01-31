@@ -34,6 +34,7 @@
 #include <linux/timekeeping.h>
 #include <linux/timekeeper_internal.h>
 #include <linux/acpi.h>
+#include <linux/virtio_anchor.h>
 
 #include <linux/mm.h>
 
@@ -163,9 +164,6 @@ static int xen_starting_cpu(unsigned int cpu)
 	BUG_ON(err);
 	per_cpu(xen_vcpu, cpu) = vcpup;
 
-	if (!xen_kernel_unmapped_at_usr())
-		xen_setup_runstate_info(cpu);
-
 after_register_vcpu_info:
 	enable_percpu_irq(xen_events_irq, 0);
 	return 0;
@@ -206,7 +204,7 @@ static void xen_power_off(void)
 
 static irqreturn_t xen_arm_callback(int irq, void *arg)
 {
-	xen_hvm_evtchn_do_upcall();
+	xen_evtchn_do_upcall();
 	return IRQ_HANDLED;
 }
 
@@ -337,12 +335,15 @@ int __init arch_xen_unpopulated_init(struct resource **res)
 
 	if (!nr_reg) {
 		pr_err("No extended regions are found\n");
+		of_node_put(np);
 		return -EINVAL;
 	}
 
 	regs = kcalloc(nr_reg, sizeof(*regs), GFP_KERNEL);
-	if (!regs)
+	if (!regs) {
+		of_node_put(np);
 		return -ENOMEM;
+	}
 
 	/*
 	 * Create resource from extended regions provided by the hypervisor to be
@@ -403,8 +404,8 @@ int __init arch_xen_unpopulated_init(struct resource **res)
 	*res = &xen_resource;
 
 err:
+	of_node_put(np);
 	kfree(regs);
-
 	return rc;
 }
 #endif
@@ -424,8 +425,10 @@ static void __init xen_dt_guest_init(void)
 
 	if (of_address_to_resource(xen_node, GRANT_TABLE_INDEX, &res)) {
 		pr_err("Xen grant table region is not found\n");
+		of_node_put(xen_node);
 		return;
 	}
+	of_node_put(xen_node);
 	xen_grant_frames = res.start;
 }
 
@@ -437,6 +440,9 @@ static int __init xen_guest_init(void)
 
 	if (!xen_domain())
 		return 0;
+
+	if (IS_ENABLED(CONFIG_XEN_VIRTIO))
+		virtio_set_mem_acc_cb(xen_virtio_restricted_mem_acc);
 
 	if (!acpi_disabled)
 		xen_acpi_guest_init();
@@ -478,7 +484,8 @@ static int __init xen_guest_init(void)
 	 * for secondary CPUs as they are brought up.
 	 * For uniformity we use VCPUOP_register_vcpu_info even on cpu0.
 	 */
-	xen_vcpu_info = alloc_percpu(struct vcpu_info);
+	xen_vcpu_info = __alloc_percpu(sizeof(struct vcpu_info),
+				       1 << fls(sizeof(struct vcpu_info) - 1));
 	if (xen_vcpu_info == NULL)
 		return -ENOMEM;
 
@@ -514,9 +521,6 @@ static int __init xen_guest_init(void)
 		return -EINVAL;
 	}
 
-	if (!xen_kernel_unmapped_at_usr())
-		xen_time_setup_guest();
-
 	if (xen_initial_domain())
 		pvclock_gtod_register_notifier(&xen_pvclock_gtod_notifier);
 
@@ -526,7 +530,13 @@ static int __init xen_guest_init(void)
 }
 early_initcall(xen_guest_init);
 
-static int __init xen_pm_init(void)
+static int xen_starting_runstate_cpu(unsigned int cpu)
+{
+	xen_setup_runstate_info(cpu);
+	return 0;
+}
+
+static int __init xen_late_init(void)
 {
 	if (!xen_domain())
 		return -ENODEV;
@@ -539,9 +549,16 @@ static int __init xen_pm_init(void)
 		do_settimeofday64(&ts);
 	}
 
-	return 0;
+	if (xen_kernel_unmapped_at_usr())
+		return 0;
+
+	xen_time_setup_guest();
+
+	return cpuhp_setup_state(CPUHP_AP_ARM_XEN_RUNSTATE_STARTING,
+				 "arm/xen_runstate:starting",
+				 xen_starting_runstate_cpu, NULL);
 }
-late_initcall(xen_pm_init);
+late_initcall(xen_late_init);
 
 
 /* empty stubs */

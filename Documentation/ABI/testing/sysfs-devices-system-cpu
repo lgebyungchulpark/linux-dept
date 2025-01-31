@@ -67,12 +67,12 @@ Description:	Discover NUMA node a CPU belongs to
 		/sys/devices/system/cpu/cpu42/node2 -> ../../node/node2
 
 
-What:		/sys/devices/system/cpu/cpuX/topology/core_id
-		/sys/devices/system/cpu/cpuX/topology/core_siblings
+What:		/sys/devices/system/cpu/cpuX/topology/core_siblings
 		/sys/devices/system/cpu/cpuX/topology/core_siblings_list
 		/sys/devices/system/cpu/cpuX/topology/physical_package_id
 		/sys/devices/system/cpu/cpuX/topology/thread_siblings
 		/sys/devices/system/cpu/cpuX/topology/thread_siblings_list
+		/sys/devices/system/cpu/cpuX/topology/ppin
 Date:		December 2008
 Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
 Description:	CPU topology files that describe a logical CPU's relationship
@@ -82,10 +82,6 @@ Description:	CPU topology files that describe a logical CPU's relationship
 		e.g. /sys/devices/system/cpu/cpu42/.
 
 		Briefly, the files above are:
-
-		core_id: the CPU core ID of cpuX. Typically it is the
-		hardware platform's identifier (rather than the kernel's).
-		The actual value is architecture and platform dependent.
 
 		core_siblings: internal kernel map of cpuX's hardware threads
 		within the same physical_package_id.
@@ -102,6 +98,11 @@ Description:	CPU topology files that describe a logical CPU's relationship
 
 		thread_siblings_list: human-readable list of cpuX's hardware
 		threads within the same core as cpuX
+
+		ppin: human-readable Protected Processor Identification
+		Number of the socket the cpu# belongs to. There should be
+		one per physical_package_id. File is readable only to
+		admin.
 
 		See Documentation/admin-guide/cputopology.rst for more information.
 
@@ -295,7 +296,7 @@ Description:	Processor frequency boosting control
 
 		This switch controls the boost setting for the whole system.
 		Boosting allows the CPU and the firmware to run at a frequency
-		beyond it's nominal limit.
+		beyond its nominal limit.
 
 		More details can be found in
 		Documentation/admin-guide/pm/cpufreq.rst
@@ -352,9 +353,6 @@ Description:	Parameters for the CPU cache attributes
 					on a cache miss because of a read
 			- ReadWriteAllocate:
 					both writeallocate and readallocate
-
-		attributes:
-			    LEGACY used only on IA64 and is same as write_policy
 
 		coherency_line_size:
 				     the minimum amount of data in bytes that gets
@@ -425,7 +423,7 @@ What:		/sys/devices/system/cpu/cpuX/cpufreq/throttle_stats
 		/sys/devices/system/cpu/cpuX/cpufreq/throttle_stats/occ_reset
 Date:		March 2016
 Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
-		Linux for PowerPC mailing list <linuxppc-dev@ozlabs.org>
+		Linux for PowerPC mailing list <linuxppc-dev@lists.ozlabs.org>
 Description:	POWERNV CPUFreq driver's frequency throttle stats directory and
 		attributes
 
@@ -475,7 +473,7 @@ What:		/sys/devices/system/cpu/cpufreq/policyX/throttle_stats
 		/sys/devices/system/cpu/cpufreq/policyX/throttle_stats/occ_reset
 Date:		March 2016
 Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
-		Linux for PowerPC mailing list <linuxppc-dev@ozlabs.org>
+		Linux for PowerPC mailing list <linuxppc-dev@lists.ozlabs.org>
 Description:	POWERNV CPUFreq driver's frequency throttle stats directory and
 		attributes
 
@@ -487,12 +485,13 @@ What:		/sys/devices/system/cpu/cpuX/regs/
 		/sys/devices/system/cpu/cpuX/regs/identification/
 		/sys/devices/system/cpu/cpuX/regs/identification/midr_el1
 		/sys/devices/system/cpu/cpuX/regs/identification/revidr_el1
+		/sys/devices/system/cpu/cpuX/regs/identification/smidr_el1
 Date:		June 2016
 Contact:	Linux ARM Kernel Mailing list <linux-arm-kernel@lists.infradead.org>
 Description:	AArch64 CPU registers
 
 		'identification' directory exposes the CPU ID registers for
-		identifying model and revision of the CPU.
+		identifying model and revision of the CPU and SMCU.
 
 What:		/sys/devices/system/cpu/aarch32_el0
 Date:		May 2021
@@ -511,15 +510,19 @@ Description:	information about CPUs heterogeneity.
 		cpu_capacity: capacity of cpuX.
 
 What:		/sys/devices/system/cpu/vulnerabilities
-		/sys/devices/system/cpu/vulnerabilities/meltdown
-		/sys/devices/system/cpu/vulnerabilities/spectre_v1
-		/sys/devices/system/cpu/vulnerabilities/spectre_v2
-		/sys/devices/system/cpu/vulnerabilities/spec_store_bypass
+		/sys/devices/system/cpu/vulnerabilities/gather_data_sampling
+		/sys/devices/system/cpu/vulnerabilities/itlb_multihit
 		/sys/devices/system/cpu/vulnerabilities/l1tf
 		/sys/devices/system/cpu/vulnerabilities/mds
+		/sys/devices/system/cpu/vulnerabilities/meltdown
+		/sys/devices/system/cpu/vulnerabilities/mmio_stale_data
+		/sys/devices/system/cpu/vulnerabilities/reg_file_data_sampling
+		/sys/devices/system/cpu/vulnerabilities/retbleed
+		/sys/devices/system/cpu/vulnerabilities/spec_store_bypass
+		/sys/devices/system/cpu/vulnerabilities/spectre_v1
+		/sys/devices/system/cpu/vulnerabilities/spectre_v2
 		/sys/devices/system/cpu/vulnerabilities/srbds
 		/sys/devices/system/cpu/vulnerabilities/tsx_async_abort
-		/sys/devices/system/cpu/vulnerabilities/itlb_multihit
 Date:		January 2018
 Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
 Description:	Information about CPU vulnerabilities
@@ -551,6 +554,7 @@ Description:	Control Symmetric Multi Threading (SMT)
 			 ================ =========================================
 			 "on"		  SMT is enabled
 			 "off"		  SMT is disabled
+			 "<N>"		  SMT is enabled with N threads per core.
 			 "forceoff"	  SMT is force disabled. Cannot be changed.
 			 "notsupported"   SMT is not supported by the CPU
 			 "notimplemented" SMT runtime toggling is not
@@ -558,7 +562,8 @@ Description:	Control Symmetric Multi Threading (SMT)
 			 ================ =========================================
 
 			 If control status is "forceoff" or "notsupported" writes
-			 are rejected.
+			 are rejected. Note that enabling SMT on PowerPC skips
+			 offline cores.
 
 What:		/sys/devices/system/cpu/cpuX/power/energy_perf_bias
 Date:		March 2019
@@ -601,10 +606,22 @@ Description:	Umwait control
 			  Note that a value of zero means there is no limit.
 			  Low order two bits must be zero.
 
+What:		/sys/devices/system/cpu/sev
+		/sys/devices/system/cpu/sev/vmpl
+Date:		May 2024
+Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
+Description:	Secure Encrypted Virtualization (SEV) information
+
+		This directory is only present when running as an SEV-SNP guest.
+
+		vmpl: Reports the Virtual Machine Privilege Level (VMPL) at which
+		      the SEV-SNP guest is running.
+
+
 What:		/sys/devices/system/cpu/svm
 Date:		August 2019
 Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
-		Linux for PowerPC mailing list <linuxppc-dev@ozlabs.org>
+		Linux for PowerPC mailing list <linuxppc-dev@lists.ozlabs.org>
 Description:	Secure Virtual Machine
 
 		If 1, it means the system is using the Protected Execution
@@ -613,7 +630,7 @@ Description:	Secure Virtual Machine
 
 What:		/sys/devices/system/cpu/cpuX/purr
 Date:		Apr 2005
-Contact:	Linux for PowerPC mailing list <linuxppc-dev@ozlabs.org>
+Contact:	Linux for PowerPC mailing list <linuxppc-dev@lists.ozlabs.org>
 Description:	PURR ticks for this CPU since the system boot.
 
 		The Processor Utilization Resources Register (PURR) is
@@ -624,7 +641,7 @@ Description:	PURR ticks for this CPU since the system boot.
 
 What: 		/sys/devices/system/cpu/cpuX/spurr
 Date:		Dec 2006
-Contact:	Linux for PowerPC mailing list <linuxppc-dev@ozlabs.org>
+Contact:	Linux for PowerPC mailing list <linuxppc-dev@lists.ozlabs.org>
 Description:	SPURR ticks for this CPU since the system boot.
 
 		The Scaled Processor Utilization Resources Register
@@ -636,7 +653,7 @@ Description:	SPURR ticks for this CPU since the system boot.
 
 What: 		/sys/devices/system/cpu/cpuX/idle_purr
 Date:		Apr 2020
-Contact:	Linux for PowerPC mailing list <linuxppc-dev@ozlabs.org>
+Contact:	Linux for PowerPC mailing list <linuxppc-dev@lists.ozlabs.org>
 Description:	PURR ticks for cpuX when it was idle.
 
 		This sysfs interface exposes the number of PURR ticks
@@ -644,7 +661,7 @@ Description:	PURR ticks for cpuX when it was idle.
 
 What: 		/sys/devices/system/cpu/cpuX/idle_spurr
 Date:		Apr 2020
-Contact:	Linux for PowerPC mailing list <linuxppc-dev@ozlabs.org>
+Contact:	Linux for PowerPC mailing list <linuxppc-dev@lists.ozlabs.org>
 Description:	SPURR ticks for cpuX when it was idle.
 
 		This sysfs interface exposes the number of SPURR ticks
@@ -662,10 +679,11 @@ Description:	Preferred MTE tag checking mode
 
 		================  ==============================================
 		"sync"	  	  Prefer synchronous mode
+		"asymm"	  	  Prefer asymmetric mode
 		"async"	  	  Prefer asynchronous mode
 		================  ==============================================
 
-		See also: Documentation/arm64/memory-tagging-extension.rst
+		See also: Documentation/arch/arm64/memory-tagging-extension.rst
 
 What:		/sys/devices/system/cpu/nohz_full
 Date:		Apr 2015
@@ -681,3 +699,17 @@ Description:
 		(RO) the list of CPUs that are isolated and don't
 		participate in load balancing. These CPUs are set by
 		boot parameter "isolcpus=".
+
+What:		/sys/devices/system/cpu/crash_hotplug
+Date:		Aug 2023
+Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
+Description:
+		(RO) indicates whether or not the kernel updates relevant kexec
+		segments on memory hot un/plug and/or on/offline events, avoiding the
+		need to reload kdump kernel.
+
+What:		/sys/devices/system/cpu/enabled
+Date:		Nov 2022
+Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
+Description:
+		(RO) the list of CPUs that can be brought online.

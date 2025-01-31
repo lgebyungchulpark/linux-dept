@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2005-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2024 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016 Intel Deutschland GmbH
  */
@@ -51,6 +51,8 @@ struct iwl_ucode_capabilities {
 	u32 error_log_addr;
 	u32 error_log_size;
 	u32 num_stations;
+	u32 num_links;
+	u32 num_beacons;
 	unsigned long _api[BITS_TO_LONGS(NUM_IWL_UCODE_TLV_API)];
 	unsigned long _capa[BITS_TO_LONGS(NUM_IWL_UCODE_TLV_CAPA)];
 
@@ -134,16 +136,6 @@ struct iwl_fw_paging {
 };
 
 /**
- * struct iwl_fw_cscheme_list - a cipher scheme list
- * @size: a number of entries
- * @cs: cipher scheme entries
- */
-struct iwl_fw_cscheme_list {
-	u8 size;
-	struct iwl_fw_cipher_scheme cs[];
-} __packed;
-
-/**
  * enum iwl_fw_type - iwlwifi firmware type
  * @IWL_FW_DVM: DVM firmware
  * @IWL_FW_MVM: MVM firmware
@@ -192,12 +184,11 @@ struct iwl_dump_exclude {
  * @enhance_sensitivity_table: device can do enhanced sensitivity.
  * @init_evtlog_ptr: event log offset for init ucode.
  * @init_evtlog_size: event log size for init ucode.
- * @init_errlog_ptr: error log offfset for init ucode.
+ * @init_errlog_ptr: error log offset for init ucode.
  * @inst_evtlog_ptr: event log offset for runtime ucode.
  * @inst_evtlog_size: event log size for runtime ucode.
- * @inst_errlog_ptr: error log offfset for runtime ucode.
+ * @inst_errlog_ptr: error log offset for runtime ucode.
  * @type: firmware type (&enum iwl_fw_type)
- * @cipher_scheme: optional external cipher scheme.
  * @human_readable: human readable version
  *	we get the ALIVE from the uCode
  * @phy_integration_ver: PHY integration version string
@@ -208,7 +199,7 @@ struct iwl_dump_exclude {
 struct iwl_fw {
 	u32 ucode_ver;
 
-	char fw_version[64];
+	char fw_version[128];
 
 	/* ucode images */
 	struct fw_img img[IWL_UCODE_TYPE_MAX];
@@ -228,7 +219,6 @@ struct iwl_fw {
 
 	enum iwl_fw_type type;
 
-	struct iwl_fw_cipher_scheme cs[IWL_UCODE_MAX_CS];
 	u8 human_readable[FW_VER_HUMAN_READABLE_SZ];
 
 	struct iwl_fw_dbg dbg;
@@ -275,7 +265,7 @@ iwl_get_ucode_image(const struct iwl_fw *fw, enum iwl_ucode_type ucode_type)
 	return &fw->img[ucode_type];
 }
 
-u8 iwl_fw_lookup_cmd_ver(const struct iwl_fw *fw, u8 grp, u8 cmd, u8 def);
+u8 iwl_fw_lookup_cmd_ver(const struct iwl_fw *fw, u32 cmd_id, u8 def);
 
 u8 iwl_fw_lookup_notif_ver(const struct iwl_fw *fw, u8 grp, u8 cmd, u8 def);
 const char *iwl_fw_lookup_assert_desc(u32 num);

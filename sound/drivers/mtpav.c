@@ -285,10 +285,6 @@ static void snd_mtpav_output_port_write(struct mtpav *mtp_card,
 
 		snd_mtpav_send_byte(mtp_card, 0xf5);
 		snd_mtpav_send_byte(mtp_card, portp->hwport);
-		/*
-		snd_printk(KERN_DEBUG "new outport: 0x%x\n",
-			   (unsigned int) portp->hwport);
-		*/
 		if (!(outbyte & 0x80) && portp->running_status)
 			snd_mtpav_send_byte(mtp_card, portp->running_status);
 	}
@@ -522,8 +518,6 @@ static void snd_mtpav_read_bytes(struct mtpav *mcrd)
 
 	u8 sbyt = snd_mtpav_getreg(mcrd, SREG);
 
-	/* printk(KERN_DEBUG "snd_mtpav_read_bytes() sbyt: 0x%x\n", sbyt); */
-
 	if (!(sbyt & SIGS_BYTE))
 		return;
 
@@ -569,13 +563,13 @@ static int snd_mtpav_get_ISA(struct mtpav *mcard)
 	mcard->res_port = devm_request_region(mcard->card->dev, port, 3,
 					      "MotuMTPAV MIDI");
 	if (!mcard->res_port) {
-		snd_printk(KERN_ERR "MTVAP port 0x%lx is busy\n", port);
+		dev_err(mcard->card->dev, "MTVAP port 0x%lx is busy\n", port);
 		return -EBUSY;
 	}
 	mcard->port = port;
 	if (devm_request_irq(mcard->card->dev, irq, snd_mtpav_irqh, 0,
 			     "MOTU MTPAV", mcard)) {
-		snd_printk(KERN_ERR "MTVAP IRQ %d busy\n", irq);
+		dev_err(mcard->card->dev, "MTVAP IRQ %d busy\n", irq);
 		return -EBUSY;
 	}
 	mcard->irq = irq;
@@ -693,8 +687,6 @@ static int snd_mtpav_probe(struct platform_device *dev)
 	mtp_card->outmidihwport = 0xffffffff;
 	timer_setup(&mtp_card->timer, snd_mtpav_output_timer, 0);
 
-	card->private_free = snd_mtpav_free;
-
 	err = snd_mtpav_get_RAWMIDI(mtp_card);
 	if (err < 0)
 		return err;
@@ -716,8 +708,12 @@ static int snd_mtpav_probe(struct platform_device *dev)
 	if (err < 0)
 		return err;
 
+	card->private_free = snd_mtpav_free;
+
 	platform_set_drvdata(dev, card);
-	printk(KERN_INFO "Motu MidiTimePiece on parallel port irq: %d ioport: 0x%lx\n", irq, port);
+	dev_info(card->dev,
+		 "Motu MidiTimePiece on parallel port irq: %d ioport: 0x%lx\n",
+		 irq, port);
 	return 0;
 }
 

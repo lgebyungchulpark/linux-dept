@@ -11,7 +11,6 @@
 #include <linux/kernel.h>
 #include <linux/compiler.h>
 #include <linux/string.h>
-#include <linux/version.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <scsi/scsi_transport.h>
@@ -92,7 +91,7 @@ struct Scsi_Host;
 
 struct sysfs_bin_attrs {
 	char *name;
-	struct bin_attribute *attr;
+	const struct bin_attribute *attr;
 };
 
 int qedi_create_sysfs_attr(struct Scsi_Host *shost,

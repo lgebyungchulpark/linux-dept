@@ -10,6 +10,7 @@
 #include <linux/export.h>
 #include <linux/gpio/driver.h>
 #include <linux/gpio/consumer.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <asm/byteorder.h>
 #include <linux/interrupt.h>
@@ -85,6 +86,7 @@ const struct regmap_config mcp23x08_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(mcp23x08_defaults),
 	.cache_type = REGCACHE_FLAT,
 	.max_register = MCP_OLAT,
+	.disable_locking = true, /* mcp->lock protects the regmap */
 };
 EXPORT_SYMBOL_GPL(mcp23x08_regmap);
 
@@ -131,6 +133,7 @@ const struct regmap_config mcp23x17_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(mcp23x17_defaults),
 	.cache_type = REGCACHE_FLAT,
 	.val_format_endian = REGMAP_ENDIAN_LITTLE,
+	.disable_locking = true, /* mcp->lock protects the regmap */
 };
 EXPORT_SYMBOL_GPL(mcp23x17_regmap);
 
@@ -144,10 +147,9 @@ static int mcp_write(struct mcp23s08 *mcp, unsigned int reg, unsigned int val)
 	return regmap_write(mcp->regmap, reg << mcp->reg_shift, val);
 }
 
-static int mcp_set_mask(struct mcp23s08 *mcp, unsigned int reg,
-		       unsigned int mask, bool enabled)
+static int mcp_update_bits(struct mcp23s08 *mcp, unsigned int reg,
+			   unsigned int mask, unsigned int val)
 {
-	u16 val  = enabled ? 0xffff : 0x0000;
 	return regmap_update_bits(mcp->regmap, reg << mcp->reg_shift,
 				  mask, val);
 }
@@ -156,7 +158,7 @@ static int mcp_set_bit(struct mcp23s08 *mcp, unsigned int reg,
 		       unsigned int pin, bool enabled)
 {
 	u16 mask = BIT(pin);
-	return mcp_set_mask(mcp, reg, mask, enabled);
+	return mcp_update_bits(mcp, reg, mask, enabled ? mask : 0);
 }
 
 static const struct pinctrl_pin_desc mcp23x08_pins[] = {
@@ -228,7 +230,9 @@ static int mcp_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin,
 
 	switch (param) {
 	case PIN_CONFIG_BIAS_PULL_UP:
+		mutex_lock(&mcp->lock);
 		ret = mcp_read(mcp, MCP_GPPU, &data);
+		mutex_unlock(&mcp->lock);
 		if (ret < 0)
 			return ret;
 		status = (data & BIT(pin)) ? 1 : 0;
@@ -257,7 +261,9 @@ static int mcp_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 
 		switch (param) {
 		case PIN_CONFIG_BIAS_PULL_UP:
+			mutex_lock(&mcp->lock);
 			ret = mcp_set_bit(mcp, MCP_GPPU, pin, arg);
+			mutex_unlock(&mcp->lock);
 			break;
 		default:
 			dev_dbg(mcp->dev, "Invalid config param %04x\n", param);
@@ -308,9 +314,31 @@ static int mcp23s08_get(struct gpio_chip *chip, unsigned offset)
 	return status;
 }
 
+static int mcp23s08_get_multiple(struct gpio_chip *chip,
+				 unsigned long *mask, unsigned long *bits)
+{
+	struct mcp23s08 *mcp = gpiochip_get_data(chip);
+	unsigned int status;
+	int ret;
+
+	mutex_lock(&mcp->lock);
+
+	/* REVISIT reading this clears any IRQ ... */
+	ret = mcp_read(mcp, MCP_GPIO, &status);
+	if (ret < 0)
+		status = 0;
+	else {
+		mcp->cached_gpio = status;
+		*bits = status;
+	}
+
+	mutex_unlock(&mcp->lock);
+	return ret;
+}
+
 static int __mcp23s08_set(struct mcp23s08 *mcp, unsigned mask, bool value)
 {
-	return mcp_set_mask(mcp, MCP_OLAT, mask, value);
+	return mcp_update_bits(mcp, MCP_OLAT, mask, value ? mask : 0);
 }
 
 static void mcp23s08_set(struct gpio_chip *chip, unsigned offset, int value)
@@ -320,6 +348,16 @@ static void mcp23s08_set(struct gpio_chip *chip, unsigned offset, int value)
 
 	mutex_lock(&mcp->lock);
 	__mcp23s08_set(mcp, mask, !!value);
+	mutex_unlock(&mcp->lock);
+}
+
+static void mcp23s08_set_multiple(struct gpio_chip *chip,
+				  unsigned long *mask, unsigned long *bits)
+{
+	struct mcp23s08	*mcp = gpiochip_get_data(chip);
+
+	mutex_lock(&mcp->lock);
+	mcp_update_bits(mcp, MCP_OLAT, *mask, *bits);
 	mutex_unlock(&mcp->lock);
 }
 
@@ -333,7 +371,7 @@ mcp23s08_direction_output(struct gpio_chip *chip, unsigned offset, int value)
 	mutex_lock(&mcp->lock);
 	status = __mcp23s08_set(mcp, mask, value);
 	if (status == 0) {
-		status = mcp_set_mask(mcp, MCP_IODIR, mask, false);
+		status = mcp_update_bits(mcp, MCP_IODIR, mask, 0);
 	}
 	mutex_unlock(&mcp->lock);
 	return status;
@@ -343,7 +381,8 @@ mcp23s08_direction_output(struct gpio_chip *chip, unsigned offset, int value)
 static irqreturn_t mcp23s08_irq(int irq, void *data)
 {
 	struct mcp23s08 *mcp = data;
-	int intcap, intcon, intf, i, gpio, gpio_orig, intcap_mask, defval;
+	int intcap, intcon, intf, i, gpio, gpio_orig, intcap_mask, defval, gpinten;
+	unsigned long int enabled_interrupts;
 	unsigned int child_irq;
 	bool intf_set, intcap_changed, gpio_bit_changed,
 		defval_changed, gpio_set;
@@ -363,6 +402,9 @@ static irqreturn_t mcp23s08_irq(int irq, void *data)
 	if (mcp_read(mcp, MCP_INTCON, &intcon))
 		goto unlock;
 
+	if (mcp_read(mcp, MCP_GPINTEN, &gpinten))
+		goto unlock;
+
 	if (mcp_read(mcp, MCP_DEFVAL, &defval))
 		goto unlock;
 
@@ -378,9 +420,12 @@ static irqreturn_t mcp23s08_irq(int irq, void *data)
 		"intcap 0x%04X intf 0x%04X gpio_orig 0x%04X gpio 0x%04X\n",
 		intcap, intf, gpio_orig, gpio);
 
-	for (i = 0; i < mcp->chip.ngpio; i++) {
-		/* We must check all of the inputs on the chip,
-		 * otherwise we may not notice a change on >=2 pins.
+	enabled_interrupts = gpinten;
+	for_each_set_bit(i, &enabled_interrupts, mcp->chip.ngpio) {
+		/*
+		 * We must check all of the inputs with enabled interrupts
+		 * on the chip, otherwise we may not notice a change
+		 * on more than one pin.
 		 *
 		 * On at least the mcp23s17, INTCAP is only updated
 		 * one byte at a time(INTCAPA and INTCAPB are
@@ -436,17 +481,19 @@ static void mcp23s08_irq_mask(struct irq_data *data)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
 	struct mcp23s08 *mcp = gpiochip_get_data(gc);
-	unsigned int pos = data->hwirq;
+	unsigned int pos = irqd_to_hwirq(data);
 
 	mcp_set_bit(mcp, MCP_GPINTEN, pos, false);
+	gpiochip_disable_irq(gc, pos);
 }
 
 static void mcp23s08_irq_unmask(struct irq_data *data)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
 	struct mcp23s08 *mcp = gpiochip_get_data(gc);
-	unsigned int pos = data->hwirq;
+	unsigned int pos = irqd_to_hwirq(data);
 
+	gpiochip_enable_irq(gc, pos);
 	mcp_set_bit(mcp, MCP_GPINTEN, pos, true);
 }
 
@@ -454,7 +501,7 @@ static int mcp23s08_irq_set_type(struct irq_data *data, unsigned int type)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
 	struct mcp23s08 *mcp = gpiochip_get_data(gc);
-	unsigned int pos = data->hwirq;
+	unsigned int pos = irqd_to_hwirq(data);
 
 	if ((type & IRQ_TYPE_EDGE_BOTH) == IRQ_TYPE_EDGE_BOTH) {
 		mcp_set_bit(mcp, MCP_INTCON, pos, false);
@@ -523,6 +570,25 @@ static int mcp23s08_irq_setup(struct mcp23s08 *mcp)
 	return 0;
 }
 
+static void mcp23s08_irq_print_chip(struct irq_data *d, struct seq_file *p)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct mcp23s08 *mcp = gpiochip_get_data(gc);
+
+	seq_puts(p, dev_name(mcp->dev));
+}
+
+static const struct irq_chip mcp23s08_irq_chip = {
+	.irq_mask = mcp23s08_irq_mask,
+	.irq_unmask = mcp23s08_irq_unmask,
+	.irq_set_type = mcp23s08_irq_set_type,
+	.irq_bus_lock = mcp23s08_irq_bus_lock,
+	.irq_bus_sync_unlock = mcp23s08_irq_bus_unlock,
+	.irq_print_chip = mcp23s08_irq_print_chip,
+	.flags = IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
+
 /*----------------------------------------------------------------------*/
 
 int mcp23s08_probe_one(struct mcp23s08 *mcp, struct device *dev,
@@ -538,20 +604,13 @@ int mcp23s08_probe_one(struct mcp23s08 *mcp, struct device *dev,
 	mcp->addr = addr;
 
 	mcp->irq_active_high = false;
-	mcp->irq_chip.name = dev_name(dev);
-	mcp->irq_chip.irq_mask = mcp23s08_irq_mask;
-	mcp->irq_chip.irq_unmask = mcp23s08_irq_unmask;
-	mcp->irq_chip.irq_set_type = mcp23s08_irq_set_type;
-	mcp->irq_chip.irq_bus_lock = mcp23s08_irq_bus_lock;
-	mcp->irq_chip.irq_bus_sync_unlock = mcp23s08_irq_bus_unlock;
 
 	mcp->chip.direction_input = mcp23s08_direction_input;
 	mcp->chip.get = mcp23s08_get;
+	mcp->chip.get_multiple = mcp23s08_get_multiple;
 	mcp->chip.direction_output = mcp23s08_direction_output;
 	mcp->chip.set = mcp23s08_set;
-#ifdef CONFIG_OF_GPIO
-	mcp->chip.of_gpio_n_cells = 2;
-#endif
+	mcp->chip.set_multiple = mcp23s08_set_multiple;
 
 	mcp->chip.base = base;
 	mcp->chip.can_sleep = true;
@@ -606,7 +665,7 @@ int mcp23s08_probe_one(struct mcp23s08 *mcp, struct device *dev,
 	if (mcp->irq && mcp->irq_controller) {
 		struct gpio_irq_chip *girq = &mcp->chip.irq;
 
-		girq->chip = &mcp->irq_chip;
+		gpio_irq_chip_set_chip(girq, &mcp23s08_irq_chip);
 		/* This will let us handle the parent IRQ in the driver */
 		girq->parent_handler = NULL;
 		girq->num_parents = 0;
@@ -643,4 +702,5 @@ int mcp23s08_probe_one(struct mcp23s08 *mcp, struct device *dev,
 }
 EXPORT_SYMBOL_GPL(mcp23s08_probe_one);
 
+MODULE_DESCRIPTION("MCP23S08 SPI/I2C GPIO driver");
 MODULE_LICENSE("GPL");

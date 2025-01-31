@@ -12,8 +12,9 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/phy/phy.h>
+#include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/units.h>
 
@@ -304,7 +305,7 @@ static int stm32_usbphyc_pll_enable(struct stm32_usbphyc *usbphyc)
 
 		ret = __stm32_usbphyc_pll_disable(usbphyc);
 		if (ret)
-			return ret;
+			goto dec_n_pll_cons;
 	}
 
 	ret = stm32_usbphyc_regulators_enable(usbphyc);
@@ -316,6 +317,9 @@ static int stm32_usbphyc_pll_enable(struct stm32_usbphyc *usbphyc)
 		goto reg_disable;
 
 	stm32_usbphyc_set_bits(pll_reg, PLLEN);
+
+	/* Wait for maximum lock time */
+	usleep_range(200, 300);
 
 	return 0;
 
@@ -358,7 +362,9 @@ static int stm32_usbphyc_phy_init(struct phy *phy)
 	return 0;
 
 pll_disable:
-	return stm32_usbphyc_pll_disable(usbphyc);
+	stm32_usbphyc_pll_disable(usbphyc);
+
+	return ret;
 }
 
 static int stm32_usbphyc_phy_exit(struct phy *phy)
@@ -568,7 +574,7 @@ static void stm32_usbphyc_switch_setup(struct stm32_usbphyc *usbphyc,
 }
 
 static struct phy *stm32_usbphyc_of_xlate(struct device *dev,
-					  struct of_phandle_args *args)
+					  const struct of_phandle_args *args)
 {
 	struct stm32_usbphyc *usbphyc = dev_get_drvdata(dev);
 	struct stm32_usbphyc_phy *usbphyc_phy = NULL;
@@ -708,6 +714,8 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 		ret = of_property_read_u32(child, "reg", &index);
 		if (ret || index > usbphyc->nphys) {
 			dev_err(&phy->dev, "invalid reg property: %d\n", ret);
+			if (!ret)
+				ret = -EINVAL;
 			goto put_child;
 		}
 
@@ -762,7 +770,7 @@ clk_disable:
 	return ret;
 }
 
-static int stm32_usbphyc_remove(struct platform_device *pdev)
+static void stm32_usbphyc_remove(struct platform_device *pdev)
 {
 	struct stm32_usbphyc *usbphyc = dev_get_drvdata(&pdev->dev);
 	int port;
@@ -775,8 +783,6 @@ static int stm32_usbphyc_remove(struct platform_device *pdev)
 	stm32_usbphyc_clk48_unregister(usbphyc);
 
 	clk_disable_unprepare(usbphyc->clk);
-
-	return 0;
 }
 
 static int __maybe_unused stm32_usbphyc_resume(struct device *dev)

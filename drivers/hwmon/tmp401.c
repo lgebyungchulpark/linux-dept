@@ -41,6 +41,8 @@ enum chips { tmp401, tmp411, tmp431, tmp432, tmp435 };
 #define TMP401_STATUS				0x02
 #define TMP401_CONFIG				0x03
 #define TMP401_CONVERSION_RATE			0x04
+#define TMP4XX_N_FACTOR_REG			0x18
+#define TMP43X_BETA_RANGE			0x25
 #define TMP401_TEMP_CRIT_HYST			0x21
 #define TMP401_MANUFACTURER_ID_REG		0xFE
 #define TMP401_DEVICE_ID_REG			0xFF
@@ -254,7 +256,7 @@ static int tmp401_reg_write(void *context, unsigned int reg, unsigned int val)
 static const struct regmap_config tmp401_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 16,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = tmp401_regmap_is_volatile,
 	.reg_read = tmp401_reg_read,
 	.reg_write = tmp401_reg_write,
@@ -306,7 +308,9 @@ static int tmp401_temp_read(struct device *dev, u32 attr, int channel, long *val
 {
 	struct tmp401_data *data = dev_get_drvdata(dev);
 	struct regmap *regmap = data->regmap;
+	unsigned int regs[2] = { TMP401_TEMP_MSB[3][channel], TMP401_TEMP_CRIT_HYST };
 	unsigned int regval;
+	u16 regvals[2];
 	int reg, ret;
 
 	switch (attr) {
@@ -323,20 +327,11 @@ static int tmp401_temp_read(struct device *dev, u32 attr, int channel, long *val
 		*val = tmp401_register_to_temp(regval, data->extended_range);
 		break;
 	case hwmon_temp_crit_hyst:
-		mutex_lock(&data->update_lock);
-		reg = TMP401_TEMP_MSB[3][channel];
-		ret = regmap_read(regmap, reg, &regval);
-		if (ret < 0)
-			goto unlock;
-		*val = tmp401_register_to_temp(regval, data->extended_range);
-		ret = regmap_read(regmap, TMP401_TEMP_CRIT_HYST, &regval);
-		if (ret < 0)
-			goto unlock;
-		*val -= regval * 1000;
-unlock:
-		mutex_unlock(&data->update_lock);
+		ret = regmap_multi_reg_read(regmap, regs, regvals, 2);
 		if (ret < 0)
 			return ret;
+		*val = tmp401_register_to_temp(regvals[0], data->extended_range) -
+							(regvals[1] * 1000);
 		break;
 	case hwmon_temp_fault:
 	case hwmon_temp_min_alarm:
@@ -543,6 +538,8 @@ static int tmp401_init_client(struct tmp401_data *data)
 	struct regmap *regmap = data->regmap;
 	u32 config, config_orig;
 	int ret;
+	u32 val = 0;
+	s32 nfactor = 0;
 
 	/* Set conversion rate to 2 Hz */
 	ret = regmap_write(regmap, TMP401_CONVERSION_RATE, 5);
@@ -557,12 +554,50 @@ static int tmp401_init_client(struct tmp401_data *data)
 	config_orig = config;
 	config &= ~TMP401_CONFIG_SHUTDOWN;
 
+	if (of_property_read_bool(data->client->dev.of_node, "ti,extended-range-enable")) {
+		/* Enable measurement over extended temperature range */
+		config |= TMP401_CONFIG_RANGE;
+	}
+
 	data->extended_range = !!(config & TMP401_CONFIG_RANGE);
 
-	if (config != config_orig)
+	if (config != config_orig) {
 		ret = regmap_write(regmap, TMP401_CONFIG, config);
+		if (ret < 0)
+			return ret;
+	}
 
-	return ret;
+	ret = of_property_read_u32(data->client->dev.of_node, "ti,n-factor", &nfactor);
+	if (!ret) {
+		if (data->kind == tmp401) {
+			dev_err(&data->client->dev, "ti,tmp401 does not support n-factor correction\n");
+			return -EINVAL;
+		}
+		if (nfactor < -128 || nfactor > 127) {
+			dev_err(&data->client->dev, "n-factor is invalid (%d)\n", nfactor);
+			return -EINVAL;
+		}
+		ret = regmap_write(regmap, TMP4XX_N_FACTOR_REG, (unsigned int)nfactor);
+		if (ret < 0)
+			return ret;
+	}
+
+	ret = of_property_read_u32(data->client->dev.of_node, "ti,beta-compensation", &val);
+	if (!ret) {
+		if (data->kind == tmp401 || data->kind == tmp411) {
+			dev_err(&data->client->dev, "ti,tmp401 or ti,tmp411 does not support beta compensation\n");
+			return -EINVAL;
+		}
+		if (val > 15) {
+			dev_err(&data->client->dev, "beta-compensation is invalid (%u)\n", val);
+			return -EINVAL;
+		}
+		ret = regmap_write(regmap, TMP43X_BETA_RANGE, val);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int tmp401_detect(struct i2c_client *client,
@@ -629,7 +664,7 @@ static int tmp401_detect(struct i2c_client *client,
 	if (reg > 15)
 		return -ENODEV;
 
-	strlcpy(info->type, tmp401_id[kind].name, I2C_NAME_SIZE);
+	strscpy(info->type, tmp401_id[kind].name, I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -651,7 +686,7 @@ static int tmp401_probe(struct i2c_client *client)
 
 	data->client = client;
 	mutex_init(&data->update_lock);
-	data->kind = i2c_match_id(tmp401_id, client)->driver_data;
+	data->kind = (uintptr_t)i2c_get_match_data(client);
 
 	data->regmap = devm_regmap_init(dev, NULL, data, &tmp401_regmap_config);
 	if (IS_ERR(data->regmap))
@@ -708,12 +743,23 @@ static int tmp401_probe(struct i2c_client *client)
 	return 0;
 }
 
+static const struct of_device_id __maybe_unused tmp4xx_of_match[] = {
+	{ .compatible = "ti,tmp401", },
+	{ .compatible = "ti,tmp411", },
+	{ .compatible = "ti,tmp431", },
+	{ .compatible = "ti,tmp432", },
+	{ .compatible = "ti,tmp435", },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, tmp4xx_of_match);
+
 static struct i2c_driver tmp401_driver = {
 	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "tmp401",
+		.of_match_table = of_match_ptr(tmp4xx_of_match),
 	},
-	.probe_new	= tmp401_probe,
+	.probe		= tmp401_probe,
 	.id_table	= tmp401_id,
 	.detect		= tmp401_detect,
 	.address_list	= normal_i2c,

@@ -234,6 +234,7 @@ struct mii_bus *bcma_mdio_mii_register(struct bgmac *bgmac)
 	np = of_get_child_by_name(core->dev.of_node, "mdio");
 
 	err = of_mdiobus_register(mii_bus, np);
+	of_node_put(np);
 	if (err) {
 		dev_err(&core->dev, "Registration of mii bus failed\n");
 		goto err_free_bus;
@@ -259,4 +260,5 @@ void bcma_mdio_mii_unregister(struct mii_bus *mii_bus)
 EXPORT_SYMBOL_GPL(bcma_mdio_mii_unregister);
 
 MODULE_AUTHOR("Rafał Miłecki");
+MODULE_DESCRIPTION("Broadcom iProc GBit BCMA MDIO helpers");
 MODULE_LICENSE("GPL");

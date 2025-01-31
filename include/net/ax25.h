@@ -139,7 +139,9 @@ enum {
 	AX25_VALUES_N2,		/* Default N2 value */
 	AX25_VALUES_PACLEN,	/* AX.25 MTU */
 	AX25_VALUES_PROTOCOL,	/* Std AX.25, DAMA Slave, DAMA Master */
+#ifdef CONFIG_AX25_DAMA_SLAVE
 	AX25_VALUES_DS_TIMEOUT,	/* DAMA Slave timeout */
+#endif
 	AX25_MAX_VALUES		/* THIS MUST REMAIN THE LAST ENTRY OF THIS LIST */
 };
 
@@ -187,17 +189,11 @@ typedef struct {
 
 typedef struct ax25_route {
 	struct ax25_route	*next;
-	refcount_t		refcount;
 	ax25_address		callsign;
 	struct net_device	*dev;
 	ax25_digi		*digipeat;
 	char			ip_mode;
 } ax25_route;
-
-static inline void ax25_hold_route(ax25_route *ax25_rt)
-{
-	refcount_inc(&ax25_rt->refcount);
-}
 
 void __ax25_put_route(ax25_route *ax25_rt);
 
@@ -213,12 +209,6 @@ static inline void ax25_route_lock_unuse(void)
 	read_unlock(&ax25_route_lock);
 }
 
-static inline void ax25_put_route(ax25_route *ax25_rt)
-{
-	if (refcount_dec_and_test(&ax25_rt->refcount))
-		__ax25_put_route(ax25_rt);
-}
-
 typedef struct {
 	char			slave;			/* slave_mode?   */
 	struct timer_list	slave_timer;		/* timeout timer */
@@ -228,7 +218,7 @@ typedef struct {
 struct ctl_table;
 
 typedef struct ax25_dev {
-	struct ax25_dev		*next;
+	struct list_head	list;
 
 	struct net_device	*dev;
 	netdevice_tracker	dev_tracker;
@@ -239,6 +229,9 @@ typedef struct ax25_dev {
 #if defined(CONFIG_AX25_DAMA_SLAVE) || defined(CONFIG_AX25_DAMA_MASTER)
 	ax25_dama_info		dama;
 #endif
+	refcount_t		refcount;
+	bool device_up;
+	struct rcu_head		rcu;
 } ax25_dev;
 
 typedef struct ax25_cb {
@@ -246,6 +239,7 @@ typedef struct ax25_cb {
 	ax25_address		source_addr, dest_addr;
 	ax25_digi		*digipeat;
 	ax25_dev		*ax25_dev;
+	netdevice_tracker	dev_tracker;
 	unsigned char		iamdigi;
 	unsigned char		state, modulus, pidincl;
 	unsigned short		vs, vr, va;
@@ -269,10 +263,7 @@ struct ax25_sock {
 	struct ax25_cb		*cb;
 };
 
-static inline struct ax25_sock *ax25_sk(const struct sock *sk)
-{
-	return (struct ax25_sock *) sk;
-}
+#define ax25_sk(ptr) container_of_const(ptr, struct ax25_sock, sk)
 
 static inline struct ax25_cb *sk_to_ax25(const struct sock *sk)
 {
@@ -293,6 +284,16 @@ static __inline__ void ax25_cb_put(ax25_cb *ax25)
 	}
 }
 
+static inline void ax25_dev_hold(ax25_dev *ax25_dev)
+{
+	refcount_inc(&ax25_dev->refcount);
+}
+
+static inline void ax25_dev_put(ax25_dev *ax25_dev)
+{
+	if (refcount_dec_and_test(&ax25_dev->refcount))
+		kfree_rcu(ax25_dev, rcu);
+}
 static inline __be16 ax25_type_trans(struct sk_buff *skb, struct net_device *dev)
 {
 	skb->dev      = dev;
@@ -331,13 +332,12 @@ int ax25_addr_size(const ax25_digi *);
 void ax25_digi_invert(const ax25_digi *, ax25_digi *);
 
 /* ax25_dev.c */
-extern ax25_dev *ax25_dev_list;
 extern spinlock_t ax25_dev_lock;
 
 #if IS_ENABLED(CONFIG_AX25)
-static inline ax25_dev *ax25_dev_ax25dev(struct net_device *dev)
+static inline ax25_dev *ax25_dev_ax25dev(const struct net_device *dev)
 {
-	return dev->ax25_ptr;
+	return rcu_dereference_rtnl(dev->ax25_ptr);
 }
 #endif
 

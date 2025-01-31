@@ -4,6 +4,7 @@
 // Author: Cyrille Pitchen <cyrille.pitchen@free-electrons.com>
 
 #include <linux/kernel.h>
+#include <linux/of.h>
 
 #include "pcie-cadence.h"
 
@@ -196,7 +197,7 @@ int cdns_pcie_init_phy(struct device *dev, struct cdns_pcie *pcie)
 
 	phy_count = of_property_count_strings(np, "phy-names");
 	if (phy_count < 1) {
-		dev_err(dev, "no phy-names.  PHY will not be initialized\n");
+		dev_info(dev, "no \"phy-names\" property found; PHY will not be initialized\n");
 		pcie->phy_count = 0;
 		return 0;
 	}
@@ -243,7 +244,6 @@ err_phy:
 	return ret;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int cdns_pcie_suspend_noirq(struct device *dev)
 {
 	struct cdns_pcie *pcie = dev_get_drvdata(dev);
@@ -260,15 +260,14 @@ static int cdns_pcie_resume_noirq(struct device *dev)
 
 	ret = cdns_pcie_enable_phy(pcie);
 	if (ret) {
-		dev_err(dev, "failed to enable phy\n");
+		dev_err(dev, "failed to enable PHY\n");
 		return ret;
 	}
 
 	return 0;
 }
-#endif
 
 const struct dev_pm_ops cdns_pcie_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(cdns_pcie_suspend_noirq,
-				      cdns_pcie_resume_noirq)
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(cdns_pcie_suspend_noirq,
+				  cdns_pcie_resume_noirq)
 };

@@ -121,7 +121,7 @@ static int au1xi2s_set_fmt(struct snd_soc_dai *cpu_dai, unsigned int fmt)
 
 	/* I2S controller only supports provider */
 	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
-	case SND_SOC_DAIFMT_CBC_CFC:	/* CODEC consumer */
+	case SND_SOC_DAIFMT_BP_FP:	/* CODEC consumer */
 		break;
 	default:
 		goto out;
@@ -227,7 +227,8 @@ static struct snd_soc_dai_driver au1xi2s_dai_driver = {
 };
 
 static const struct snd_soc_component_driver au1xi2s_component = {
-	.name		= "au1xi2s",
+	.name			= "au1xi2s",
+	.legacy_dai_naming	= 1,
 };
 
 static int au1xi2s_drvprobe(struct platform_device *pdev)
@@ -269,15 +270,13 @@ static int au1xi2s_drvprobe(struct platform_device *pdev)
 					  &au1xi2s_dai_driver, 1);
 }
 
-static int au1xi2s_drvremove(struct platform_device *pdev)
+static void au1xi2s_drvremove(struct platform_device *pdev)
 {
 	struct au1xpsc_audio_data *ctx = platform_get_drvdata(pdev);
 
 	snd_soc_unregister_component(&pdev->dev);
 
 	WR(ctx, I2S_ENABLE, EN_D);	/* clock off, disable */
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

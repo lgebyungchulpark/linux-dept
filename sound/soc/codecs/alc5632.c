@@ -1078,7 +1078,6 @@ static const struct snd_soc_component_driver soc_component_device_alc5632 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config alc5632_regmap = {
@@ -1092,18 +1091,24 @@ static const struct regmap_config alc5632_regmap = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
+static const struct i2c_device_id alc5632_i2c_table[] = {
+	{"alc5632", 0x5c},
+	{}
+};
+MODULE_DEVICE_TABLE(i2c, alc5632_i2c_table);
+
 /*
  * alc5632 2 wire address is determined by A1 pin
  * state during powerup.
  *    low  = 0x1a
  *    high = 0x1b
  */
-static int alc5632_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int alc5632_i2c_probe(struct i2c_client *client)
 {
 	struct alc5632_priv *alc5632;
 	int ret, ret1, ret2;
 	unsigned int vid1, vid2;
+	unsigned int matched_id;
 
 	alc5632 = devm_kzalloc(&client->dev,
 			 sizeof(struct alc5632_priv), GFP_KERNEL);
@@ -1129,7 +1134,9 @@ static int alc5632_i2c_probe(struct i2c_client *client,
 
 	vid2 >>= 8;
 
-	if ((vid1 != 0x10EC) || (vid2 != id->driver_data)) {
+	matched_id = (uintptr_t)i2c_get_match_data(client);
+
+	if ((vid1 != 0x10EC) || (vid2 != matched_id)) {
 		dev_err(&client->dev,
 		"Device is not a ALC5632: VID1=0x%x, VID2=0x%x\n", vid1, vid2);
 		return -EINVAL;
@@ -1160,12 +1167,6 @@ static int alc5632_i2c_probe(struct i2c_client *client,
 
 	return ret;
 }
-
-static const struct i2c_device_id alc5632_i2c_table[] = {
-	{"alc5632", 0x5c},
-	{}
-};
-MODULE_DEVICE_TABLE(i2c, alc5632_i2c_table);
 
 #ifdef CONFIG_OF
 static const struct of_device_id alc5632_of_match[] = {

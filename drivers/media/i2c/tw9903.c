@@ -189,8 +189,7 @@ static const struct v4l2_subdev_ops tw9903_ops = {
 
 /* --------------------------------------------------------------------------*/
 
-static int tw9903_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int tw9903_probe(struct i2c_client *client)
 {
 	struct tw9903 *dec;
 	struct v4l2_subdev *sd;
@@ -235,19 +234,18 @@ static int tw9903_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int tw9903_remove(struct i2c_client *client)
+static void tw9903_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&to_state(sd)->hdl);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id tw9903_id[] = {
-	{ "tw9903", 0 },
+	{ "tw9903" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tw9903_id);

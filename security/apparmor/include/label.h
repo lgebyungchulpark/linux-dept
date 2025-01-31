@@ -92,6 +92,8 @@ enum label_flags {
 	FLAG_STALE = 0x800,		/* replaced/removed */
 	FLAG_RENAMED = 0x1000,		/* label has renaming in it */
 	FLAG_REVOKED = 0x2000,		/* label has revocation in it */
+	FLAG_DEBUG1 = 0x4000,
+	FLAG_DEBUG2 = 0x8000,
 
 	/* These flags must correspond with PATH_flags */
 	/* TODO: add new path flags */
@@ -127,6 +129,7 @@ struct aa_label {
 	long flags;
 	u32 secid;
 	int size;
+	u64 mediates;
 	struct aa_profile *vec[];
 };
 
@@ -158,31 +161,7 @@ int aa_label_next_confined(struct aa_label *l, int i);
 #define label_for_each_cont(I, L, P)					\
 	for (++((I).i); ((P) = (L)->vec[(I).i]); ++((I).i))
 
-#define next_comb(I, L1, L2)						\
-do {									\
-	(I).j++;							\
-	if ((I).j >= (L2)->size) {					\
-		(I).i++;						\
-		(I).j = 0;						\
-	}								\
-} while (0)
 
-
-/* for each combination of P1 in L1, and P2 in L2 */
-#define label_for_each_comb(I, L1, L2, P1, P2)				\
-for ((I).i = (I).j = 0;							\
-	((P1) = (L1)->vec[(I).i]) && ((P2) = (L2)->vec[(I).j]);		\
-	(I) = next_comb(I, L1, L2))
-
-#define fn_for_each_comb(L1, L2, P1, P2, FN)				\
-({									\
-	struct label_it i;						\
-	int __E = 0;							\
-	label_for_each_comb(i, (L1), (L2), (P1), (P2)) {		\
-		last_error(__E, (FN));					\
-	}								\
-	__E;								\
-})
 
 /* for each profile that is enforcing confinement in a label */
 #define label_for_each_confined(I, L, P)				\
@@ -253,20 +232,17 @@ for ((I).i = (I).j = 0;							\
 #define fn_for_each_not_in_set(L1, L2, P, FN)				\
 	fn_for_each2_XXX((L1), (L2), P, FN, _not_in_set)
 
-#define LABEL_MEDIATES(L, C)						\
-({									\
-	struct aa_profile *profile;					\
-	struct label_it i;						\
-	int ret = 0;							\
-	label_for_each(i, (L), profile) {				\
-		if (PROFILE_MEDIATES(profile, (C))) {			\
-			ret = 1;					\
-			break;						\
-		}							\
-	}								\
-	ret;								\
-})
+static inline bool label_mediates(struct aa_label *L, unsigned char C)
+{
+	return (L)->mediates & (((u64) 1) << (C));
+}
 
+static inline bool label_mediates_safe(struct aa_label *L, unsigned char C)
+{
+	if (C > AA_CLASS_LAST)
+		return false;
+	return label_mediates(L, C);
+}
 
 void aa_labelset_destroy(struct aa_labelset *ls);
 void aa_labelset_init(struct aa_labelset *ls);
@@ -288,8 +264,6 @@ struct aa_label *aa_label_insert(struct aa_labelset *ls, struct aa_label *l);
 bool aa_label_replace(struct aa_label *old, struct aa_label *new);
 bool aa_label_make_newest(struct aa_labelset *ls, struct aa_label *old,
 			  struct aa_label *new);
-
-struct aa_label *aa_label_find(struct aa_label *l);
 
 struct aa_profile *aa_label_next_in_merge(struct label_it *I,
 					  struct aa_label *a,
@@ -318,8 +292,6 @@ void aa_label_seq_xprint(struct seq_file *f, struct aa_ns *ns,
 			 struct aa_label *label, int flags, gfp_t gfp);
 void aa_label_xprintk(struct aa_ns *ns, struct aa_label *label, int flags,
 		      gfp_t gfp);
-void aa_label_audit(struct audit_buffer *ab, struct aa_label *label, gfp_t gfp);
-void aa_label_seq_print(struct seq_file *f, struct aa_label *label, gfp_t gfp);
 void aa_label_printk(struct aa_label *label, gfp_t gfp);
 
 struct aa_label *aa_label_strn_parse(struct aa_label *base, const char *str,
@@ -331,7 +303,7 @@ struct aa_label *aa_label_parse(struct aa_label *base, const char *str,
 static inline const char *aa_label_strn_split(const char *str, int n)
 {
 	const char *pos;
-	unsigned int state;
+	aa_state_t state;
 
 	state = aa_dfa_matchn_until(stacksplitdfa, DFA_START, str, n, &pos);
 	if (!ACCEPT_TABLE(stacksplitdfa)[state])
@@ -343,7 +315,7 @@ static inline const char *aa_label_strn_split(const char *str, int n)
 static inline const char *aa_label_str_split(const char *str)
 {
 	const char *pos;
-	unsigned int state;
+	aa_state_t state;
 
 	state = aa_dfa_match_until(stacksplitdfa, DFA_START, str, &pos);
 	if (!ACCEPT_TABLE(stacksplitdfa)[state])
@@ -355,9 +327,10 @@ static inline const char *aa_label_str_split(const char *str)
 
 
 struct aa_perms;
-int aa_label_match(struct aa_profile *profile, struct aa_label *label,
-		   unsigned int state, bool subns, u32 request,
-		   struct aa_perms *perms);
+struct aa_ruleset;
+int aa_label_match(struct aa_profile *profile, struct aa_ruleset *rules,
+		   struct aa_label *label, aa_state_t state, bool subns,
+		   u32 request, struct aa_perms *perms);
 
 
 /**

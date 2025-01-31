@@ -32,13 +32,6 @@ static void get_io_context(struct io_context *ioc)
 	atomic_long_inc(&ioc->refcount);
 }
 
-static void icq_free_icq_rcu(struct rcu_head *head)
-{
-	struct io_cq *icq = container_of(head, struct io_cq, __rcu_head);
-
-	kmem_cache_free(icq->__rcu_icq_cache, icq);
-}
-
 /*
  * Exit an icq. Called with ioc locked for blk-mq, and with both ioc
  * and queue locked for legacy.
@@ -77,6 +70,10 @@ static void ioc_destroy_icq(struct io_cq *icq)
 	struct elevator_type *et = q->elevator->type;
 
 	lockdep_assert_held(&ioc->lock);
+	lockdep_assert_held(&q->queue_lock);
+
+	if (icq->flags & ICQ_DESTROYED)
+		return;
 
 	radix_tree_delete(&ioc->icq_tree, icq->q->id);
 	hlist_del_init(&icq->ioc_node);
@@ -98,7 +95,7 @@ static void ioc_destroy_icq(struct io_cq *icq)
 	 */
 	icq->__rcu_icq_cache = et->icq_cache;
 	icq->flags |= ICQ_DESTROYED;
-	call_rcu(&icq->__rcu_head, icq_free_icq_rcu);
+	kfree_rcu(icq, __rcu_head);
 }
 
 /*
@@ -128,12 +125,7 @@ static void ioc_release_fn(struct work_struct *work)
 			spin_lock(&q->queue_lock);
 			spin_lock(&ioc->lock);
 
-			/*
-			 * The icq may have been destroyed when the ioc lock
-			 * was released.
-			 */
-			if (!(icq->flags & ICQ_DESTROYED))
-				ioc_destroy_icq(icq);
+			ioc_destroy_icq(icq);
 
 			spin_unlock(&q->queue_lock);
 			rcu_read_unlock();
@@ -171,23 +163,20 @@ static bool ioc_delay_free(struct io_context *ioc)
  */
 void ioc_clear_queue(struct request_queue *q)
 {
-	LIST_HEAD(icq_list);
-
 	spin_lock_irq(&q->queue_lock);
-	list_splice_init(&q->icq_list, &icq_list);
-	spin_unlock_irq(&q->queue_lock);
-
-	rcu_read_lock();
-	while (!list_empty(&icq_list)) {
+	while (!list_empty(&q->icq_list)) {
 		struct io_cq *icq =
-			list_entry(icq_list.next, struct io_cq, q_node);
+			list_first_entry(&q->icq_list, struct io_cq, q_node);
 
-		spin_lock_irq(&icq->ioc->lock);
-		if (!(icq->flags & ICQ_DESTROYED))
-			ioc_destroy_icq(icq);
-		spin_unlock_irq(&icq->ioc->lock);
+		/*
+		 * Other context won't hold ioc lock to wait for queue_lock, see
+		 * details in ioc_release_fn().
+		 */
+		spin_lock(&icq->ioc->lock);
+		ioc_destroy_icq(icq);
+		spin_unlock(&icq->ioc->lock);
 	}
-	rcu_read_unlock();
+	spin_unlock_irq(&q->queue_lock);
 }
 #else /* CONFIG_BLK_ICQ */
 static inline void ioc_exit_icqs(struct io_context *ioc)
@@ -247,6 +236,8 @@ static struct io_context *alloc_io_context(gfp_t gfp_flags, int node)
 	INIT_HLIST_HEAD(&ioc->icq_list);
 	INIT_WORK(&ioc->release_work, ioc_release_fn);
 #endif
+	ioc->ioprio = IOPRIO_DEFAULT;
+
 	return ioc;
 }
 
@@ -280,7 +271,6 @@ int set_task_ioprio(struct task_struct *task, int ioprio)
 
 		task_lock(task);
 		if (task->flags & PF_EXITING) {
-			err = -ESRCH;
 			kmem_cache_free(iocontext_cachep, ioc);
 			goto out;
 		}
@@ -292,7 +282,7 @@ int set_task_ioprio(struct task_struct *task, int ioprio)
 	task->io_context->ioprio = ioprio;
 out:
 	task_unlock(task);
-	return err;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(set_task_ioprio);
 

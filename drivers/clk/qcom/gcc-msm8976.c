@@ -15,8 +15,8 @@
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,gcc-msm8976.h>
@@ -334,9 +334,9 @@ static const struct parent_map gcc_parent_map_7[] = {
 	{ P_GPLL6_OUT, 3 },
 };
 
-static const struct clk_parent_data gcc_parent_data_7[] = {
-	{ .hw = &gpll0_vote.hw },
-	{ .hw = &gpll6_vote.hw },
+static const struct clk_hw * gcc_parent_hws_7[] = {
+	&gpll0_vote.hw,
+	&gpll6_vote.hw,
 };
 
 static const struct parent_map gcc_parent_map_8[] = {
@@ -363,8 +363,8 @@ static const struct parent_map gcc_parent_map_8_gp[] = {
 	{ P_GPLL0_OUT_MAIN, 1 },
 };
 
-static const struct clk_parent_data gcc_parent_data_8_gp[] = {
-	{ .hw = &gpll0_vote.hw },
+static const struct clk_hw *gcc_parent_hws_8_gp[] = {
+	&gpll0_vote.hw,
 };
 
 static const struct parent_map gcc_parent_map_9[] = {
@@ -952,8 +952,8 @@ static struct clk_rcg2 camss_gp0_clk_src = {
 	.freq_tbl = ftbl_camss_gp0_clk_src,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "camss_gp0_clk_src",
-		.parent_data = gcc_parent_data_8_gp,
-		.num_parents = ARRAY_SIZE(gcc_parent_data_8_gp),
+		.parent_hws = gcc_parent_hws_8_gp,
+		.num_parents = ARRAY_SIZE(gcc_parent_hws_8_gp),
 		.ops = &clk_rcg2_ops,
 	},
 };
@@ -973,8 +973,8 @@ static struct clk_rcg2 camss_gp1_clk_src = {
 	.freq_tbl = ftbl_camss_gp1_clk_src,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "camss_gp1_clk_src",
-		.parent_data = gcc_parent_data_8_gp,
-		.num_parents = ARRAY_SIZE(gcc_parent_data_8_gp),
+		.parent_hws = gcc_parent_hws_8_gp,
+		.num_parents = ARRAY_SIZE(gcc_parent_hws_8_gp),
 		.ops = &clk_rcg2_ops,
 	},
 };
@@ -1015,8 +1015,8 @@ static struct clk_rcg2 mclk0_clk_src = {
 	.freq_tbl = ftbl_mclk_clk_src,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "mclk0_clk_src",
-		.parent_data = gcc_parent_data_7,
-		.num_parents = ARRAY_SIZE(gcc_parent_data_7),
+		.parent_hws = gcc_parent_hws_7,
+		.num_parents = ARRAY_SIZE(gcc_parent_hws_7),
 		.ops = &clk_rcg2_ops,
 	},
 };
@@ -1029,8 +1029,8 @@ static struct clk_rcg2 mclk1_clk_src = {
 	.freq_tbl = ftbl_mclk_clk_src,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "mclk1_clk_src",
-		.parent_data = gcc_parent_data_7,
-		.num_parents = ARRAY_SIZE(gcc_parent_data_7),
+		.parent_hws = gcc_parent_hws_7,
+		.num_parents = ARRAY_SIZE(gcc_parent_hws_7),
 		.ops = &clk_rcg2_ops,
 	},
 };
@@ -1043,8 +1043,8 @@ static struct clk_rcg2 mclk2_clk_src = {
 	.freq_tbl = ftbl_mclk_clk_src,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "mclk2_clk_src",
-		.parent_data = gcc_parent_data_7,
-		.num_parents = ARRAY_SIZE(gcc_parent_data_7),
+		.parent_hws = gcc_parent_hws_7,
+		.num_parents = ARRAY_SIZE(gcc_parent_hws_7),
 		.ops = &clk_rcg2_ops,
 	},
 };
@@ -1486,7 +1486,7 @@ static const struct clk_init_data sdcc1_apps_clk_src_8976v1_1_init = {
 	.name = "sdcc1_apps_clk_src",
 	.parent_data = gcc_parent_data_v1_1,
 	.num_parents = ARRAY_SIZE(gcc_parent_data_v1_1),
-	.ops = &clk_rcg2_ops,
+	.ops = &clk_rcg2_floor_ops,
 };
 
 static struct clk_rcg2 sdcc1_apps_clk_src = {
@@ -1499,7 +1499,7 @@ static struct clk_rcg2 sdcc1_apps_clk_src = {
 		.name = "sdcc1_apps_clk_src",
 		.parent_data = gcc_parent_data_1,
 		.num_parents = ARRAY_SIZE(gcc_parent_data_1),
-		.ops = &clk_rcg2_ops,
+		.ops = &clk_rcg2_floor_ops,
 	},
 };
 
@@ -1547,7 +1547,7 @@ static struct clk_rcg2 sdcc2_apps_clk_src = {
 		.name = "sdcc2_apps_clk_src",
 		.parent_data = gcc_parent_data_4_8,
 		.num_parents = ARRAY_SIZE(gcc_parent_data_4_8),
-		.ops = &clk_rcg2_ops,
+		.ops = &clk_rcg2_floor_ops,
 	},
 };
 
@@ -4056,6 +4056,7 @@ static const struct qcom_reset_map gcc_msm8976_resets[] = {
 	[RST_CAMSS_CSI_VFE1_BCR]	= { 0x58070 },
 	[RST_CAMSS_VFE1_BCR]		= { 0x5807c },
 	[RST_CAMSS_CPP_BCR]		= { 0x58080 },
+	[RST_MSS_BCR]			= { 0x71000 },
 };
 
 static struct gdsc *gcc_msm8976_gdscs[] = {
@@ -4128,7 +4129,7 @@ static int gcc_msm8976_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return qcom_cc_really_probe(pdev, &gcc_msm8976_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &gcc_msm8976_desc, regmap);
 }
 
 static struct platform_driver gcc_msm8976_driver = {
@@ -4153,3 +4154,4 @@ module_exit(gcc_msm8976_exit);
 
 MODULE_AUTHOR("AngeloGioacchino Del Regno <angelogioacchino.delregno@somainline.org>");
 MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("QTI MSM8996 Global Clock Controller");

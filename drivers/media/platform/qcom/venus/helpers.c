@@ -90,12 +90,28 @@ bool venus_helper_check_codec(struct venus_inst *inst, u32 v4l2_pixfmt)
 }
 EXPORT_SYMBOL_GPL(venus_helper_check_codec);
 
+static void free_dpb_buf(struct venus_inst *inst, struct intbuf *buf)
+{
+	ida_free(&inst->dpb_ids, buf->dpb_out_tag);
+
+	list_del_init(&buf->list);
+	dma_free_attrs(inst->core->dev, buf->size, buf->va, buf->da,
+		       buf->attrs);
+	kfree(buf);
+}
+
 int venus_helper_queue_dpb_bufs(struct venus_inst *inst)
 {
-	struct intbuf *buf;
+	struct intbuf *buf, *next;
+	unsigned int dpb_size = 0;
 	int ret = 0;
 
-	list_for_each_entry(buf, &inst->dpbbufs, list) {
+	if (inst->dpb_buftype == HFI_BUFFER_OUTPUT)
+		dpb_size = inst->output_buf_size;
+	else if (inst->dpb_buftype == HFI_BUFFER_OUTPUT2)
+		dpb_size = inst->output2_buf_size;
+
+	list_for_each_entry_safe(buf, next, &inst->dpbbufs, list) {
 		struct hfi_frame_data fdata;
 
 		memset(&fdata, 0, sizeof(fdata));
@@ -105,6 +121,12 @@ int venus_helper_queue_dpb_bufs(struct venus_inst *inst)
 
 		if (buf->owned_by == FIRMWARE)
 			continue;
+
+		/* free buffer from previous sequence which was released later */
+		if (dpb_size > buf->size) {
+			free_dpb_buf(inst, buf);
+			continue;
+		}
 
 		fdata.clnt_data = buf->dpb_out_tag;
 
@@ -127,13 +149,7 @@ int venus_helper_free_dpb_bufs(struct venus_inst *inst)
 	list_for_each_entry_safe(buf, n, &inst->dpbbufs, list) {
 		if (buf->owned_by == FIRMWARE)
 			continue;
-
-		ida_free(&inst->dpb_ids, buf->dpb_out_tag);
-
-		list_del_init(&buf->list);
-		dma_free_attrs(inst->core->dev, buf->size, buf->va, buf->da,
-			       buf->attrs);
-		kfree(buf);
+		free_dpb_buf(inst, buf);
 	}
 
 	if (list_empty(&inst->dpbbufs))
@@ -173,7 +189,7 @@ int venus_helper_alloc_dpb_bufs(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	count = HFI_BUFREQ_COUNT_MIN(&bufreq, ver);
+	count = hfi_bufreq_get_count_min(&bufreq, ver);
 
 	for (i = 0; i < count; i++) {
 		buf = kzalloc(sizeof(*buf), GFP_KERNEL);
@@ -189,7 +205,6 @@ int venus_helper_alloc_dpb_bufs(struct venus_inst *inst)
 		buf->va = dma_alloc_attrs(dev, buf->size, &buf->da, GFP_KERNEL,
 					  buf->attrs);
 		if (!buf->va) {
-			kfree(buf);
 			ret = -ENOMEM;
 			goto fail;
 		}
@@ -209,6 +224,7 @@ int venus_helper_alloc_dpb_bufs(struct venus_inst *inst)
 	return 0;
 
 fail:
+	kfree(buf);
 	venus_helper_free_dpb_bufs(inst);
 	return ret;
 }
@@ -486,7 +502,6 @@ session_process_buf(struct venus_inst *inst, struct vb2_v4l2_buffer *vbuf)
 	struct vb2_buffer *vb = &vbuf->vb2_buf;
 	unsigned int type = vb->type;
 	struct hfi_frame_data fdata;
-	int ret;
 
 	memset(&fdata, 0, sizeof(fdata));
 	fdata.alloc_len = buf->size;
@@ -517,11 +532,7 @@ session_process_buf(struct venus_inst *inst, struct vb2_v4l2_buffer *vbuf)
 		fdata.offset = 0;
 	}
 
-	ret = hfi_session_process_buf(inst, &fdata);
-	if (ret)
-		return ret;
-
-	return 0;
+	return hfi_session_process_buf(inst, &fdata);
 }
 
 static bool is_dynamic_bufmode(struct venus_inst *inst)
@@ -592,6 +603,12 @@ static u32 to_hfi_raw_fmt(u32 v4l2_fmt)
 		return HFI_COLOR_FORMAT_NV12;
 	case V4L2_PIX_FMT_NV21:
 		return HFI_COLOR_FORMAT_NV21;
+	case V4L2_PIX_FMT_QC08C:
+		return HFI_COLOR_FORMAT_NV12_UBWC;
+	case V4L2_PIX_FMT_QC10C:
+		return HFI_COLOR_FORMAT_YUV420_TP10_UBWC;
+	case V4L2_PIX_FMT_P010:
+		return HFI_COLOR_FORMAT_P010;
 	default:
 		break;
 	}
@@ -619,12 +636,16 @@ static int platform_get_bufreq(struct venus_inst *inst, u32 buftype,
 	if (is_dec) {
 		params.width = inst->width;
 		params.height = inst->height;
+		params.out_width = inst->out_width;
+		params.out_height = inst->out_height;
 		params.codec = inst->fmt_out->pixfmt;
 		params.hfi_color_fmt = to_hfi_raw_fmt(inst->fmt_cap->pixfmt);
 		params.dec.max_mbs_per_frame = mbs_per_frame_max(inst);
 		params.dec.buffer_size_limit = 0;
 		params.dec.is_secondary_output =
 			inst->opb_buftype == HFI_BUFFER_OUTPUT2;
+		if (params.dec.is_secondary_output)
+			params.hfi_dpb_color_fmt = inst->dpb_fmt;
 		params.dec.is_interlaced =
 			inst->pic_struct != HFI_INTERLACE_FRAME_PROGRESSIVE;
 	} else {
@@ -647,20 +668,20 @@ int venus_helper_get_bufreq(struct venus_inst *inst, u32 type,
 			    struct hfi_buffer_requirements *req)
 {
 	u32 ptype = HFI_PROPERTY_CONFIG_BUFFER_REQUIREMENTS;
+	enum hfi_version ver = inst->core->res->hfi_version;
 	union hfi_get_property hprop;
 	unsigned int i;
 	int ret;
 
-	if (req)
-		memset(req, 0, sizeof(*req));
+	memset(req, 0, sizeof(*req));
 
 	if (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2)
-		req->count_min = inst->fw_min_cnt;
+		hfi_bufreq_set_count_min(req, ver, inst->fw_min_cnt);
 
 	ret = platform_get_bufreq(inst, type, req);
 	if (!ret) {
 		if (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2)
-			inst->fw_min_cnt = req->count_min;
+			inst->fw_min_cnt = hfi_bufreq_get_count_min(req, ver);
 		return 0;
 	}
 
@@ -674,8 +695,7 @@ int venus_helper_get_bufreq(struct venus_inst *inst, u32 type,
 		if (hprop.bufreq[i].type != type)
 			continue;
 
-		if (req)
-			memcpy(req, &hprop.bufreq[i], sizeof(*req));
+		memcpy(req, &hprop.bufreq[i], sizeof(*req));
 		ret = 0;
 		break;
 	}
@@ -970,8 +990,8 @@ static u32 get_framesize_raw_p010(u32 width, u32 height)
 {
 	u32 y_plane, uv_plane, y_stride, uv_stride, y_sclines, uv_sclines;
 
-	y_stride = ALIGN(width * 2, 256);
-	uv_stride = ALIGN(width * 2, 256);
+	y_stride = ALIGN(width * 2, 128);
+	uv_stride = ALIGN(width * 2, 128);
 	y_sclines = ALIGN(height, 32);
 	uv_sclines = ALIGN((height + 1) >> 1, 16);
 	y_plane = y_stride * y_sclines;
@@ -1018,8 +1038,8 @@ static u32 get_framesize_raw_yuv420_tp10_ubwc(u32 width, u32 height)
 	u32 extradata = SZ_16K;
 	u32 size;
 
-	y_stride = ALIGN(ALIGN(width, 192) * 4 / 3, 256);
-	uv_stride = ALIGN(ALIGN(width, 192) * 4 / 3, 256);
+	y_stride = ALIGN(width * 4 / 3, 256);
+	uv_stride = ALIGN(width * 4 / 3, 256);
 	y_sclines = ALIGN(height, 16);
 	uv_sclines = ALIGN((height + 1) >> 1, 16);
 
@@ -1174,7 +1194,8 @@ int venus_helper_set_format_constraints(struct venus_inst *inst)
 	if (!IS_V6(inst->core))
 		return 0;
 
-	if (inst->opb_fmt == HFI_COLOR_FORMAT_NV12_UBWC)
+	if (inst->opb_fmt == HFI_COLOR_FORMAT_NV12_UBWC ||
+	    inst->opb_fmt == HFI_COLOR_FORMAT_YUV420_TP10_UBWC)
 		return 0;
 
 	pconstraint.buffer_type = HFI_BUFFER_OUTPUT2;
@@ -1745,25 +1766,20 @@ int venus_helper_get_out_fmts(struct venus_inst *inst, u32 v4l2_fmt,
 	if (!caps)
 		return -EINVAL;
 
-	if (inst->bit_depth == VIDC_BITDEPTH_10 &&
-	    inst->session_type == VIDC_SESSION_TYPE_DEC) {
-		found_ubwc =
-			find_fmt_from_caps(caps, HFI_BUFFER_OUTPUT,
-					   HFI_COLOR_FORMAT_YUV420_TP10_UBWC);
-		found = find_fmt_from_caps(caps, HFI_BUFFER_OUTPUT2,
-					   HFI_COLOR_FORMAT_NV12);
+	if (inst->bit_depth == VIDC_BITDEPTH_10 && inst->session_type == VIDC_SESSION_TYPE_DEC) {
+		found_ubwc = find_fmt_from_caps(caps, HFI_BUFFER_OUTPUT,
+						HFI_COLOR_FORMAT_YUV420_TP10_UBWC);
+		found = find_fmt_from_caps(caps, HFI_BUFFER_OUTPUT2, fmt);
 		if (found_ubwc && found) {
 			/*
-			 * Hard-code DPB buffers to be 10bit UBWC and decoder
-			 * output buffers in 8bit NV12 until V4L2 is able to
-			 * expose compressed/tiled formats to applications.
+			 * Hard-code DPB buffers to be 10bit UBWC
+			 * until V4L2 is able to expose compressed/tiled
+			 * formats to applications.
 			 */
 			*out_fmt = HFI_COLOR_FORMAT_YUV420_TP10_UBWC;
-			*out2_fmt = HFI_COLOR_FORMAT_NV12;
+			*out2_fmt = fmt;
 			return 0;
 		}
-
-		return -EINVAL;
 	}
 
 	if (ubwc) {
@@ -1796,6 +1812,30 @@ int venus_helper_get_out_fmts(struct venus_inst *inst, u32 v4l2_fmt,
 	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(venus_helper_get_out_fmts);
+
+bool venus_helper_check_format(struct venus_inst *inst, u32 v4l2_pixfmt)
+{
+	struct venus_core *core = inst->core;
+	u32 fmt = to_hfi_raw_fmt(v4l2_pixfmt);
+	struct hfi_plat_caps *caps;
+	bool found;
+
+	if (!fmt)
+		return false;
+
+	caps = venus_caps_by_codec(core, inst->hfi_codec, inst->session_type);
+	if (!caps)
+		return false;
+
+	found = find_fmt_from_caps(caps, HFI_BUFFER_OUTPUT, fmt);
+	if (found)
+		goto done;
+
+	found = find_fmt_from_caps(caps, HFI_BUFFER_OUTPUT2, fmt);
+done:
+	return found;
+}
+EXPORT_SYMBOL_GPL(venus_helper_check_format);
 
 int venus_helper_set_stride(struct venus_inst *inst,
 			    unsigned int width, unsigned int height)

@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/tlv.h>
@@ -618,7 +619,13 @@ int madera_out1_demux_put(struct snd_kcontrol *kcontrol,
 end:
 	snd_soc_dapm_mutex_unlock(dapm);
 
-	return snd_soc_dapm_mux_update_power(dapm, kcontrol, mux, e, NULL);
+	ret = snd_soc_dapm_mux_update_power(dapm, kcontrol, mux, e, NULL);
+	if (ret < 0) {
+		dev_err(madera->dev, "Failed to update demux power state: %d\n", ret);
+		return ret;
+	}
+
+	return change;
 }
 EXPORT_SYMBOL_GPL(madera_out1_demux_put);
 
@@ -893,7 +900,7 @@ static int madera_adsp_rate_put(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	const int adsp_num = e->shift_l;
 	const unsigned int item = ucontrol->value.enumerated.item[0];
-	int ret;
+	int ret = 0;
 
 	if (item >= e->items)
 		return -EINVAL;
@@ -910,10 +917,10 @@ static int madera_adsp_rate_put(struct snd_kcontrol *kcontrol,
 			 "Cannot change '%s' while in use by active audio paths\n",
 			 kcontrol->id.name);
 		ret = -EBUSY;
-	} else {
+	} else if (priv->adsp_rate_cache[adsp_num] != e->values[item]) {
 		/* Volatile register so defer until the codec is powered up */
 		priv->adsp_rate_cache[adsp_num] = e->values[item];
-		ret = 0;
+		ret = 1;
 	}
 
 	mutex_unlock(&priv->rate_lock);
@@ -3878,7 +3885,7 @@ static inline int madera_set_fll_clks(struct madera_fll *fll, int base, bool ena
 	return madera_set_fll_clks_reg(fll, ena,
 				       base + MADERA_FLL_CONTROL_6_OFFS,
 				       MADERA_FLL1_REFCLK_SRC_MASK,
-				       MADERA_FLL1_REFCLK_DIV_SHIFT);
+				       MADERA_FLL1_REFCLK_SRC_SHIFT);
 }
 
 static inline int madera_set_fllao_clks(struct madera_fll *fll, int base, bool ena)
@@ -3959,7 +3966,7 @@ static int madera_enable_fll(struct madera_fll *fll)
 	}
 
 	madera_fll_dbg(fll, "Enabling FLL, initially %s\n",
-		       already_enabled ? "enabled" : "disabled");
+		       str_enabled_disabled(already_enabled));
 
 	if (fll->fout < MADERA_FLL_MIN_FOUT ||
 	    fll->fout > MADERA_FLL_MAX_FOUT) {
@@ -4246,7 +4253,7 @@ static int madera_enable_fll_ao(struct madera_fll *fll,
 		pm_runtime_get_sync(madera->dev);
 
 	madera_fll_dbg(fll, "Enabling FLL_AO, initially %s\n",
-		       already_enabled ? "enabled" : "disabled");
+		       str_enabled_disabled(already_enabled));
 
 	/* FLL_AO_HOLD must be set before configuring any registers */
 	regmap_update_bits(fll->madera->regmap,
@@ -4570,7 +4577,7 @@ static int madera_fllhj_enable(struct madera_fll *fll)
 		pm_runtime_get_sync(madera->dev);
 
 	madera_fll_dbg(fll, "Enabling FLL, initially %s\n",
-		       already_enabled ? "enabled" : "disabled");
+		       str_enabled_disabled(already_enabled));
 
 	/* FLLn_HOLD must be set before configuring any registers */
 	regmap_update_bits(fll->madera->regmap,

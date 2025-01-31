@@ -10,13 +10,12 @@
  *
  * (C) Copyright 2002-2004 by David Brownell
  * All Rights Reserved.
- *
- * This software is licensed under the GNU GPL version 2.
  */
 
 #ifndef __LINUX_USB_GADGET_H
 #define __LINUX_USB_GADGET_H
 
+#include <linux/configfs.h>
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -53,6 +52,7 @@ struct usb_ep;
  * @short_not_ok: When reading data, makes short packets be
  *     treated as errors (queue stops advancing till cleanup).
  * @dma_mapped: Indicates if request has been mapped to DMA (internal)
+ * @sg_was_mapped: Set if the scatterlist has been mapped before the request
  * @complete: Function called when request completes, so this request and
  *	its buffer may be re-used.  The function will always be called with
  *	interrupts disabled, and it must not sleep.
@@ -112,6 +112,7 @@ struct usb_request {
 	unsigned		zero:1;
 	unsigned		short_not_ok:1;
 	unsigned		dma_mapped:1;
+	unsigned		sg_was_mapped:1;
 
 	void			(*complete)(struct usb_ep *ep,
 					struct usb_request *req);
@@ -228,18 +229,18 @@ struct usb_ep {
 
 	const char		*name;
 	const struct usb_ep_ops	*ops;
+	const struct usb_endpoint_descriptor	*desc;
+	const struct usb_ss_ep_comp_descriptor	*comp_desc;
 	struct list_head	ep_list;
 	struct usb_ep_caps	caps;
 	bool			claimed;
 	bool			enabled;
-	unsigned		maxpacket:16;
-	unsigned		maxpacket_limit:16;
-	unsigned		max_streams:16;
 	unsigned		mult:2;
 	unsigned		maxburst:5;
 	u8			address;
-	const struct usb_endpoint_descriptor	*desc;
-	const struct usb_ss_ep_comp_descriptor	*comp_desc;
+	u16			maxpacket;
+	u16			maxpacket_limit;
+	u16			max_streams;
 };
 
 /*-------------------------------------------------------------------------*/
@@ -311,6 +312,8 @@ struct usb_udc;
 struct usb_gadget_ops {
 	int	(*get_frame)(struct usb_gadget *);
 	int	(*wakeup)(struct usb_gadget *);
+	int	(*func_wakeup)(struct usb_gadget *gadget, int intf_id);
+	int	(*set_remote_wakeup)(struct usb_gadget *, int set);
 	int	(*set_selfpowered) (struct usb_gadget *, int is_selfpowered);
 	int	(*vbus_session) (struct usb_gadget *, int is_active);
 	int	(*vbus_draw) (struct usb_gadget *, unsigned mA);
@@ -385,7 +388,10 @@ struct usb_gadget_ops {
  * @connected: True if gadget is connected.
  * @lpm_capable: If the gadget max_speed is FULL or HIGH, this flag
  *	indicates that it supports LPM as per the LPM ECN & errata.
+ * @wakeup_capable: True if gadget is capable of sending remote wakeup.
+ * @wakeup_armed: True if gadget is armed by the host for remote wakeup.
  * @irq: the interrupt number for device controller.
+ * @id_number: a unique ID number for ensuring that gadget names are distinct
  *
  * Gadgets have a mostly-portable "gadget driver" implementing device
  * functions, handling all usb configurations and interfaces.  Gadget
@@ -445,7 +451,10 @@ struct usb_gadget {
 	unsigned			deactivated:1;
 	unsigned			connected:1;
 	unsigned			lpm_capable:1;
+	unsigned			wakeup_capable:1;
+	unsigned			wakeup_armed:1;
 	int				irq;
+	int				id_number;
 };
 #define work_to_gadget(w)	(container_of((w), struct usb_gadget, work))
 
@@ -600,6 +609,7 @@ static inline int gadget_is_otg(struct usb_gadget *g)
 #if IS_ENABLED(CONFIG_USB_GADGET)
 int usb_gadget_frame_number(struct usb_gadget *gadget);
 int usb_gadget_wakeup(struct usb_gadget *gadget);
+int usb_gadget_set_remote_wakeup(struct usb_gadget *gadget, int set);
 int usb_gadget_set_selfpowered(struct usb_gadget *gadget);
 int usb_gadget_clear_selfpowered(struct usb_gadget *gadget);
 int usb_gadget_vbus_connect(struct usb_gadget *gadget);
@@ -614,6 +624,8 @@ int usb_gadget_check_config(struct usb_gadget *gadget);
 static inline int usb_gadget_frame_number(struct usb_gadget *gadget)
 { return 0; }
 static inline int usb_gadget_wakeup(struct usb_gadget *gadget)
+{ return 0; }
+static inline int usb_gadget_set_remote_wakeup(struct usb_gadget *gadget, int set)
 { return 0; }
 static inline int usb_gadget_set_selfpowered(struct usb_gadget *gadget)
 { return 0; }
@@ -664,9 +676,9 @@ static inline int usb_gadget_check_config(struct usb_gadget *gadget)
  * @driver: Driver model state for this driver.
  * @udc_name: A name of UDC this driver should be bound to. If udc_name is NULL,
  *	this driver will be bound to any available UDC.
- * @pending: UDC core private data used for deferred probe of this driver.
- * @match_existing_only: If udc is not found, return an error and don't add this
- *      gadget driver to list of pending driver
+ * @match_existing_only: If udc is not found, return an error and fail
+ *	the driver registration
+ * @is_bound: Allow a driver to be bound to only one gadget
  *
  * Devices are disabled till a gadget driver successfully bind()s, which
  * means the driver will handle setup() requests needed to enumerate (and
@@ -701,6 +713,15 @@ static inline int usb_gadget_check_config(struct usb_gadget *gadget)
  * get_interface.  Setting a configuration (or interface) is where
  * endpoints should be activated or (config 0) shut down.
  *
+ * The gadget driver's setup() callback does not have to queue a response to
+ * ep0 within the setup() call, the driver can do it after setup() returns.
+ * The UDC driver must wait until such a response is queued before proceeding
+ * with the data/status stages of the control transfer.
+ *
+ * NOTE: Currently, a number of UDC drivers rely on USB_GADGET_DELAYED_STATUS
+ * being returned from the setup() callback, which is a bug. See the comment
+ * next to USB_GADGET_DELAYED_STATUS for details.
+ *
  * (Note that only the default control endpoint is supported.  Neither
  * hosts nor devices generally support control traffic except to ep0.)
  *
@@ -729,8 +750,8 @@ struct usb_gadget_driver {
 	struct device_driver	driver;
 
 	char			*udc_name;
-	struct list_head	pending;
 	unsigned                match_existing_only:1;
+	bool			is_bound:1;
 };
 
 
@@ -740,22 +761,30 @@ struct usb_gadget_driver {
 /* driver modules register and unregister, as usual.
  * these calls must be made in a context that can sleep.
  *
- * these will usually be implemented directly by the hardware-dependent
- * usb bus interface driver, which will only support a single driver.
+ * A gadget driver can be bound to only one gadget at a time.
  */
 
 /**
- * usb_gadget_probe_driver - probe a gadget driver
+ * usb_gadget_register_driver_owner - register a gadget driver
  * @driver: the driver being registered
+ * @owner: the driver module
+ * @mod_name: the driver module's build name
  * Context: can sleep
  *
  * Call this in your gadget driver's module initialization function,
- * to tell the underlying usb controller driver about your driver.
+ * to tell the underlying UDC controller driver about your driver.
  * The @bind() function will be called to bind it to a gadget before this
  * registration call returns.  It's expected that the @bind() function will
  * be in init sections.
+ *
+ * Use the macro defined below instead of calling this directly.
  */
-int usb_gadget_probe_driver(struct usb_gadget_driver *driver);
+int usb_gadget_register_driver_owner(struct usb_gadget_driver *driver,
+		struct module *owner, const char *mod_name);
+
+/* use a define to avoid include chaining to get THIS_MODULE & friends */
+#define usb_gadget_register_driver(driver) \
+	usb_gadget_register_driver_owner(driver, THIS_MODULE, KBUILD_MODNAME)
 
 /**
  * usb_gadget_unregister_driver - unregister a gadget driver
@@ -812,6 +841,16 @@ int usb_gadget_get_string(const struct usb_gadget_strings *table, int id, u8 *bu
 
 /* check if the given language identifier is valid */
 bool usb_validate_langid(u16 langid);
+
+struct gadget_string {
+	struct config_item item;
+	struct list_head list;
+	char string[USB_MAX_STRING_LEN];
+	struct usb_string usb_string;
+};
+
+#define to_gadget_string(str_item)\
+container_of(str_item, struct gadget_string, item)
 
 /*-------------------------------------------------------------------------*/
 

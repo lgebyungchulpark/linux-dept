@@ -37,6 +37,7 @@
 #define CFI_SECTIONS
 #endif
 
+#ifdef __ASSEMBLY__
 /*
  * LEAF - declare leaf routine
  */
@@ -121,6 +122,8 @@ symbol		=	value
 #else
 #define ASM_PRINT(string)
 #endif
+
+#endif /* __ASSEMBLY__ */
 
 /*
  * Stack alignment
@@ -285,7 +288,7 @@ symbol		=	value
 
 #define PTR_SCALESHIFT	2
 
-#define PTR		.word
+#define PTR_WD		.word
 #define PTRSIZE		4
 #define PTRLOG		2
 #endif
@@ -310,7 +313,7 @@ symbol		=	value
 
 #define PTR_SCALESHIFT	3
 
-#define PTR		.dword
+#define PTR_WD		.dword
 #define PTRSIZE		8
 #define PTRLOG		3
 #endif
@@ -336,7 +339,7 @@ symbol		=	value
  */
 #ifdef CONFIG_WAR_R10000_LLSC
 # define SC_BEQZ	beqzl
-#elif MIPS_ISA_REV >= 6
+#elif !defined(CONFIG_CC_HAS_BROKEN_INLINE_COMPAT_BRANCH) && MIPS_ISA_REV >= 6
 # define SC_BEQZ	beqzc
 #else
 # define SC_BEQZ	beqz

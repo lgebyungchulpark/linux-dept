@@ -24,11 +24,10 @@
 #include <linux/usb/usb_phy_generic.h>
 #include <linux/platform_data/usb-omap.h>
 #include <linux/sizes.h>
+#include <linux/string_choices.h>
 
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/usb/of.h>
 
 #include <linux/debugfs.h>
@@ -380,7 +379,7 @@ static irqreturn_t dsps_interrupt(int irq, void *hci)
 
 		/* NOTE: this must complete power-on within 100 ms. */
 		dev_dbg(musb->controller, "VBUS %s (%s)%s, devctl %02x\n",
-				drvvbus ? "on" : "off",
+				str_on_off(drvvbus),
 				usb_otg_state_string(musb->xceiv->otg->state),
 				err ? " ERROR" : "",
 				devctl);
@@ -851,7 +850,7 @@ static int dsps_setup_optional_vbus_irq(struct platform_device *pdev,
 
 	error = devm_request_threaded_irq(glue->dev, glue->vbus_irq,
 					  NULL, dsps_vbus_threaded_irq,
-					  IRQF_ONESHOT,
+					  IRQF_SHARED,
 					  "vbus", glue);
 	if (error) {
 		glue->vbus_irq = 0;
@@ -915,7 +914,7 @@ err:
 	return ret;
 }
 
-static int dsps_remove(struct platform_device *pdev)
+static void dsps_remove(struct platform_device *pdev)
 {
 	struct dsps_glue *glue = platform_get_drvdata(pdev);
 
@@ -923,8 +922,6 @@ static int dsps_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 	iounmap(glue->usbss_base);
-
-	return 0;
 }
 
 static const struct dsps_musb_wrapper am33xx_driver_data = {

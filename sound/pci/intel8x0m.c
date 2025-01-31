@@ -423,7 +423,6 @@ static inline void snd_intel8x0m_update(struct intel8x0m *chip, struct ichdev *i
 
 	civ = igetbyte(chip, port + ICH_REG_OFF_CIV);
 	if (civ == ichdev->civ) {
-		// snd_printd("civ same %d\n", civ);
 		step = 1;
 		ichdev->civ++;
 		ichdev->civ &= ICH_REG_LVI_MASK;
@@ -431,8 +430,6 @@ static inline void snd_intel8x0m_update(struct intel8x0m *chip, struct ichdev *i
 		step = civ - ichdev->civ;
 		if (step < 0)
 			step += ICH_REG_LVI_MASK + 1;
-		// if (step != 1)
-		//	snd_printd("step = %d, %d -> %d\n", step, ichdev->civ, civ);
 		ichdev->civ = civ;
 	}
 
@@ -918,7 +915,7 @@ static int snd_intel8x0m_ich_chip_init(struct intel8x0m *chip, int probing)
 	}
 
 	if (chip->device_type == DEVICE_SIS) {
-		/* unmute the output on SIS7012 */
+		/* unmute the output on SIS7013 */
 		iputword(chip, 0x4c, igetword(chip, 0x4c) | 1);
 	}
 
@@ -965,7 +962,6 @@ static void snd_intel8x0m_free(struct snd_card *card)
 		free_irq(chip->irq, chip);
 }
 
-#ifdef CONFIG_PM_SLEEP
 /*
  * power management
  */
@@ -1006,11 +1002,7 @@ static int intel8x0m_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(intel8x0m_pm, intel8x0m_suspend, intel8x0m_resume);
-#define INTEL8X0M_PM_OPS	&intel8x0m_pm
-#else
-#define INTEL8X0M_PM_OPS	NULL
-#endif /* CONFIG_PM_SLEEP */
+static DEFINE_SIMPLE_DEV_PM_OPS(intel8x0m_pm, intel8x0m_suspend, intel8x0m_resume);
 
 static void snd_intel8x0m_proc_read(struct snd_info_entry * entry,
 				   struct snd_info_buffer *buffer)
@@ -1178,8 +1170,8 @@ static struct shortname_table {
 	{ 0 },
 };
 
-static int snd_intel8x0m_probe(struct pci_dev *pci,
-			       const struct pci_device_id *pci_id)
+static int __snd_intel8x0m_probe(struct pci_dev *pci,
+				 const struct pci_device_id *pci_id)
 {
 	struct snd_card *card;
 	struct intel8x0m *chip;
@@ -1225,12 +1217,18 @@ static int snd_intel8x0m_probe(struct pci_dev *pci,
 	return 0;
 }
 
+static int snd_intel8x0m_probe(struct pci_dev *pci,
+			       const struct pci_device_id *pci_id)
+{
+	return snd_card_free_on_error(&pci->dev, __snd_intel8x0m_probe(pci, pci_id));
+}
+
 static struct pci_driver intel8x0m_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = snd_intel8x0m_ids,
 	.probe = snd_intel8x0m_probe,
 	.driver = {
-		.pm = INTEL8X0M_PM_OPS,
+		.pm = &intel8x0m_pm,
 	},
 };
 

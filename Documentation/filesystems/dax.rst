@@ -23,11 +23,11 @@ on it as usual.  The `DAX` code currently only supports files with a block
 size equal to your kernel's `PAGE_SIZE`, so you may need to specify a block
 size when creating the filesystem.
 
-Currently 4 filesystems support `DAX`: ext2, ext4, xfs and virtiofs.
+Currently 5 filesystems support `DAX`: ext2, ext4, xfs, virtiofs and erofs.
 Enabling `DAX` on them is different.
 
-Enabling DAX on ext2
---------------------
+Enabling DAX on ext2 and erofs
+------------------------------
 
 When mounting the filesystem, use the ``-o dax`` option on the command line or
 add 'dax' to the options in ``/etc/fstab``.  This works to enable `DAX` on all files
@@ -291,7 +291,7 @@ The DAX code does not work correctly on architectures which have virtually
 mapped caches such as ARM, MIPS and SPARC.
 
 Calling :c:func:`get_user_pages()` on a range of user memory that has been
-mmaped from a `DAX` file will fail when there are no 'struct page' to describe
+mmapped from a `DAX` file will fail when there are no 'struct page' to describe
 those pages.  This problem has been addressed in some device drivers
 by adding optional struct page support for pages under the control of
 the driver (see `CONFIG_NVDIMM_PFN` in ``drivers/nvdimm`` for an example of

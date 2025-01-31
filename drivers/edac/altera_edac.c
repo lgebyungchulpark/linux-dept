@@ -22,6 +22,7 @@
 #include <linux/of_platform.h>
 #include <linux/panic_notifier.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
@@ -279,7 +280,6 @@ release:
 
 static int altr_sdram_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *id;
 	struct edac_mc_layer layers[2];
 	struct mem_ctl_info *mci;
 	struct altr_sdram_mc_data *drvdata;
@@ -289,10 +289,6 @@ static int altr_sdram_probe(struct platform_device *pdev)
 	u32 read_reg;
 	int irq, irq2, res = 0;
 	unsigned long mem_size, irqflags = 0;
-
-	id = of_match_device(altr_sdram_ctrl_of_match, &pdev->dev);
-	if (!id)
-		return -ENODEV;
 
 	/* Grab the register range from the sdr controller in device tree */
 	mc_vbase = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
@@ -304,8 +300,7 @@ static int altr_sdram_probe(struct platform_device *pdev)
 	}
 
 	/* Check specific dependencies for the module */
-	priv = of_match_node(altr_sdram_ctrl_of_match,
-			     pdev->dev.of_node)->data;
+	priv = device_get_match_data(&pdev->dev);
 
 	/* Validate the SDRAM controller has ECC enabled */
 	if (regmap_read(mc_vbase, priv->ecc_ctrl_offset, &read_reg) ||
@@ -350,7 +345,7 @@ static int altr_sdram_probe(struct platform_device *pdev)
 	if (irq < 0) {
 		edac_printk(KERN_ERR, EDAC_MC,
 			    "No irq %d in DT\n", irq);
-		return -ENODEV;
+		return irq;
 	}
 
 	/* Arria10 has a 2nd IRQ */
@@ -459,15 +454,13 @@ free:
 	return res;
 }
 
-static int altr_sdram_remove(struct platform_device *pdev)
+static void altr_sdram_remove(struct platform_device *pdev)
 {
 	struct mem_ctl_info *mci = platform_get_drvdata(pdev);
 
 	edac_mc_del_mc(&pdev->dev);
 	edac_mc_free(mci);
 	platform_set_drvdata(pdev, NULL);
-
-	return 0;
 }
 
 /*
@@ -744,8 +737,7 @@ static int altr_edac_device_probe(struct platform_device *pdev)
 	}
 
 	dci = edac_device_alloc_ctl_info(sizeof(*drvdata), ecc_name,
-					 1, ecc_name, 1, 0, NULL, 0,
-					 dev_instance++);
+					 1, ecc_name, 1, 0, dev_instance++);
 
 	if (!dci) {
 		edac_printk(KERN_ERR, EDAC_DEVICE,
@@ -812,7 +804,7 @@ fail:
 	return res;
 }
 
-static int altr_edac_device_remove(struct platform_device *pdev)
+static void altr_edac_device_remove(struct platform_device *pdev)
 {
 	struct edac_device_ctl_info *dci = platform_get_drvdata(pdev);
 	struct altr_edac_device_dev *drvdata = dci->pvt_info;
@@ -820,8 +812,6 @@ static int altr_edac_device_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(drvdata->debugfs_dir);
 	edac_device_del_device(&pdev->dev);
 	edac_device_free_ctl_info(dci);
-
-	return 0;
 }
 
 static struct platform_driver altr_edac_device_driver = {
@@ -1083,8 +1073,46 @@ static int __init __maybe_unused altr_init_a10_ecc_device_type(char *compat)
 
 #ifdef CONFIG_EDAC_ALTERA_SDRAM
 
+/*
+ * A legacy U-Boot bug only enabled memory mapped access to the ECC Enable
+ * register if ECC is enabled. Linux checks the ECC Enable register to
+ * determine ECC status.
+ * Use an SMC call (which always works) to determine ECC enablement.
+ */
+static int altr_s10_sdram_check_ecc_deps(struct altr_edac_device_dev *device)
+{
+	const struct edac_device_prv_data *prv = device->data;
+	unsigned long sdram_ecc_addr;
+	struct arm_smccc_res result;
+	struct device_node *np;
+	phys_addr_t sdram_addr;
+	u32 read_reg;
+	int ret;
+
+	np = of_find_compatible_node(NULL, NULL, "altr,sdr-ctl");
+	if (!np)
+		goto sdram_err;
+
+	sdram_addr = of_translate_address(np, of_get_address(np, 0,
+							     NULL, NULL));
+	of_node_put(np);
+	sdram_ecc_addr = (unsigned long)sdram_addr + prv->ecc_en_ofst;
+	arm_smccc_smc(INTEL_SIP_SMC_REG_READ, sdram_ecc_addr,
+		      0, 0, 0, 0, 0, 0, &result);
+	read_reg = (unsigned int)result.a1;
+	ret = (int)result.a0;
+	if (!ret && (read_reg & prv->ecc_enable_mask))
+		return 0;
+
+sdram_err:
+	edac_printk(KERN_ERR, EDAC_DEVICE,
+		    "%s: No ECC present or ECC disabled.\n",
+		    device->edac_dev_name);
+	return -ENODEV;
+}
+
 static const struct edac_device_prv_data s10_sdramecc_data = {
-	.setup = altr_check_ecc_deps,
+	.setup = altr_s10_sdram_check_ecc_deps,
 	.ce_clear_mask = ALTR_S10_ECC_SERRPENA,
 	.ue_clear_mask = ALTR_S10_ECC_DERRPENA,
 	.ecc_enable_mask = ALTR_S10_ECC_EN,
@@ -1485,7 +1513,7 @@ static int altr_portb_setup(struct altr_edac_device_dev *device)
 	/* Create the PortB EDAC device */
 	edac_idx = edac_device_alloc_index();
 	dci = edac_device_alloc_ctl_info(sizeof(*altdev), ecc_name, 1,
-					 ecc_name, 1, 0, NULL, 0, edac_idx);
+					 ecc_name, 1, 0, edac_idx);
 	if (!dci) {
 		edac_printk(KERN_ERR, EDAC_DEVICE,
 			    "%s: Unable to allocate PortB EDAC device\n",
@@ -1892,8 +1920,7 @@ static int altr_edac_a10_device_add(struct altr_arria10_edac *edac,
 
 	edac_idx = edac_device_alloc_index();
 	dci = edac_device_alloc_ctl_info(sizeof(*altdev), ecc_name,
-					 1, ecc_name, 1, 0, NULL, 0,
-					 edac_idx);
+					 1, ecc_name, 1, 0, edac_idx);
 
 	if (!dci) {
 		edac_printk(KERN_ERR, EDAC_DEVICE,
@@ -2111,10 +2138,8 @@ static int altr_edac_a10_probe(struct platform_device *pdev)
 	}
 
 	edac->sb_irq = platform_get_irq(pdev, 0);
-	if (edac->sb_irq < 0) {
-		dev_err(&pdev->dev, "No SBERR IRQ resource\n");
+	if (edac->sb_irq < 0)
 		return edac->sb_irq;
-	}
 
 	irq_set_chained_handler_and_data(edac->sb_irq,
 					 altr_edac_a10_irq_handler,
@@ -2146,10 +2171,9 @@ static int altr_edac_a10_probe(struct platform_device *pdev)
 	}
 #else
 	edac->db_irq = platform_get_irq(pdev, 1);
-	if (edac->db_irq < 0) {
-		dev_err(&pdev->dev, "No DBERR IRQ resource\n");
+	if (edac->db_irq < 0)
 		return edac->db_irq;
-	}
+
 	irq_set_chained_handler_and_data(edac->db_irq,
 					 altr_edac_a10_irq_handler, edac);
 #endif
@@ -2188,6 +2212,5 @@ static struct platform_driver altr_edac_a10_driver = {
 };
 module_platform_driver(altr_edac_a10_driver);
 
-MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Thor Thayer");
 MODULE_DESCRIPTION("EDAC Driver for Altera Memories");

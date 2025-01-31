@@ -45,6 +45,9 @@
 #define SEC_TO_SAMPLE(S)		(S * 4)
 
 #define NBR_AVG_SAMPLES			20
+#define WAIT_FOR_INST_CURRENT_MAX	70
+/* Currents higher than -500mA (dissipating) will make compensation unstable */
+#define IGNORE_VBAT_HIGHCUR		-500000
 
 #define LOW_BAT_CHECK_INTERVAL		(HZ / 16) /* 62.5 ms */
 
@@ -146,11 +149,6 @@ struct ab8500_fg_flags {
 	bool batt_id_received;
 };
 
-struct inst_curr_result_list {
-	struct list_head list;
-	int *result;
-};
-
 /**
  * struct ab8500_fg - ab8500 FG device information
  * @dev:		Pointer to the structure device
@@ -210,6 +208,7 @@ struct ab8500_fg {
 	int init_cnt;
 	int low_bat_cnt;
 	int nbr_cceoc_irq_cnt;
+	u32 line_impedance_uohm;
 	bool recovery_needed;
 	bool high_curr_mode;
 	bool init_capacity;
@@ -408,7 +407,7 @@ static int ab8500_fg_add_cap_sample(struct ab8500_fg *di, int sample)
  * ab8500_fg_clear_cap_samples() - Clear average filter
  * @di:		pointer to the ab8500_fg structure
  *
- * The capacity filter is is reset to zero.
+ * The capacity filter is reset to zero.
  */
 static void ab8500_fg_clear_cap_samples(struct ab8500_fg *di)
 {
@@ -874,27 +873,41 @@ static int ab8500_fg_uncomp_volt_to_capacity(struct ab8500_fg *di)
 /**
  * ab8500_fg_battery_resistance() - Returns the battery inner resistance
  * @di:		pointer to the ab8500_fg structure
+ * @vbat_uncomp_uv: Uncompensated VBAT voltage
  *
  * Returns battery inner resistance added with the fuel gauge resistor value
  * to get the total resistance in the whole link from gnd to bat+ node
  * in milliohm.
  */
-static int ab8500_fg_battery_resistance(struct ab8500_fg *di)
+static int ab8500_fg_battery_resistance(struct ab8500_fg *di, int vbat_uncomp_uv)
 {
 	struct power_supply_battery_info *bi = di->bm->bi;
 	int resistance_percent = 0;
 	int resistance;
 
-	resistance_percent = power_supply_temp2resist_simple(bi->resist_table,
-						 bi->resist_table_size,
-						 di->bat_temp / 10);
 	/*
-	 * We get a percentage of factory resistance here so first get
-	 * the factory resistance in milliohms then calculate how much
-	 * resistance we have at this temperature.
+	 * Determine the resistance at this voltage. First try VBAT-to-Ri else
+	 * just infer it from the surrounding temperature, if nothing works just
+	 * use the internal resistance.
 	 */
-	resistance = (bi->factory_internal_resistance_uohm / 1000);
-	resistance = resistance * resistance_percent / 100;
+	if (power_supply_supports_vbat2ri(bi)) {
+		resistance = power_supply_vbat2ri(bi, vbat_uncomp_uv, di->flags.charging);
+		/* Convert to milliohm */
+		resistance = resistance / 1000;
+	} else if (power_supply_supports_temp2ri(bi)) {
+		resistance_percent = power_supply_temp2resist_simple(bi->resist_table,
+								     bi->resist_table_size,
+								     di->bat_temp / 10);
+		/* Convert to milliohm */
+		resistance = bi->factory_internal_resistance_uohm / 1000;
+		resistance = resistance * resistance_percent / 100;
+	} else {
+		/* Last fallback */
+		resistance = bi->factory_internal_resistance_uohm / 1000;
+	}
+
+	/* Compensate for line impedance */
+	resistance += (di->line_impedance_uohm / 1000);
 
 	dev_dbg(di->dev, "%s Temp: %d battery internal resistance: %d"
 	    " fg resistance %d, total: %d (mOhm)\n",
@@ -908,6 +921,60 @@ static int ab8500_fg_battery_resistance(struct ab8500_fg *di)
 }
 
 /**
+ * ab8500_load_comp_fg_bat_voltage() - get load compensated battery voltage
+ * @di:		pointer to the ab8500_fg structure
+ * @always:	always return a voltage, also uncompensated
+ *
+ * Returns compensated battery voltage (on success) else error code.
+ * If always is specified, we always return a voltage but it may be
+ * uncompensated.
+ */
+static int ab8500_load_comp_fg_bat_voltage(struct ab8500_fg *di, bool always)
+{
+	int i = 0;
+	int vbat_uv = 0;
+	int rcomp;
+
+	/* Average the instant current to get a stable current measurement */
+	ab8500_fg_inst_curr_start(di);
+
+	do {
+		vbat_uv += ab8500_fg_bat_voltage(di);
+		i++;
+		usleep_range(5000, 6000);
+	} while (!ab8500_fg_inst_curr_done(di) &&
+		 i <= WAIT_FOR_INST_CURRENT_MAX);
+
+	if (i > WAIT_FOR_INST_CURRENT_MAX) {
+		dev_err(di->dev,
+			"TIMEOUT: return uncompensated measurement of VBAT\n");
+		di->vbat_uv = vbat_uv / i;
+		return di->vbat_uv;
+	}
+
+	ab8500_fg_inst_curr_finalize(di, &di->inst_curr_ua);
+
+	/*
+	 * If there is too high current dissipation, the compensation cannot be
+	 * trusted so return an error unless we must return something here, as
+	 * enforced by the "always" parameter.
+	 */
+	if (!always && di->inst_curr_ua < IGNORE_VBAT_HIGHCUR)
+		return -EINVAL;
+
+	vbat_uv = vbat_uv / i;
+
+	/* Next we apply voltage compensation from internal resistance */
+	rcomp = ab8500_fg_battery_resistance(di, vbat_uv);
+	vbat_uv = vbat_uv - (di->inst_curr_ua * rcomp) / 1000;
+
+	/* Always keep this state at latest measurement */
+	di->vbat_uv = vbat_uv;
+
+	return vbat_uv;
+}
+
+/**
  * ab8500_fg_load_comp_volt_to_capacity() - Load compensated voltage based capacity
  * @di:		pointer to the ab8500_fg structure
  *
@@ -916,32 +983,9 @@ static int ab8500_fg_battery_resistance(struct ab8500_fg *di)
  */
 static int ab8500_fg_load_comp_volt_to_capacity(struct ab8500_fg *di)
 {
-	int vbat_comp_uv, res;
-	int i = 0;
-	int vbat_uv = 0;
+	int vbat_comp_uv;
 
-	ab8500_fg_inst_curr_start(di);
-
-	do {
-		vbat_uv += ab8500_fg_bat_voltage(di);
-		i++;
-		usleep_range(5000, 6000);
-	} while (!ab8500_fg_inst_curr_done(di));
-
-	ab8500_fg_inst_curr_finalize(di, &di->inst_curr_ua);
-
-	di->vbat_uv = vbat_uv / i;
-	res = ab8500_fg_battery_resistance(di);
-
-	/*
-	 * Use Ohms law to get the load compensated voltage.
-	 * Divide by 1000 to get from milliohms to ohms.
-	 */
-	vbat_comp_uv = di->vbat_uv - (di->inst_curr_ua * res) / 1000;
-
-	dev_dbg(di->dev, "%s Measured Vbat: %d uV,Compensated Vbat %d uV, "
-		"R: %d mOhm, Current: %d uA Vbat Samples: %d\n",
-		__func__, di->vbat_uv, vbat_comp_uv, res, di->inst_curr_ua, i);
+	vbat_comp_uv = ab8500_load_comp_fg_bat_voltage(di, true);
 
 	return ab8500_fg_volt_to_capacity(di, vbat_comp_uv);
 }
@@ -1039,20 +1083,16 @@ static int ab8500_fg_calc_cap_charging(struct ab8500_fg *di)
 /**
  * ab8500_fg_calc_cap_discharge_voltage() - Capacity in discharge with voltage
  * @di:		pointer to the ab8500_fg structure
- * @comp:	if voltage should be load compensated before capacity calc
  *
- * Return the capacity in mAh based on the battery voltage. The voltage can
- * either be load compensated or not. This value is added to the filter and a
- * new mean value is calculated and returned.
+ * Return the capacity in mAh based on the load compensated battery voltage.
+ * This value is added to the filter and a new mean value is calculated and
+ * returned.
  */
-static int ab8500_fg_calc_cap_discharge_voltage(struct ab8500_fg *di, bool comp)
+static int ab8500_fg_calc_cap_discharge_voltage(struct ab8500_fg *di)
 {
 	int permille, mah;
 
-	if (comp)
-		permille = ab8500_fg_load_comp_volt_to_capacity(di);
-	else
-		permille = ab8500_fg_uncomp_volt_to_capacity(di);
+	permille = ab8500_fg_load_comp_volt_to_capacity(di);
 
 	mah = ab8500_fg_convert_permille_to_mah(di, permille);
 
@@ -1529,7 +1569,7 @@ static void ab8500_fg_algorithm_discharging(struct ab8500_fg *di)
 
 		/* Discard the first [x] seconds */
 		if (di->init_cnt > di->bm->fg_params->init_discard_time) {
-			ab8500_fg_calc_cap_discharge_voltage(di, true);
+			ab8500_fg_calc_cap_discharge_voltage(di);
 
 			ab8500_fg_check_capacity_limits(di, true);
 		}
@@ -1612,7 +1652,7 @@ static void ab8500_fg_algorithm_discharging(struct ab8500_fg *di)
 				break;
 			}
 
-			ab8500_fg_calc_cap_discharge_voltage(di, true);
+			ab8500_fg_calc_cap_discharge_voltage(di);
 		} else {
 			mutex_lock(&di->cc_lock);
 			if (!di->flags.conv_done) {
@@ -1646,7 +1686,7 @@ static void ab8500_fg_algorithm_discharging(struct ab8500_fg *di)
 		break;
 
 	case AB8500_FG_DISCHARGE_WAKEUP:
-		ab8500_fg_calc_cap_discharge_voltage(di, true);
+		ab8500_fg_calc_cap_discharge_voltage(di);
 
 		di->fg_samples = SEC_TO_SAMPLE(
 			di->bm->fg_params->accu_high_curr);
@@ -1765,7 +1805,7 @@ static void ab8500_fg_periodic_work(struct work_struct *work)
 
 	if (di->init_capacity) {
 		/* Get an initial capacity calculation */
-		ab8500_fg_calc_cap_discharge_voltage(di, true);
+		ab8500_fg_calc_cap_discharge_voltage(di);
 		ab8500_fg_check_capacity_limits(di, true);
 		di->init_capacity = false;
 
@@ -2134,10 +2174,9 @@ static int ab8500_fg_get_property(struct power_supply *psy,
 	return 0;
 }
 
-static int ab8500_fg_get_ext_psy_data(struct device *dev, void *data)
+static int ab8500_fg_get_ext_psy_data(struct power_supply *ext, void *data)
 {
 	struct power_supply *psy;
-	struct power_supply *ext = dev_get_drvdata(dev);
 	const char **supplicants = (const char **)ext->supplied_to;
 	struct ab8500_fg *di;
 	struct power_supply_battery_info *bi;
@@ -2211,10 +2250,6 @@ static int ab8500_fg_get_ext_psy_data(struct device *dev, void *data)
 				if (!di->flags.batt_id_received &&
 				    (bi && (bi->technology !=
 					    POWER_SUPPLY_TECHNOLOGY_UNKNOWN))) {
-					const struct ab8500_battery_type *b;
-
-					b = di->bm->bat_type;
-
 					di->flags.batt_id_received = true;
 
 					di->bat_cap.max_mah_design =
@@ -2263,7 +2298,13 @@ static int ab8500_fg_init_hw_registers(struct ab8500_fg *di)
 {
 	int ret;
 
-	/* Set VBAT OVV threshold */
+	/*
+	 * Set VBAT OVV (overvoltage) threshold to 4.75V (typ) this is what
+	 * the hardware supports, nothing else can be configured in hardware.
+	 * See this as an "outer limit" where the charger will certainly
+	 * shut down. Other (lower) overvoltage levels need to be implemented
+	 * in software.
+	 */
 	ret = abx500_mask_and_set_register_interruptible(di->dev,
 		AB8500_CHARGER,
 		AB8500_BATT_OVV,
@@ -2360,10 +2401,7 @@ out:
  */
 static void ab8500_fg_external_power_changed(struct power_supply *psy)
 {
-	struct ab8500_fg *di = power_supply_get_drvdata(psy);
-
-	class_for_each_device(power_supply_class, NULL,
-		di->fg_psy, ab8500_fg_get_ext_psy_data);
+	power_supply_for_each_psy(psy, ab8500_fg_get_ext_psy_data);
 }
 
 /**
@@ -2382,7 +2420,7 @@ static void ab8500_fg_reinit_work(struct work_struct *work)
 	if (!di->flags.calibrate) {
 		dev_dbg(di->dev, "Resetting FG state machine to init.\n");
 		ab8500_fg_clear_cap_samples(di);
-		ab8500_fg_calc_cap_discharge_voltage(di, true);
+		ab8500_fg_calc_cap_discharge_voltage(di);
 		ab8500_fg_charge_state_to(di, AB8500_FG_CHARGE_INIT);
 		ab8500_fg_discharge_state_to(di, AB8500_FG_DISCHARGE_INIT);
 		queue_delayed_work(di->fg_wq, &di->fg_periodic_work, 0);
@@ -2406,7 +2444,7 @@ struct ab8500_fg_sysfs_entry {
 
 static ssize_t charge_full_show(struct ab8500_fg *di, char *buf)
 {
-	return sprintf(buf, "%d\n", di->bat_cap.max_mah);
+	return sysfs_emit(buf, "%d\n", di->bat_cap.max_mah);
 }
 
 static ssize_t charge_full_store(struct ab8500_fg *di, const char *buf,
@@ -2425,7 +2463,7 @@ static ssize_t charge_full_store(struct ab8500_fg *di, const char *buf,
 
 static ssize_t charge_now_show(struct ab8500_fg *di, char *buf)
 {
-	return sprintf(buf, "%d\n", di->bat_cap.prev_mah);
+	return sysfs_emit(buf, "%d\n", di->bat_cap.prev_mah);
 }
 
 static ssize_t charge_now_store(struct ab8500_fg *di, const char *buf,
@@ -2490,10 +2528,11 @@ static struct attribute *ab8500_fg_attrs[] = {
 	&charge_now_attr.attr,
 	NULL,
 };
+ATTRIBUTE_GROUPS(ab8500_fg);
 
-static struct kobj_type ab8500_fg_ktype = {
+static const struct kobj_type ab8500_fg_ktype = {
 	.sysfs_ops = &ab8500_fg_sysfs_ops,
-	.default_attrs = ab8500_fg_attrs,
+	.default_groups = ab8500_fg_groups,
 };
 
 /**
@@ -2521,8 +2560,10 @@ static int ab8500_fg_sysfs_init(struct ab8500_fg *di)
 	ret = kobject_init_and_add(&di->fg_kobject,
 		&ab8500_fg_ktype,
 		NULL, "battery");
-	if (ret < 0)
+	if (ret < 0) {
+		kobject_put(&di->fg_kobject);
 		dev_err(di->dev, "failed to create sysfs entry\n");
+	}
 
 	return ret;
 }
@@ -2533,7 +2574,7 @@ static ssize_t ab8505_powercut_flagtime_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2544,7 +2585,7 @@ static ssize_t ab8505_powercut_flagtime_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (reg_value & 0x7F));
+	return sysfs_emit(buf, "%d\n", (reg_value & 0x7F));
 
 fail:
 	return ret;
@@ -2556,7 +2597,7 @@ static ssize_t ab8505_powercut_flagtime_write(struct device *dev,
 {
 	int ret;
 	int reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	if (kstrtoint(buf, 10, &reg_value))
@@ -2583,7 +2624,7 @@ static ssize_t ab8505_powercut_maxtime_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2594,7 +2635,7 @@ static ssize_t ab8505_powercut_maxtime_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (reg_value & 0x7F));
+	return sysfs_emit(buf, "%d\n", (reg_value & 0x7F));
 
 fail:
 	return ret;
@@ -2607,7 +2648,7 @@ static ssize_t ab8505_powercut_maxtime_write(struct device *dev,
 {
 	int ret;
 	int reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	if (kstrtoint(buf, 10, &reg_value))
@@ -2634,7 +2675,7 @@ static ssize_t ab8505_powercut_restart_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2645,7 +2686,7 @@ static ssize_t ab8505_powercut_restart_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (reg_value & 0xF));
+	return sysfs_emit(buf, "%d\n", (reg_value & 0xF));
 
 fail:
 	return ret;
@@ -2657,7 +2698,7 @@ static ssize_t ab8505_powercut_restart_write(struct device *dev,
 {
 	int ret;
 	int reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	if (kstrtoint(buf, 10, &reg_value))
@@ -2685,7 +2726,7 @@ static ssize_t ab8505_powercut_timer_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2696,7 +2737,7 @@ static ssize_t ab8505_powercut_timer_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (reg_value & 0x7F));
+	return sysfs_emit(buf, "%d\n", (reg_value & 0x7F));
 
 fail:
 	return ret;
@@ -2708,7 +2749,7 @@ static ssize_t ab8505_powercut_restart_counter_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2719,7 +2760,7 @@ static ssize_t ab8505_powercut_restart_counter_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (reg_value & 0xF0) >> 4);
+	return sysfs_emit(buf, "%d\n", (reg_value & 0xF0) >> 4);
 
 fail:
 	return ret;
@@ -2731,7 +2772,7 @@ static ssize_t ab8505_powercut_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2740,7 +2781,7 @@ static ssize_t ab8505_powercut_read(struct device *dev,
 	if (ret < 0)
 		goto fail;
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (reg_value & 0x1));
+	return sysfs_emit(buf, "%d\n", (reg_value & 0x1));
 
 fail:
 	return ret;
@@ -2752,7 +2793,7 @@ static ssize_t ab8505_powercut_write(struct device *dev,
 {
 	int ret;
 	int reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	if (kstrtoint(buf, 10, &reg_value))
@@ -2780,7 +2821,7 @@ static ssize_t ab8505_powercut_flag_read(struct device *dev,
 
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2791,7 +2832,7 @@ static ssize_t ab8505_powercut_flag_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", ((reg_value & 0x10) >> 4));
+	return sysfs_emit(buf, "%d\n", ((reg_value & 0x10) >> 4));
 
 fail:
 	return ret;
@@ -2803,7 +2844,7 @@ static ssize_t ab8505_powercut_debounce_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2814,7 +2855,7 @@ static ssize_t ab8505_powercut_debounce_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (reg_value & 0x7));
+	return sysfs_emit(buf, "%d\n", (reg_value & 0x7));
 
 fail:
 	return ret;
@@ -2826,7 +2867,7 @@ static ssize_t ab8505_powercut_debounce_write(struct device *dev,
 {
 	int ret;
 	int reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	if (kstrtoint(buf, 10, &reg_value))
@@ -2853,7 +2894,7 @@ static ssize_t ab8505_powercut_enable_status_read(struct device *dev,
 {
 	int ret;
 	u8 reg_value;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct ab8500_fg *di = power_supply_get_drvdata(psy);
 
 	ret = abx500_get_register_interruptible(di->dev, AB8500_RTC,
@@ -2864,7 +2905,7 @@ static ssize_t ab8505_powercut_enable_status_read(struct device *dev,
 		goto fail;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", ((reg_value & 0x20) >> 5));
+	return sysfs_emit(buf, "%d\n", ((reg_value & 0x20) >> 5));
 
 fail:
 	return ret;
@@ -2987,13 +3028,6 @@ static int ab8500_fg_bind(struct device *dev, struct device *master,
 {
 	struct ab8500_fg *di = dev_get_drvdata(dev);
 
-	/* Create a work queue for running the FG algorithm */
-	di->fg_wq = alloc_ordered_workqueue("ab8500_fg_wq", WQ_MEM_RECLAIM);
-	if (di->fg_wq == NULL) {
-		dev_err(dev, "failed to create work queue\n");
-		return -ENOMEM;
-	}
-
 	di->bat_cap.max_mah_design = di->bm->bi->charge_full_design_uah;
 	di->bat_cap.max_mah = di->bat_cap.max_mah_design;
 	di->vbat_nom_uv = di->bm->bi->voltage_max_design_uv;
@@ -3017,8 +3051,7 @@ static void ab8500_fg_unbind(struct device *dev, struct device *master,
 	if (ret)
 		dev_err(dev, "failed to disable coulomb counter\n");
 
-	destroy_workqueue(di->fg_wq);
-	flush_scheduled_work();
+	flush_workqueue(di->fg_wq);
 }
 
 static const struct component_ops ab8500_fg_component_ops = {
@@ -3053,6 +3086,11 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	if (!of_property_read_u32(dev->of_node, "line-impedance-micro-ohms",
+				  &di->line_impedance_uohm))
+		dev_info(dev, "line impedance: %u uOhm\n",
+			 di->line_impedance_uohm);
+
 	psy_cfg.supplied_to = supply_interface;
 	psy_cfg.num_supplicants = ARRAY_SIZE(supply_interface);
 	psy_cfg.drv_data = di;
@@ -3061,6 +3099,13 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 
 	ab8500_fg_charge_state_to(di, AB8500_FG_CHARGE_INIT);
 	ab8500_fg_discharge_state_to(di, AB8500_FG_DISCHARGE_INIT);
+
+	/* Create a work queue for running the FG algorithm */
+	di->fg_wq = alloc_ordered_workqueue("ab8500_fg_wq", WQ_MEM_RECLAIM);
+	if (di->fg_wq == NULL) {
+		dev_err(dev, "failed to create work queue\n");
+		return -ENOMEM;
+	}
 
 	/* Init work for running the fg algorithm instantly */
 	INIT_WORK(&di->fg_work, ab8500_fg_instant_work);
@@ -3094,6 +3139,7 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 	ret = ab8500_fg_init_hw_registers(di);
 	if (ret) {
 		dev_err(dev, "failed to initialize registers\n");
+		destroy_workqueue(di->fg_wq);
 		return ret;
 	}
 
@@ -3105,6 +3151,7 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 	di->fg_psy = devm_power_supply_register(dev, &ab8500_fg_desc, &psy_cfg);
 	if (IS_ERR(di->fg_psy)) {
 		dev_err(dev, "failed to register FG psy\n");
+		destroy_workqueue(di->fg_wq);
 		return PTR_ERR(di->fg_psy);
 	}
 
@@ -3120,8 +3167,10 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 	/* Register primary interrupt handlers */
 	for (i = 0; i < ARRAY_SIZE(ab8500_fg_irq); i++) {
 		irq = platform_get_irq_byname(pdev, ab8500_fg_irq[i].name);
-		if (irq < 0)
+		if (irq < 0) {
+			destroy_workqueue(di->fg_wq);
 			return irq;
+		}
 
 		ret = devm_request_threaded_irq(dev, irq, NULL,
 				  ab8500_fg_irq[i].isr,
@@ -3131,6 +3180,7 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 		if (ret != 0) {
 			dev_err(dev, "failed to request %s IRQ %d: %d\n",
 				ab8500_fg_irq[i].name, irq, ret);
+			destroy_workqueue(di->fg_wq);
 			return ret;
 		}
 		dev_dbg(dev, "Requested %s IRQ %d: %d\n",
@@ -3146,6 +3196,7 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 	ret = ab8500_fg_sysfs_init(di);
 	if (ret) {
 		dev_err(dev, "failed to create sysfs entry\n");
+		destroy_workqueue(di->fg_wq);
 		return ret;
 	}
 
@@ -3153,6 +3204,7 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(dev, "failed to create FG psy\n");
 		ab8500_fg_sysfs_exit(di);
+		destroy_workqueue(di->fg_wq);
 		return ret;
 	}
 
@@ -3168,17 +3220,15 @@ static int ab8500_fg_probe(struct platform_device *pdev)
 	return component_add(dev, &ab8500_fg_component_ops);
 }
 
-static int ab8500_fg_remove(struct platform_device *pdev)
+static void ab8500_fg_remove(struct platform_device *pdev)
 {
-	int ret = 0;
 	struct ab8500_fg *di = platform_get_drvdata(pdev);
 
+	destroy_workqueue(di->fg_wq);
 	component_del(&pdev->dev, &ab8500_fg_component_ops);
 	list_del(&di->node);
 	ab8500_fg_sysfs_exit(di);
 	ab8500_fg_sysfs_psy_remove_attrs(di);
-
-	return ret;
 }
 
 static SIMPLE_DEV_PM_OPS(ab8500_fg_pm_ops, ab8500_fg_suspend, ab8500_fg_resume);

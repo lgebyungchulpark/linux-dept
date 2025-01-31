@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/string.h>
+#include <linux/string_choices.h>
 #include <linux/blkdev.h>
 #include <linux/bio.h>
 #include <linux/proc_fs.h>
@@ -75,7 +76,7 @@ static void simdisk_transfer(struct simdisk *dev, unsigned long sector,
 
 	if (offset > dev->size || dev->size - offset < nbytes) {
 		pr_notice("Beyond-end %s (%ld %ld)\n",
-				write ? "write" : "read", offset, nbytes);
+				str_write_read(write), offset, nbytes);
 		return;
 	}
 
@@ -108,21 +109,21 @@ static void simdisk_submit_bio(struct bio *bio)
 	sector_t sector = bio->bi_iter.bi_sector;
 
 	bio_for_each_segment(bvec, bio, iter) {
-		char *buffer = kmap_atomic(bvec.bv_page) + bvec.bv_offset;
+		char *buffer = bvec_kmap_local(&bvec);
 		unsigned len = bvec.bv_len >> SECTOR_SHIFT;
 
 		simdisk_transfer(dev, sector, len, buffer,
 				bio_data_dir(bio) == WRITE);
 		sector += len;
-		kunmap_atomic(buffer);
+		kunmap_local(buffer);
 	}
 
 	bio_endio(bio);
 }
 
-static int simdisk_open(struct block_device *bdev, fmode_t mode)
+static int simdisk_open(struct gendisk *disk, blk_mode_t mode)
 {
-	struct simdisk *dev = bdev->bd_disk->private_data;
+	struct simdisk *dev = disk->private_data;
 
 	spin_lock(&dev->lock);
 	++dev->users;
@@ -130,7 +131,7 @@ static int simdisk_open(struct block_device *bdev, fmode_t mode)
 	return 0;
 }
 
-static void simdisk_release(struct gendisk *disk, fmode_t mode)
+static void simdisk_release(struct gendisk *disk)
 {
 	struct simdisk *dev = disk->private_data;
 	spin_lock(&dev->lock);
@@ -211,12 +212,18 @@ static ssize_t proc_read_simdisk(struct file *file, char __user *buf,
 	struct simdisk *dev = pde_data(file_inode(file));
 	const char *s = dev->filename;
 	if (s) {
-		ssize_t n = simple_read_from_buffer(buf, size, ppos,
-							s, strlen(s));
-		if (n < 0)
-			return n;
-		buf += n;
-		size -= n;
+		ssize_t len = strlen(s);
+		char *temp = kmalloc(len + 2, GFP_KERNEL);
+
+		if (!temp)
+			return -ENOMEM;
+
+		len = scnprintf(temp, len + 2, "%s\n", s);
+		len = simple_read_from_buffer(buf, size, ppos,
+					      temp, len);
+
+		kfree(temp);
+		return len;
 	}
 	return simple_read_from_buffer(buf, size, ppos, "\n", 1);
 }
@@ -257,17 +264,22 @@ static const struct proc_ops simdisk_proc_ops = {
 static int __init simdisk_setup(struct simdisk *dev, int which,
 		struct proc_dir_entry *procdir)
 {
+	struct queue_limits lim = {
+		.features		= BLK_FEAT_ROTATIONAL,
+	};
 	char tmp[2] = { '0' + which, 0 };
-	int err = -ENOMEM;
+	int err;
 
 	dev->fd = -1;
 	dev->filename = NULL;
 	spin_lock_init(&dev->lock);
 	dev->users = 0;
 
-	dev->gd = blk_alloc_disk(NUMA_NO_NODE);
-	if (!dev->gd)
+	dev->gd = blk_alloc_disk(&lim, NUMA_NO_NODE);
+	if (IS_ERR(dev->gd)) {
+		err = PTR_ERR(dev->gd);
 		goto out;
+	}
 	dev->gd->major = simdisk_major;
 	dev->gd->first_minor = which;
 	dev->gd->minors = SIMDISK_MINORS;
@@ -284,7 +296,7 @@ static int __init simdisk_setup(struct simdisk *dev, int which,
 	return 0;
 
 out_cleanup_disk:
-	blk_cleanup_disk(dev->gd);
+	put_disk(dev->gd);
 out:
 	return err;
 }
@@ -338,7 +350,7 @@ static void simdisk_teardown(struct simdisk *dev, int which,
 	simdisk_detach(dev);
 	if (dev->gd) {
 		del_gendisk(dev->gd);
-		blk_cleanup_disk(dev->gd);
+		put_disk(dev->gd);
 	}
 	remove_proc_entry(tmp, procdir);
 }

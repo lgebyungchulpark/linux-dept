@@ -17,6 +17,7 @@
 #include <linux/regulator/consumer.h>
 
 #include <linux/phy/phy-dp.h>
+#include <linux/phy/phy-lvds.h>
 #include <linux/phy/phy-mipi-dphy.h>
 
 struct phy;
@@ -57,10 +58,13 @@ enum phy_media {
  *		the MIPI_DPHY phy mode.
  * @dp:		Configuration set applicable for phys supporting
  *		the DisplayPort protocol.
+ * @lvds:	Configuration set applicable for phys supporting
+ *		the LVDS phy mode.
  */
 union phy_configure_opts {
 	struct phy_configure_opts_mipi_dphy	mipi_dphy;
 	struct phy_configure_opts_dp		dp;
+	struct phy_configure_opts_lvds		lvds;
 };
 
 /**
@@ -118,6 +122,11 @@ struct phy_ops {
 			    union phy_configure_opts *opts);
 	int	(*reset)(struct phy *phy);
 	int	(*calibrate)(struct phy *phy);
+
+	/* notify phy connect status change */
+	int	(*connect)(struct phy *phy, int port);
+	int	(*disconnect)(struct phy *phy, int port);
+
 	void	(*release)(struct phy *phy);
 	struct module *owner;
 };
@@ -144,6 +153,7 @@ struct phy_attrs {
  * @power_count: used to protect when the PHY is used by multiple consumers
  * @attrs: used to specify PHY specific attributes
  * @pwr: power regulator associated with the phy
+ * @debugfs: debugfs directory
  */
 struct phy {
 	struct device		dev;
@@ -154,6 +164,7 @@ struct phy {
 	int			power_count;
 	struct phy_attrs	attrs;
 	struct regulator	*pwr;
+	struct dentry		*debugfs;
 };
 
 /**
@@ -170,7 +181,7 @@ struct phy_provider {
 	struct module		*owner;
 	struct list_head	list;
 	struct phy * (*of_xlate)(struct device *dev,
-		struct of_phandle_args *args);
+				 const struct of_phandle_args *args);
 };
 
 /**
@@ -237,6 +248,8 @@ static inline enum phy_mode phy_get_mode(struct phy *phy)
 }
 int phy_reset(struct phy *phy);
 int phy_calibrate(struct phy *phy);
+int phy_notify_connect(struct phy *phy, int port);
+int phy_notify_disconnect(struct phy *phy, int port);
 static inline int phy_get_bus_width(struct phy *phy)
 {
 	return phy->attrs.bus_width;
@@ -246,11 +259,12 @@ static inline void phy_set_bus_width(struct phy *phy, int bus_width)
 	phy->attrs.bus_width = bus_width;
 }
 struct phy *phy_get(struct device *dev, const char *string);
-struct phy *phy_optional_get(struct device *dev, const char *string);
 struct phy *devm_phy_get(struct device *dev, const char *string);
 struct phy *devm_phy_optional_get(struct device *dev, const char *string);
 struct phy *devm_of_phy_get(struct device *dev, struct device_node *np,
 			    const char *con_id);
+struct phy *devm_of_phy_optional_get(struct device *dev, struct device_node *np,
+				     const char *con_id);
 struct phy *devm_of_phy_get_by_index(struct device *dev, struct device_node *np,
 				     int index);
 void of_phy_put(struct phy *phy);
@@ -258,7 +272,7 @@ void phy_put(struct device *dev, struct phy *phy);
 void devm_phy_put(struct device *dev, struct phy *phy);
 struct phy *of_phy_get(struct device_node *np, const char *con_id);
 struct phy *of_phy_simple_xlate(struct device *dev,
-	struct of_phandle_args *args);
+				const struct of_phandle_args *args);
 struct phy *phy_create(struct device *dev, struct device_node *node,
 		       const struct phy_ops *ops);
 struct phy *devm_phy_create(struct device *dev, struct device_node *node,
@@ -268,11 +282,11 @@ void devm_phy_destroy(struct device *dev, struct phy *phy);
 struct phy_provider *__of_phy_provider_register(struct device *dev,
 	struct device_node *children, struct module *owner,
 	struct phy * (*of_xlate)(struct device *dev,
-				 struct of_phandle_args *args));
+				 const struct of_phandle_args *args));
 struct phy_provider *__devm_of_phy_provider_register(struct device *dev,
 	struct device_node *children, struct module *owner,
 	struct phy * (*of_xlate)(struct device *dev,
-				 struct of_phandle_args *args));
+				 const struct of_phandle_args *args));
 void of_phy_provider_unregister(struct phy_provider *phy_provider);
 void devm_of_phy_provider_unregister(struct device *dev,
 	struct phy_provider *phy_provider);
@@ -389,6 +403,20 @@ static inline int phy_calibrate(struct phy *phy)
 	return -ENOSYS;
 }
 
+static inline int phy_notify_connect(struct phy *phy, int index)
+{
+	if (!phy)
+		return 0;
+	return -ENOSYS;
+}
+
+static inline int phy_notify_disconnect(struct phy *phy, int index)
+{
+	if (!phy)
+		return 0;
+	return -ENOSYS;
+}
+
 static inline int phy_configure(struct phy *phy,
 				union phy_configure_opts *opts)
 {
@@ -422,12 +450,6 @@ static inline struct phy *phy_get(struct device *dev, const char *string)
 	return ERR_PTR(-ENOSYS);
 }
 
-static inline struct phy *phy_optional_get(struct device *dev,
-					   const char *string)
-{
-	return ERR_PTR(-ENOSYS);
-}
-
 static inline struct phy *devm_phy_get(struct device *dev, const char *string)
 {
 	return ERR_PTR(-ENOSYS);
@@ -444,6 +466,13 @@ static inline struct phy *devm_of_phy_get(struct device *dev,
 					  const char *con_id)
 {
 	return ERR_PTR(-ENOSYS);
+}
+
+static inline struct phy *devm_of_phy_optional_get(struct device *dev,
+						   struct device_node *np,
+						   const char *con_id)
+{
+	return NULL;
 }
 
 static inline struct phy *devm_of_phy_get_by_index(struct device *dev,
@@ -471,7 +500,7 @@ static inline struct phy *of_phy_get(struct device_node *np, const char *con_id)
 }
 
 static inline struct phy *of_phy_simple_xlate(struct device *dev,
-	struct of_phandle_args *args)
+					      const struct of_phandle_args *args)
 {
 	return ERR_PTR(-ENOSYS);
 }
@@ -501,7 +530,7 @@ static inline void devm_phy_destroy(struct device *dev, struct phy *phy)
 static inline struct phy_provider *__of_phy_provider_register(
 	struct device *dev, struct device_node *children, struct module *owner,
 	struct phy * (*of_xlate)(struct device *dev,
-				 struct of_phandle_args *args))
+				 const struct of_phandle_args *args))
 {
 	return ERR_PTR(-ENOSYS);
 }
@@ -509,7 +538,7 @@ static inline struct phy_provider *__of_phy_provider_register(
 static inline struct phy_provider *__devm_of_phy_provider_register(struct device
 	*dev, struct device_node *children, struct module *owner,
 	struct phy * (*of_xlate)(struct device *dev,
-				 struct of_phandle_args *args))
+				 const struct of_phandle_args *args))
 {
 	return ERR_PTR(-ENOSYS);
 }

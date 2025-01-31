@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2018 Intel Corporation. All rights reserved.
+ * Copyright(c) 2018 Intel Corporation
  *
  * Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
  */
@@ -21,20 +21,46 @@
 #define sof_ops(sdev) \
 	((sdev)->pdata->desc->ops)
 
+static inline int sof_ops_init(struct snd_sof_dev *sdev)
+{
+	if (sdev->pdata->desc->ops_init)
+		return sdev->pdata->desc->ops_init(sdev);
+
+	return 0;
+}
+
+static inline void sof_ops_free(struct snd_sof_dev *sdev)
+{
+	if (sdev->pdata->desc->ops_free)
+		sdev->pdata->desc->ops_free(sdev);
+}
+
 /* Mandatory operations are verified during probing */
 
 /* init */
+static inline int snd_sof_probe_early(struct snd_sof_dev *sdev)
+{
+	if (sof_ops(sdev)->probe_early)
+		return sof_ops(sdev)->probe_early(sdev);
+
+	return 0;
+}
+
 static inline int snd_sof_probe(struct snd_sof_dev *sdev)
 {
 	return sof_ops(sdev)->probe(sdev);
 }
 
-static inline int snd_sof_remove(struct snd_sof_dev *sdev)
+static inline void snd_sof_remove(struct snd_sof_dev *sdev)
 {
 	if (sof_ops(sdev)->remove)
-		return sof_ops(sdev)->remove(sdev);
+		sof_ops(sdev)->remove(sdev);
+}
 
-	return 0;
+static inline void snd_sof_remove_late(struct snd_sof_dev *sdev)
+{
+	if (sof_ops(sdev)->remove_late)
+		sof_ops(sdev)->remove_late(sdev);
 }
 
 static inline int snd_sof_shutdown(struct snd_sof_dev *sdev)
@@ -188,7 +214,7 @@ static inline int snd_sof_dsp_get_mailbox_offset(struct snd_sof_dev *sdev)
 		return sof_ops(sdev)->get_mailbox_offset(sdev);
 
 	dev_err(sdev->dev, "error: %s not defined\n", __func__);
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static inline int snd_sof_dsp_get_window_offset(struct snd_sof_dev *sdev,
@@ -198,7 +224,7 @@ static inline int snd_sof_dsp_get_window_offset(struct snd_sof_dev *sdev,
 		return sof_ops(sdev)->get_window_offset(sdev, id);
 
 	dev_err(sdev->dev, "error: %s not defined\n", __func__);
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 /* power management */
 static inline int snd_sof_dsp_resume(struct snd_sof_dev *sdev)
@@ -288,26 +314,40 @@ static inline int snd_sof_debugfs_add_region_item(struct snd_sof_dev *sdev,
 }
 
 /* register IO */
+static inline void snd_sof_dsp_write8(struct snd_sof_dev *sdev, u32 bar,
+				      u32 offset, u8 value)
+{
+	if (sof_ops(sdev)->write8)
+		sof_ops(sdev)->write8(sdev, sdev->bar[bar] + offset, value);
+	else
+		writeb(value,  sdev->bar[bar] + offset);
+}
+
 static inline void snd_sof_dsp_write(struct snd_sof_dev *sdev, u32 bar,
 				     u32 offset, u32 value)
 {
-	if (sof_ops(sdev)->write) {
+	if (sof_ops(sdev)->write)
 		sof_ops(sdev)->write(sdev, sdev->bar[bar] + offset, value);
-		return;
-	}
-
-	dev_err_ratelimited(sdev->dev, "error: %s not defined\n", __func__);
+	else
+		writel(value,  sdev->bar[bar] + offset);
 }
 
 static inline void snd_sof_dsp_write64(struct snd_sof_dev *sdev, u32 bar,
 				       u32 offset, u64 value)
 {
-	if (sof_ops(sdev)->write64) {
+	if (sof_ops(sdev)->write64)
 		sof_ops(sdev)->write64(sdev, sdev->bar[bar] + offset, value);
-		return;
-	}
+	else
+		writeq(value, sdev->bar[bar] + offset);
+}
 
-	dev_err_ratelimited(sdev->dev, "error: %s not defined\n", __func__);
+static inline u8 snd_sof_dsp_read8(struct snd_sof_dev *sdev, u32 bar,
+				   u32 offset)
+{
+	if (sof_ops(sdev)->read8)
+		return sof_ops(sdev)->read8(sdev, sdev->bar[bar] + offset);
+	else
+		return readb(sdev->bar[bar] + offset);
 }
 
 static inline u32 snd_sof_dsp_read(struct snd_sof_dev *sdev, u32 bar,
@@ -315,9 +355,8 @@ static inline u32 snd_sof_dsp_read(struct snd_sof_dev *sdev, u32 bar,
 {
 	if (sof_ops(sdev)->read)
 		return sof_ops(sdev)->read(sdev, sdev->bar[bar] + offset);
-
-	dev_err(sdev->dev, "error: %s not defined\n", __func__);
-	return -ENOTSUPP;
+	else
+		return readl(sdev->bar[bar] + offset);
 }
 
 static inline u64 snd_sof_dsp_read64(struct snd_sof_dev *sdev, u32 bar,
@@ -325,9 +364,19 @@ static inline u64 snd_sof_dsp_read64(struct snd_sof_dev *sdev, u32 bar,
 {
 	if (sof_ops(sdev)->read64)
 		return sof_ops(sdev)->read64(sdev, sdev->bar[bar] + offset);
+	else
+		return readq(sdev->bar[bar] + offset);
+}
 
-	dev_err(sdev->dev, "error: %s not defined\n", __func__);
-	return -ENOTSUPP;
+static inline void snd_sof_dsp_update8(struct snd_sof_dev *sdev, u32 bar,
+				       u32 offset, u8 mask, u8 value)
+{
+	u8 reg;
+
+	reg = snd_sof_dsp_read8(sdev, bar, offset);
+	reg &= ~mask;
+	reg |= value;
+	snd_sof_dsp_write8(sdev, bar, offset, reg);
 }
 
 /* block IO */
@@ -367,32 +416,6 @@ static inline int snd_sof_dsp_send_msg(struct snd_sof_dev *sdev,
 	return sof_ops(sdev)->send_msg(sdev, msg);
 }
 
-/* host DMA trace */
-static inline int snd_sof_dma_trace_init(struct snd_sof_dev *sdev,
-					 u32 *stream_tag)
-{
-	if (sof_ops(sdev)->trace_init)
-		return sof_ops(sdev)->trace_init(sdev, stream_tag);
-
-	return 0;
-}
-
-static inline int snd_sof_dma_trace_release(struct snd_sof_dev *sdev)
-{
-	if (sof_ops(sdev)->trace_release)
-		return sof_ops(sdev)->trace_release(sdev);
-
-	return 0;
-}
-
-static inline int snd_sof_dma_trace_trigger(struct snd_sof_dev *sdev, int cmd)
-{
-	if (sof_ops(sdev)->trace_trigger)
-		return sof_ops(sdev)->trace_trigger(sdev, cmd);
-
-	return 0;
-}
-
 /* host PCM ops */
 static inline int
 snd_sof_pcm_platform_open(struct snd_sof_dev *sdev,
@@ -420,11 +443,11 @@ static inline int
 snd_sof_pcm_platform_hw_params(struct snd_sof_dev *sdev,
 			       struct snd_pcm_substream *substream,
 			       struct snd_pcm_hw_params *params,
-			       struct sof_ipc_stream_params *ipc_params)
+			       struct snd_sof_platform_stream_params *platform_params)
 {
 	if (sof_ops(sdev) && sof_ops(sdev)->pcm_hw_params)
-		return sof_ops(sdev)->pcm_hw_params(sdev, substream,
-						    params, ipc_params);
+		return sof_ops(sdev)->pcm_hw_params(sdev, substream, params,
+						    platform_params);
 
 	return 0;
 }
@@ -461,19 +484,22 @@ static inline int snd_sof_load_firmware(struct snd_sof_dev *sdev)
 
 /* host DSP message data */
 static inline int snd_sof_ipc_msg_data(struct snd_sof_dev *sdev,
-				       struct snd_pcm_substream *substream,
+				       struct snd_sof_pcm_stream *sps,
 				       void *p, size_t sz)
 {
-	return sof_ops(sdev)->ipc_msg_data(sdev, substream, p, sz);
+	return sof_ops(sdev)->ipc_msg_data(sdev, sps, p, sz);
 }
-
-/* host configure DSP HW parameters */
+/* host side configuration of the stream's data offset in stream mailbox area */
 static inline int
-snd_sof_ipc_pcm_params(struct snd_sof_dev *sdev,
-		       struct snd_pcm_substream *substream,
-		       const struct sof_ipc_pcm_params_reply *reply)
+snd_sof_set_stream_data_offset(struct snd_sof_dev *sdev,
+			       struct snd_sof_pcm_stream *sps,
+			       size_t posn_offset)
 {
-	return sof_ops(sdev)->ipc_pcm_params(sdev, substream, reply);
+	if (sof_ops(sdev) && sof_ops(sdev)->set_stream_data_offset)
+		return sof_ops(sdev)->set_stream_data_offset(sdev, sps,
+							     posn_offset);
+
+	return 0;
 }
 
 /* host stream pointer */
@@ -497,48 +523,29 @@ static inline int snd_sof_pcm_platform_ack(struct snd_sof_dev *sdev,
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_PROBES)
-static inline int
-snd_sof_probe_compr_assign(struct snd_sof_dev *sdev,
-		struct snd_compr_stream *cstream, struct snd_soc_dai *dai)
+static inline u64
+snd_sof_pcm_get_dai_frame_counter(struct snd_sof_dev *sdev,
+				  struct snd_soc_component *component,
+				  struct snd_pcm_substream *substream)
 {
-	return sof_ops(sdev)->probe_assign(sdev, cstream, dai);
-}
-
-static inline int
-snd_sof_probe_compr_free(struct snd_sof_dev *sdev,
-		struct snd_compr_stream *cstream, struct snd_soc_dai *dai)
-{
-	return sof_ops(sdev)->probe_free(sdev, cstream, dai);
-}
-
-static inline int
-snd_sof_probe_compr_set_params(struct snd_sof_dev *sdev,
-		struct snd_compr_stream *cstream,
-		struct snd_compr_params *params, struct snd_soc_dai *dai)
-{
-	return sof_ops(sdev)->probe_set_params(sdev, cstream, params, dai);
-}
-
-static inline int
-snd_sof_probe_compr_trigger(struct snd_sof_dev *sdev,
-		struct snd_compr_stream *cstream, int cmd,
-		struct snd_soc_dai *dai)
-{
-	return sof_ops(sdev)->probe_trigger(sdev, cstream, cmd, dai);
-}
-
-static inline int
-snd_sof_probe_compr_pointer(struct snd_sof_dev *sdev,
-		struct snd_compr_stream *cstream,
-		struct snd_compr_tstamp *tstamp, struct snd_soc_dai *dai)
-{
-	if (sof_ops(sdev) && sof_ops(sdev)->probe_pointer)
-		return sof_ops(sdev)->probe_pointer(sdev, cstream, tstamp, dai);
+	if (sof_ops(sdev) && sof_ops(sdev)->get_dai_frame_counter)
+		return sof_ops(sdev)->get_dai_frame_counter(sdev, component,
+							    substream);
 
 	return 0;
 }
-#endif
+
+static inline u64
+snd_sof_pcm_get_host_byte_counter(struct snd_sof_dev *sdev,
+				  struct snd_soc_component *component,
+				  struct snd_pcm_substream *substream)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->get_host_byte_counter)
+		return sof_ops(sdev)->get_host_byte_counter(sdev, component,
+							    substream);
+
+	return 0;
+}
 
 /* machine driver */
 static inline int
@@ -574,6 +581,15 @@ snd_sof_set_mach_params(struct snd_soc_acpi_mach *mach,
 		sof_ops(sdev)->set_mach_params(mach, sdev);
 }
 
+static inline bool
+snd_sof_is_chain_dma_supported(struct snd_sof_dev *sdev, u32 dai_type)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->is_chain_dma_supported)
+		return sof_ops(sdev)->is_chain_dma_supported(sdev, dai_type);
+
+	return false;
+}
+
 /**
  * snd_sof_dsp_register_poll_timeout - Periodically poll an address
  * until a condition is met or a timeout occurs
@@ -581,12 +597,12 @@ snd_sof_set_mach_params(struct snd_soc_acpi_mach *mach,
  * @addr: Address to poll
  * @val: Variable to read the value into
  * @cond: Break condition (usually involving @val)
- * @sleep_us: Maximum time to sleep between reads in us (0
- *            tight-loops).  Should be less than ~20ms since usleep_range
- *            is used (see Documentation/timers/timers-howto.rst).
+ * @sleep_us: Maximum time to sleep between reads in us (0 tight-loops). Please
+ *            read usleep_range() function description for details and
+ *            limitations.
  * @timeout_us: Timeout in us, 0 means never timeout
  *
- * Returns 0 on success and -ETIMEDOUT upon a timeout. In either
+ * Returns: 0 on success and -ETIMEDOUT upon a timeout. In either
  * case, the last read value at @addr is stored in @val. Must not
  * be called from atomic context if sleep_us or timeout_us are used.
  *

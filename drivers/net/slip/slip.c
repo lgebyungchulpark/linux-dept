@@ -286,7 +286,7 @@ static int sl_realloc_bufs(struct slip *sl, int mtu)
 		}
 	}
 	sl->mtu      = mtu;
-	dev->mtu      = mtu;
+	WRITE_ONCE(dev->mtu, mtu);
 	sl->buffsize = len;
 	err = 0;
 
@@ -368,7 +368,7 @@ static void sl_bump(struct slip *sl)
 	skb_put_data(skb, sl->rbuff, count);
 	skb_reset_mac_header(skb);
 	skb->protocol = htons(ETH_P_IP);
-	netif_rx_ni(skb);
+	netif_rx(skb);
 	dev->stats.rx_packets++;
 }
 
@@ -469,7 +469,7 @@ static void sl_tx_timeout(struct net_device *dev, unsigned int txqueue)
 	spin_lock(&sl->lock);
 
 	if (netif_queue_stopped(dev)) {
-		if (!netif_running(dev))
+		if (!netif_running(dev) || !sl->tty)
 			goto out;
 
 		/* May be we must check transmitter timeout here ?
@@ -685,8 +685,8 @@ static void sl_setup(struct net_device *dev)
  * in parallel
  */
 
-static void slip_receive_buf(struct tty_struct *tty, const unsigned char *cp,
-		const char *fp, int count)
+static void slip_receive_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp,
+			     size_t count)
 {
 	struct slip *sl = tty->disc_data;
 
@@ -1437,5 +1437,6 @@ out:
 }
 
 #endif
+MODULE_DESCRIPTION("SLIP (serial line) protocol module");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_LDISC(N_SLIP);

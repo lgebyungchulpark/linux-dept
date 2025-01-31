@@ -394,7 +394,7 @@ static int do_validate_mem(struct pcmcia_socket *s,
  * do_mem_probe() checks a memory region for use by the PCMCIA subsystem.
  * To do so, the area is split up into sensible parts, and then passed
  * into the @validate() function. Only if @validate() and @fallback() fail,
- * the area is marked as unavaibale for use by the PCMCIA subsystem. The
+ * the area is marked as unavailable for use by the PCMCIA subsystem. The
  * function returns the size of the usable memory area.
  */
 static int do_mem_probe(struct pcmcia_socket *s, u_long base, u_long num,
@@ -1053,6 +1053,8 @@ static void nonstatic_release_resource_db(struct pcmcia_socket *s)
 		q = p->next;
 		kfree(p);
 	}
+
+	kfree(data);
 }
 
 
@@ -1200,8 +1202,7 @@ static const struct attribute_group rsrc_attributes = {
 	.attrs = pccard_rsrc_attributes,
 };
 
-static int pccard_sysfs_add_rsrc(struct device *dev,
-					   struct class_interface *class_intf)
+static int pccard_sysfs_add_rsrc(struct device *dev)
 {
 	struct pcmcia_socket *s = dev_get_drvdata(dev);
 
@@ -1210,8 +1211,7 @@ static int pccard_sysfs_add_rsrc(struct device *dev,
 	return sysfs_create_group(&dev->kobj, &rsrc_attributes);
 }
 
-static void pccard_sysfs_remove_rsrc(struct device *dev,
-					       struct class_interface *class_intf)
+static void pccard_sysfs_remove_rsrc(struct device *dev)
 {
 	struct pcmcia_socket *s = dev_get_drvdata(dev);
 

@@ -238,7 +238,10 @@ static int native_find(unsigned long ea, int psize, bool primary, u64 *v, u64
 
 static int pseries_find(unsigned long ea, int psize, bool primary, u64 *v, u64 *r)
 {
-	struct hash_pte ptes[4];
+	struct {
+		unsigned long v;
+		unsigned long r;
+	} ptes[4];
 	unsigned long vsid, vpn, hash, hpte_group, want_v;
 	int i, j, ssize = mmu_kernel_ssize;
 	long lpar_rc = 0;
@@ -488,7 +491,7 @@ static void walk_vmemmap(struct pg_state *st)
 	 * Traverse the vmemmaped memory and dump pages that are in the hash
 	 * pagetable.
 	 */
-	while (ptr->list) {
+	while (ptr) {
 		hpte_find(st, ptr->virt_addr, mmu_vmemmap_psize);
 		ptr = ptr->list;
 	}

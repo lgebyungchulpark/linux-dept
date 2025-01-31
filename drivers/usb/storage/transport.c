@@ -363,7 +363,7 @@ static int usb_stor_intr_transfer(struct us_data *us, void *buf,
 	usb_stor_dbg(us, "xfer %u bytes\n", length);
 
 	/* calculate the max packet size */
-	maxp = usb_maxpacket(us->pusb_dev, pipe, usb_pipeout(pipe));
+	maxp = usb_maxpacket(us->pusb_dev, pipe);
 	if (maxp > length)
 		maxp = length;
 
@@ -1087,13 +1087,9 @@ int usb_stor_Bulk_max_lun(struct us_data *us)
 	usb_stor_dbg(us, "GetMaxLUN command result is %d, data is %d\n",
 		     result, us->iobuf[0]);
 
-	/*
-	 * If we have a successful request, return the result if valid. The
-	 * CBW LUN field is 4 bits wide, so the value reported by the device
-	 * should fit into that.
-	 */
+	/* If we have a successful request, return the result if valid. */
 	if (result > 0) {
-		if (us->iobuf[0] < 16) {
+		if (us->iobuf[0] <= US_BULK_MAX_LUN_LIMIT) {
 			return us->iobuf[0];
 		} else {
 			dev_info(&us->pusb_intf->dev,
@@ -1133,7 +1129,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = cpu_to_le32(transfer_length);
 	bcb->Flags = srb->sc_data_direction == DMA_FROM_DEVICE ?
-		US_BULK_FLAG_IN : 0;
+		US_BULK_FLAG_IN : US_BULK_FLAG_OUT;
 	bcb->Tag = ++us->tag;
 	bcb->Lun = srb->device->lun;
 	if (us->fflags & US_FL_SCM_MULT_TARG)
@@ -1178,7 +1174,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		/*
 		 * If the device tried to send back more data than the
 		 * amount requested, the spec requires us to transfer
-		 * the CSW anyway.  Since there's no point retrying the
+		 * the CSW anyway.  Since there's no point retrying
 		 * the command, we'll return fake sense data indicating
 		 * Illegal Request, Invalid Field in CDB.
 		 */

@@ -8,16 +8,6 @@
 //		      Mauro Carvalho Chehab <mchehab@kernel.org>
 //		      Sascha Sommer <saschasommer@freenet.de>
 // Copyright (C) 2012 Frank Schäfer <fschaefer.oss@googlemail.com>
-//
-// This program is free software; you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation; either version 2 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
 
 #include "em28xx.h"
 
@@ -562,6 +552,30 @@ static struct em28xx_reg_seq hauppauge_usb_quadhd_atsc_reg_seq[] = {
 	{EM2874_R5D_TS1_PKT_SIZE,      0x05, 0xff,     50},
 	{EM2874_R5E_TS2_PKT_SIZE,      0x05, 0xff,     50},
 	{-1,                           -1,   -1,       -1},
+};
+
+/*
+ * MyGica USB TV Box
+ * GPIO_1,0: 00=Composite audio
+ *           01=Tuner audio
+ *           10=Mute audio
+ *           11=FM radio? (if equipped)
+ * GPIO_2-6: Unused
+ * GPIO_7:   ??
+ */
+static const struct em28xx_reg_seq mygica_utv3_composite_audio_gpio[] = {
+	{EM2820_R08_GPIO_CTRL, 0xfc, 0xff, 0},
+	{ -1, -1, -1, -1},
+};
+
+static const struct em28xx_reg_seq mygica_utv3_tuner_audio_gpio[] = {
+	{EM2820_R08_GPIO_CTRL, 0xfd, 0xff, 0},
+	{ -1, -1, -1, -1},
+};
+
+static const struct em28xx_reg_seq mygica_utv3_suspend_gpio[] = {
+	{EM2820_R08_GPIO_CTRL, 0xfe, 0xff, 0},
+	{ -1, -1, -1, -1},
 };
 
 /*
@@ -2588,6 +2602,32 @@ const struct em28xx_board em28xx_boards[] = {
 		.tuner_gpio    = hauppauge_usb_quadhd_atsc_reg_seq,
 		.leds          = hauppauge_usb_quadhd_leds,
 	},
+	/*
+	 * eb1a:2860 MyGica UTV3 Analog USB2.0 TV Box
+	 * Empia EM2860, Philips SAA7113, NXP TDA9801T demod,
+	 * Tena TNF931D-DFDR1 tuner (contains NXP TDA6509A),
+	 * ST HCF4052 demux (switches audio to line out),
+	 * no audio over USB
+	 */
+	[EM2860_BOARD_MYGICA_UTV3] = {
+		.name         = "MyGica UTV3 Analog USB2.0 TV Box",
+		.xclk         = EM28XX_XCLK_IR_RC5_MODE | EM28XX_XCLK_FREQUENCY_12MHZ,
+		.tuner_type   = TUNER_TENA_TNF_931D_DFDR1,
+		.ir_codes     = RC_MAP_MYGICA_UTV3,
+		.decoder      = EM28XX_SAA711X,
+		.suspend_gpio = mygica_utv3_suspend_gpio,
+		.input        = { {
+			.type     = EM28XX_VMUX_COMPOSITE,
+			.vmux     = SAA7115_COMPOSITE0,
+			.amux     = EM28XX_AMUX_VIDEO,
+			.gpio     = mygica_utv3_composite_audio_gpio,
+		}, {
+			.type     = EM28XX_VMUX_TELEVISION,
+			.vmux     = SAA7115_COMPOSITE2,
+			.amux     = EM28XX_AMUX_VIDEO,
+			.gpio     = mygica_utv3_tuner_audio_gpio,
+		} },
+	},
 };
 EXPORT_SYMBOL_GPL(em28xx_boards);
 
@@ -2829,6 +2869,7 @@ static const struct em28xx_hash_table em28xx_eeprom_hash[] = {
 	{0x63f653bd, EM2870_BOARD_REDDO_DVB_C_USB_BOX, TUNER_ABSENT},
 	{0x4e913442, EM2882_BOARD_DIKOM_DK300, TUNER_XC2028},
 	{0x85dd871e, EM2882_BOARD_ZOLID_HYBRID_TV_STICK, TUNER_XC2028},
+	{0x8f597549, EM2860_BOARD_MYGICA_UTV3, TUNER_TENA_TNF_931D_DFDR1},
 };
 
 /* I2C devicelist hash table for devices with generic USB IDs */
@@ -2841,6 +2882,7 @@ static const struct em28xx_hash_table em28xx_i2c_hash[] = {
 	{0x4ba50080, EM2861_BOARD_GADMEI_UTV330PLUS, TUNER_TNF_5335MF},
 	{0x6b800080, EM2874_BOARD_LEADERSHIP_ISDBT, TUNER_ABSENT},
 	{0x27e10080, EM2882_BOARD_ZOLID_HYBRID_TV_STICK, TUNER_XC2028},
+	{0x840d0484, EM2860_BOARD_MYGICA_UTV3, TUNER_TENA_TNF_931D_DFDR1},
 };
 
 /* NOTE: introduce a separate hash table for devices with 16 bit eeproms */
@@ -3936,6 +3978,8 @@ static int em28xx_usb_probe(struct usb_interface *intf,
 		goto err_free;
 	}
 
+	kref_init(&dev->ref);
+
 	dev->devno = nr;
 	dev->model = id->driver_info;
 	dev->alt   = -1;
@@ -4036,6 +4080,8 @@ static int em28xx_usb_probe(struct usb_interface *intf,
 	}
 
 	if (dev->board.has_dual_ts && em28xx_duplicate_dev(dev) == 0) {
+		kref_init(&dev->dev_next->ref);
+
 		dev->dev_next->ts = SECONDARY_TS;
 		dev->dev_next->alt   = -1;
 		dev->dev_next->is_audio_only = has_vendor_audio &&
@@ -4090,11 +4136,7 @@ static int em28xx_usb_probe(struct usb_interface *intf,
 			em28xx_write_reg(dev, 0x0b, 0x82);
 			mdelay(100);
 		}
-
-		kref_init(&dev->dev_next->ref);
 	}
-
-	kref_init(&dev->ref);
 
 	request_modules(dev);
 
@@ -4104,6 +4146,10 @@ static int em28xx_usb_probe(struct usb_interface *intf,
 	 * topology will likely change after the load of the em28xx subdrivers.
 	 */
 #ifdef CONFIG_MEDIA_CONTROLLER
+	/*
+	 * No need to check the return value, the device will still be
+	 * usable without media controller API.
+	 */
 	retval = media_device_register(dev->media_dev);
 #endif
 
@@ -4150,11 +4196,8 @@ static void em28xx_usb_disconnect(struct usb_interface *intf)
 
 	em28xx_close_extension(dev);
 
-	if (dev->dev_next) {
-		em28xx_close_extension(dev->dev_next);
+	if (dev->dev_next)
 		em28xx_release_resources(dev->dev_next);
-	}
-
 	em28xx_release_resources(dev);
 
 	if (dev->dev_next) {

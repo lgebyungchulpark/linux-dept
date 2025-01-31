@@ -217,13 +217,13 @@ remote UML and other VM instances.
 +-----------+--------+------------------------------------+------------+
 | fd        | vector | dependent on fd type               | varies     |
 +-----------+--------+------------------------------------+------------+
+| vde       | vector | dep. on VDE VPN: Virt.Net Locator  | varies     |
++-----------+--------+------------------------------------+------------+
 | tuntap    | legacy | none                               | ~ 500Mbit  |
 +-----------+--------+------------------------------------+------------+
 | daemon    | legacy | none                               | ~ 450Mbit  |
 +-----------+--------+------------------------------------+------------+
 | socket    | legacy | none                               | ~ 450Mbit  |
-+-----------+--------+------------------------------------+------------+
-| pcap      | legacy | rx only                            | ~ 450Mbit  |
 +-----------+--------+------------------------------------+------------+
 | ethertap  | legacy | obsolete                           | ~ 500Mbit  |
 +-----------+--------+------------------------------------+------------+
@@ -322,7 +322,7 @@ Shared Options
 * ``v6=[0,1]`` to specify if a v6 connection is desired for all
   transports which operate over IP. Additionally, for transports that
   have some differences in the way they operate over v4 and v6 (for example
-  EoL2TPv3), sets the correct mode of operation. In the absense of this
+  EoL2TPv3), sets the correct mode of operation. In the absence of this
   option, the socket type is determined based on what do the src and dst
   arguments resolve/parse to.
 
@@ -575,6 +575,41 @@ https://github.com/NetSys/bess/wiki/Built-In-Modules-and-Ports
 
 BESS transport does not require any special privileges.
 
+VDE vector transport
+--------------------
+
+Virtual Distributed Ethernet (VDE) is a project whose main goal is to provide a
+highly flexible support for virtual networking.
+
+http://wiki.virtualsquare.org/#/tutorials/vdebasics
+
+Common usages of VDE include fast prototyping and teaching.
+
+Examples:
+
+   ``vecX:transport=vde,vnl=tap://tap0``
+
+use tap0
+
+   ``vecX:transport=vde,vnl=slirp://``
+
+use slirp
+
+   ``vec0:transport=vde,vnl=vde:///tmp/switch``
+
+connect to a vde switch
+
+   ``vecX:transport=\"vde,vnl=cmd://ssh remote.host //tmp/sshlirp\"``
+
+connect to a remote slirp (instant VPN: convert ssh to VPN, it uses sshlirp)
+https://github.com/virtualsquare/sshlirp
+
+   ``vec0:transport=vde,vnl=vxvde://234.0.0.1``
+
+connect to a local area cloud (all the UML nodes using the same
+multicast address running on hosts in the same multicast domain (LAN)
+will be automagically connected together to a virtual LAN.
+
 Configuring Legacy transports
 =============================
 
@@ -664,7 +699,11 @@ one is input, the second one output.
 * The fd channel - use file descriptor numbers for input/output. Example:
   ``con1=fd:0,fd:1.``
 
-* The port channel - listen on TCP port number. Example: ``con1=port:4321``
+* The port channel - start a telnet server on TCP port number. Example:
+  ``con1=port:4321``.  The host must have /usr/sbin/in.telnetd (usually part of
+  a telnetd package) and the port-helper from the UML utilities (see the
+  information for the xterm channel below).  UML will not boot until a client
+  connects.
 
 * The pty and pts channels - use system pty/pts.
 
@@ -1189,6 +1228,26 @@ E.g. ``os_close_file()`` is just a wrapper around ``close()``
 which ensures that the userspace function close does not clash
 with similarly named function(s) in the kernel part.
 
+Using UML as a Test Platform
+============================
+
+UML is an excellent test platform for device driver development. As
+with most things UML, "some user assembly may be required". It is
+up to the user to build their emulation environment. UML at present
+provides only the kernel infrastructure.
+
+Part of this infrastructure is the ability to load and parse fdt
+device tree blobs as used in Arm or Open Firmware platforms. These
+are supplied as an optional extra argument to the kernel command
+line::
+
+    dtb=filename
+
+The device tree is loaded and parsed at boottime and is accessible by
+drivers which query it. At this moment in time this facility is
+intended solely for development purposes. UML's own devices do not
+query the device tree.
+
 Security Considerations
 -----------------------
 
@@ -1200,7 +1259,7 @@ between a driver and the host at the UML command line is OK
 security-wise. Allowing it as a loadable module parameter
 isn't.
 
-If such functionality is desireable for a particular application
+If such functionality is desirable for a particular application
 (e.g. loading BPF "firmware" for raw socket network transports),
 it should be off by default and should be explicitly turned on
 as a command line parameter at startup.

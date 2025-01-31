@@ -6,6 +6,7 @@
  * Copyright (c) 2021 Google
  */
 
+#include <linux/if_arp.h>
 #include <linux/if_link.h>
 #include <linux/mctp.h>
 #include <linux/netdevice.h>
@@ -19,17 +20,29 @@
 #include <net/sock.h>
 
 struct mctp_dump_cb {
-	int h;
-	int idx;
+	unsigned long ifindex;
 	size_t a_idx;
 };
 
-/* unlocked: caller must hold rcu_read_lock */
+/* unlocked: caller must hold rcu_read_lock.
+ * Returned mctp_dev has its refcount incremented, or NULL if unset.
+ */
 struct mctp_dev *__mctp_dev_get(const struct net_device *dev)
 {
-	return rcu_dereference(dev->mctp_ptr);
+	struct mctp_dev *mdev = rcu_dereference(dev->mctp_ptr);
+
+	/* RCU guarantees that any mdev is still live.
+	 * Zero refcount implies a pending free, return NULL.
+	 */
+	if (mdev)
+		if (!refcount_inc_not_zero(&mdev->refs))
+			return NULL;
+	return mdev;
 }
 
+/* Returned mctp_dev does not have refcount incremented. The returned pointer
+ * remains live while rtnl_lock is held, as that prevents mctp_unregister()
+ */
 struct mctp_dev *mctp_dev_get_rtnl(const struct net_device *dev)
 {
 	return rtnl_dereference(dev->mctp_ptr);
@@ -101,42 +114,29 @@ static int mctp_dump_addrinfo(struct sk_buff *skb, struct netlink_callback *cb)
 {
 	struct mctp_dump_cb *mcb = (void *)cb->ctx;
 	struct net *net = sock_net(skb->sk);
-	struct hlist_head *head;
 	struct net_device *dev;
 	struct ifaddrmsg *hdr;
 	struct mctp_dev *mdev;
-	int ifindex;
-	int idx, rc;
+	int ifindex, rc;
 
 	hdr = nlmsg_data(cb->nlh);
 	// filter by ifindex if requested
 	ifindex = hdr->ifa_index;
 
 	rcu_read_lock();
-	for (; mcb->h < NETDEV_HASHENTRIES; mcb->h++, mcb->idx = 0) {
-		idx = 0;
-		head = &net->dev_index_head[mcb->h];
-		hlist_for_each_entry_rcu(dev, head, index_hlist) {
-			if (idx >= mcb->idx &&
-			    (ifindex == 0 || ifindex == dev->ifindex)) {
-				mdev = __mctp_dev_get(dev);
-				if (mdev) {
-					rc = mctp_dump_dev_addrinfo(mdev,
-								    skb, cb);
-					// Error indicates full buffer, this
-					// callback will get retried.
-					if (rc < 0)
-						goto out;
-				}
-			}
-			idx++;
-			// reset for next iteration
-			mcb->a_idx = 0;
-		}
+	for_each_netdev_dump(net, dev, mcb->ifindex) {
+		if (ifindex && ifindex != dev->ifindex)
+			continue;
+		mdev = __mctp_dev_get(dev);
+		if (!mdev)
+			continue;
+		rc = mctp_dump_dev_addrinfo(mdev, skb, cb);
+		mctp_dev_put(mdev);
+		if (rc < 0)
+			break;
+		mcb->a_idx = 0;
 	}
-out:
 	rcu_read_unlock();
-	mcb->idx = idx;
 
 	return skb->len;
 }
@@ -208,7 +208,7 @@ static int mctp_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (!mdev)
 		return -ENODEV;
 
-	if (!mctp_address_ok(addr->s_addr))
+	if (!mctp_address_unicast(addr->s_addr))
 		return -EINVAL;
 
 	/* Prevent duplicates. Under RTNL so don't need to lock for reading */
@@ -297,7 +297,8 @@ void mctp_dev_hold(struct mctp_dev *mdev)
 
 void mctp_dev_put(struct mctp_dev *mdev)
 {
-	if (refcount_dec_and_test(&mdev->refs)) {
+	if (mdev && refcount_dec_and_test(&mdev->refs)) {
+		kfree(mdev->addrs);
 		dev_put(mdev->dev);
 		kfree_rcu(mdev, rcu);
 	}
@@ -355,6 +356,8 @@ static int mctp_fill_link_af(struct sk_buff *skb,
 		return -ENODATA;
 	if (nla_put_u32(skb, IFLA_MCTP_NET, mdev->net))
 		return -EMSGSIZE;
+	if (nla_put_u8(skb, IFLA_MCTP_PHYS_BINDING, mdev->binding))
+		return -EMSGSIZE;
 	return 0;
 }
 
@@ -369,6 +372,8 @@ static size_t mctp_get_link_af_size(const struct net_device *dev,
 	if (!mdev)
 		return 0;
 	ret = nla_total_size(4); /* IFLA_MCTP_NET */
+	ret += nla_total_size(1); /* IFLA_MCTP_PHYS_BINDING */
+	mctp_dev_put(mdev);
 	return ret;
 }
 
@@ -412,12 +417,6 @@ static void mctp_unregister(struct net_device *dev)
 	struct mctp_dev *mdev;
 
 	mdev = mctp_dev_get_rtnl(dev);
-	if (mctp_known(dev) != (bool)mdev) {
-		// Sanity check, should match what was set in mctp_register
-		netdev_warn(dev, "%s: mdev pointer %d but type (%d) match is %d",
-			    __func__, (bool)mdev, mctp_known(dev), dev->type);
-		return;
-	}
 	if (!mdev)
 		return;
 
@@ -425,7 +424,6 @@ static void mctp_unregister(struct net_device *dev)
 
 	mctp_route_remove_dev(mdev);
 	mctp_neigh_remove_dev(mdev);
-	kfree(mdev->addrs);
 
 	mctp_dev_put(mdev);
 }
@@ -435,14 +433,8 @@ static int mctp_register(struct net_device *dev)
 	struct mctp_dev *mdev;
 
 	/* Already registered? */
-	mdev = rtnl_dereference(dev->mctp_ptr);
-
-	if (mdev) {
-		if (!mctp_known(dev))
-			netdev_warn(dev, "%s: mctp_dev set for unknown type %d",
-				    __func__, dev->type);
+	if (rtnl_dereference(dev->mctp_ptr))
 		return 0;
-	}
 
 	/* only register specific types */
 	if (!mctp_known(dev))
@@ -476,7 +468,8 @@ static int mctp_dev_notify(struct notifier_block *this, unsigned long event,
 }
 
 static int mctp_register_netdevice(struct net_device *dev,
-				   const struct mctp_netdev_ops *ops)
+				   const struct mctp_netdev_ops *ops,
+				   enum mctp_phys_binding binding)
 {
 	struct mctp_dev *mdev;
 
@@ -485,17 +478,19 @@ static int mctp_register_netdevice(struct net_device *dev,
 		return PTR_ERR(mdev);
 
 	mdev->ops = ops;
+	mdev->binding = binding;
 
 	return register_netdevice(dev);
 }
 
 int mctp_register_netdev(struct net_device *dev,
-			 const struct mctp_netdev_ops *ops)
+			 const struct mctp_netdev_ops *ops,
+			 enum mctp_phys_binding binding)
 {
 	int rc;
 
 	rtnl_lock();
-	rc = mctp_register_netdevice(dev, ops);
+	rc = mctp_register_netdevice(dev, ops, binding);
 	rtnl_unlock();
 
 	return rc;
@@ -520,25 +515,40 @@ static struct notifier_block mctp_dev_nb = {
 	.priority = ADDRCONF_NOTIFY_PRIORITY,
 };
 
-void __init mctp_device_init(void)
+static const struct rtnl_msg_handler mctp_device_rtnl_msg_handlers[] = {
+	{.owner = THIS_MODULE, .protocol = PF_MCTP, .msgtype = RTM_NEWADDR,
+	 .doit = mctp_rtm_newaddr},
+	{.owner = THIS_MODULE, .protocol = PF_MCTP, .msgtype = RTM_DELADDR,
+	 .doit = mctp_rtm_deladdr},
+	{.owner = THIS_MODULE, .protocol = PF_MCTP, .msgtype = RTM_GETADDR,
+	 .dumpit = mctp_dump_addrinfo},
+};
+
+int __init mctp_device_init(void)
 {
+	int err;
+
 	register_netdevice_notifier(&mctp_dev_nb);
 
-	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_GETADDR,
-			     NULL, mctp_dump_addrinfo, 0);
-	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_NEWADDR,
-			     mctp_rtm_newaddr, NULL, 0);
-	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_DELADDR,
-			     mctp_rtm_deladdr, NULL, 0);
-	rtnl_af_register(&mctp_af_ops);
+	err = rtnl_af_register(&mctp_af_ops);
+	if (err)
+		goto err_notifier;
+
+	err = rtnl_register_many(mctp_device_rtnl_msg_handlers);
+	if (err)
+		goto err_af;
+
+	return 0;
+err_af:
+	rtnl_af_unregister(&mctp_af_ops);
+err_notifier:
+	unregister_netdevice_notifier(&mctp_dev_nb);
+	return err;
 }
 
 void __exit mctp_device_exit(void)
 {
+	rtnl_unregister_many(mctp_device_rtnl_msg_handlers);
 	rtnl_af_unregister(&mctp_af_ops);
-	rtnl_unregister(PF_MCTP, RTM_DELADDR);
-	rtnl_unregister(PF_MCTP, RTM_NEWADDR);
-	rtnl_unregister(PF_MCTP, RTM_GETADDR);
-
 	unregister_netdevice_notifier(&mctp_dev_nb);
 }

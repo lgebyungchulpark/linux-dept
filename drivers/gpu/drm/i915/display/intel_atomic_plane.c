@@ -31,20 +31,28 @@
  * prepare/check/commit/cleanup steps.
  */
 
+#include <linux/dma-fence-chain.h>
+#include <linux/dma-resv.h>
+
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_plane_helper.h>
+#include <drm/drm_gem.h>
+#include <drm/drm_gem_atomic_helper.h>
 
-#include "gt/intel_rps.h"
-
+#include "i915_drv.h"
+#include "i915_config.h"
+#include "i9xx_plane_regs.h"
 #include "intel_atomic_plane.h"
 #include "intel_cdclk.h"
+#include "intel_cursor.h"
+#include "intel_display_rps.h"
 #include "intel_display_trace.h"
 #include "intel_display_types.h"
 #include "intel_fb.h"
 #include "intel_fb_pin.h"
-#include "intel_pm.h"
-#include "intel_sprite.h"
+#include "skl_scaler.h"
+#include "skl_watermark.h"
 
 static void intel_plane_state_reset(struct intel_plane_state *plane_state,
 				    struct intel_plane *plane)
@@ -140,6 +148,14 @@ intel_plane_destroy_state(struct drm_plane *plane,
 	kfree(plane_state);
 }
 
+bool intel_plane_needs_physical(struct intel_plane *plane)
+{
+	struct drm_i915_private *i915 = to_i915(plane->base.dev);
+
+	return plane->id == PLANE_CURSOR &&
+		DISPLAY_INFO(i915)->cursor_needs_physical;
+}
+
 unsigned int intel_adjusted_rate(const struct drm_rect *src,
 				 const struct drm_rect *dst,
 				 unsigned int rate)
@@ -180,29 +196,57 @@ unsigned int intel_plane_pixel_rate(const struct intel_crtc_state *crtc_state,
 }
 
 unsigned int intel_plane_data_rate(const struct intel_crtc_state *crtc_state,
-				   const struct intel_plane_state *plane_state)
+				   const struct intel_plane_state *plane_state,
+				   int color_plane)
 {
 	const struct drm_framebuffer *fb = plane_state->hw.fb;
-	unsigned int cpp;
-	unsigned int pixel_rate;
 
 	if (!plane_state->uapi.visible)
 		return 0;
 
-	pixel_rate = intel_plane_pixel_rate(crtc_state, plane_state);
+	return intel_plane_pixel_rate(crtc_state, plane_state) *
+		fb->format->cpp[color_plane];
+}
 
-	cpp = fb->format->cpp[0];
+static unsigned int
+intel_plane_relative_data_rate(const struct intel_crtc_state *crtc_state,
+			       const struct intel_plane_state *plane_state,
+			       int color_plane)
+{
+	struct intel_plane *plane = to_intel_plane(plane_state->uapi.plane);
+	const struct drm_framebuffer *fb = plane_state->hw.fb;
+	unsigned int rel_data_rate;
+	int width, height;
+
+	if (plane->id == PLANE_CURSOR)
+		return 0;
+
+	if (!plane_state->uapi.visible)
+		return 0;
 
 	/*
-	 * Based on HSD#:1408715493
-	 * NV12 cpp == 4, P010 cpp == 8
-	 *
-	 * FIXME what is the logic behind this?
+	 * Src coordinates are already rotated by 270 degrees for
+	 * the 90/270 degree plane rotation cases (to match the
+	 * GTT mapping), hence no need to account for rotation here.
 	 */
-	if (fb->format->is_yuv && fb->format->num_planes > 1)
-		cpp *= 4;
+	width = drm_rect_width(&plane_state->uapi.src) >> 16;
+	height = drm_rect_height(&plane_state->uapi.src) >> 16;
 
-	return pixel_rate * cpp;
+	/* UV plane does 1/2 pixel sub-sampling */
+	if (color_plane == 1) {
+		width /= 2;
+		height /= 2;
+	}
+
+	rel_data_rate =
+		skl_plane_relative_data_rate(crtc_state, plane, width, height,
+					     fb->format->cpp[color_plane]);
+	if (!rel_data_rate)
+		return 0;
+
+	return intel_adjusted_rate(&plane_state->uapi.src,
+				   &plane_state->uapi.dst,
+				   rel_data_rate);
 }
 
 int intel_plane_calc_min_cdclk(struct intel_atomic_state *state,
@@ -280,10 +324,10 @@ void intel_plane_copy_uapi_to_hw_state(struct intel_plane_state *plane_state,
 	intel_plane_clear_hw_state(plane_state);
 
 	/*
-	 * For the bigjoiner slave uapi.crtc will point at
-	 * the master crtc. So we explicitly assign the right
-	 * slave crtc to hw.crtc. uapi.crtc!=NULL simply indicates
-	 * the plane is logically enabled on the uapi level.
+	 * For the joiner secondary uapi.crtc will point at
+	 * the primary crtc. So we explicitly assign the right
+	 * secondary crtc to hw.crtc. uapi.crtc!=NULL simply
+	 * indicates the plane is logically enabled on the uapi level.
 	 */
 	plane_state->hw.crtc = from_plane_state->uapi.crtc ? &crtc->base : NULL;
 
@@ -321,12 +365,235 @@ void intel_plane_set_invisible(struct intel_crtc_state *crtc_state,
 	struct intel_plane *plane = to_intel_plane(plane_state->uapi.plane);
 
 	crtc_state->active_planes &= ~BIT(plane->id);
+	crtc_state->scaled_planes &= ~BIT(plane->id);
 	crtc_state->nv12_planes &= ~BIT(plane->id);
 	crtc_state->c8_planes &= ~BIT(plane->id);
+	crtc_state->async_flip_planes &= ~BIT(plane->id);
 	crtc_state->data_rate[plane->id] = 0;
+	crtc_state->data_rate_y[plane->id] = 0;
+	crtc_state->rel_data_rate[plane->id] = 0;
+	crtc_state->rel_data_rate_y[plane->id] = 0;
 	crtc_state->min_cdclk[plane->id] = 0;
 
 	plane_state->uapi.visible = false;
+}
+
+static bool intel_plane_is_scaled(const struct intel_plane_state *plane_state)
+{
+	int src_w = drm_rect_width(&plane_state->uapi.src) >> 16;
+	int src_h = drm_rect_height(&plane_state->uapi.src) >> 16;
+	int dst_w = drm_rect_width(&plane_state->uapi.dst);
+	int dst_h = drm_rect_height(&plane_state->uapi.dst);
+
+	return src_w != dst_w || src_h != dst_h;
+}
+
+static bool intel_plane_do_async_flip(struct intel_plane *plane,
+				      const struct intel_crtc_state *old_crtc_state,
+				      const struct intel_crtc_state *new_crtc_state)
+{
+	struct drm_i915_private *i915 = to_i915(plane->base.dev);
+
+	if (!plane->async_flip)
+		return false;
+
+	if (!new_crtc_state->uapi.async_flip)
+		return false;
+
+	/*
+	 * In platforms after DISPLAY13, we might need to override
+	 * first async flip in order to change watermark levels
+	 * as part of optimization.
+	 *
+	 * And let's do this for all skl+ so that we can eg. change the
+	 * modifier as well.
+	 *
+	 * TODO: For older platforms there is less reason to do this as
+	 * only X-tile is supported with async flips, though we could
+	 * extend this so other scanout parameters (stride/etc) could
+	 * be changed as well...
+	 */
+	return DISPLAY_VER(i915) < 9 || old_crtc_state->uapi.async_flip;
+}
+
+static bool i9xx_must_disable_cxsr(const struct intel_crtc_state *new_crtc_state,
+				   const struct intel_plane_state *old_plane_state,
+				   const struct intel_plane_state *new_plane_state)
+{
+	struct intel_plane *plane = to_intel_plane(new_plane_state->uapi.plane);
+	bool old_visible = old_plane_state->uapi.visible;
+	bool new_visible = new_plane_state->uapi.visible;
+	u32 old_ctl = old_plane_state->ctl;
+	u32 new_ctl = new_plane_state->ctl;
+	bool modeset, turn_on, turn_off;
+
+	if (plane->id == PLANE_CURSOR)
+		return false;
+
+	modeset = intel_crtc_needs_modeset(new_crtc_state);
+	turn_off = old_visible && (!new_visible || modeset);
+	turn_on = new_visible && (!old_visible || modeset);
+
+	/* Must disable CxSR around plane enable/disable */
+	if (turn_on || turn_off)
+		return true;
+
+	if (!old_visible || !new_visible)
+		return false;
+
+	/*
+	 * Most plane control register updates are blocked while in CxSR.
+	 *
+	 * Tiling mode is one exception where the primary plane can
+	 * apparently handle it, whereas the sprites can not (the
+	 * sprite issue being only relevant on VLV/CHV where CxSR
+	 * is actually possible with a sprite enabled).
+	 */
+	if (plane->id == PLANE_PRIMARY) {
+		old_ctl &= ~DISP_TILED;
+		new_ctl &= ~DISP_TILED;
+	}
+
+	return old_ctl != new_ctl;
+}
+
+static bool ilk_must_disable_cxsr(const struct intel_crtc_state *new_crtc_state,
+				  const struct intel_plane_state *old_plane_state,
+				  const struct intel_plane_state *new_plane_state)
+{
+	struct intel_plane *plane = to_intel_plane(new_plane_state->uapi.plane);
+	bool old_visible = old_plane_state->uapi.visible;
+	bool new_visible = new_plane_state->uapi.visible;
+	bool modeset, turn_on;
+
+	if (plane->id == PLANE_CURSOR)
+		return false;
+
+	modeset = intel_crtc_needs_modeset(new_crtc_state);
+	turn_on = new_visible && (!old_visible || modeset);
+
+	/*
+	 * ILK/SNB DVSACNTR/Sprite Enable
+	 * IVB SPR_CTL/Sprite Enable
+	 * "When in Self Refresh Big FIFO mode, a write to enable the
+	 *  plane will be internally buffered and delayed while Big FIFO
+	 *  mode is exiting."
+	 *
+	 * Which means that enabling the sprite can take an extra frame
+	 * when we start in big FIFO mode (LP1+). Thus we need to drop
+	 * down to LP0 and wait for vblank in order to make sure the
+	 * sprite gets enabled on the next vblank after the register write.
+	 * Doing otherwise would risk enabling the sprite one frame after
+	 * we've already signalled flip completion. We can resume LP1+
+	 * once the sprite has been enabled.
+	 *
+	 * With experimental results seems this is needed also for primary
+	 * plane, not only sprite plane.
+	 */
+	if (turn_on)
+		return true;
+
+	/*
+	 * WaCxSRDisabledForSpriteScaling:ivb
+	 * IVB SPR_SCALE/Scaling Enable
+	 * "Low Power watermarks must be disabled for at least one
+	 *  frame before enabling sprite scaling, and kept disabled
+	 *  until sprite scaling is disabled."
+	 *
+	 * ILK/SNB DVSASCALE/Scaling Enable
+	 * "When in Self Refresh Big FIFO mode, scaling enable will be
+	 *  masked off while Big FIFO mode is exiting."
+	 *
+	 * Despite the w/a only being listed for IVB we assume that
+	 * the ILK/SNB note has similar ramifications, hence we apply
+	 * the w/a on all three platforms.
+	 */
+	return !intel_plane_is_scaled(old_plane_state) &&
+		intel_plane_is_scaled(new_plane_state);
+}
+
+static int intel_plane_atomic_calc_changes(const struct intel_crtc_state *old_crtc_state,
+					   struct intel_crtc_state *new_crtc_state,
+					   const struct intel_plane_state *old_plane_state,
+					   struct intel_plane_state *new_plane_state)
+{
+	struct intel_crtc *crtc = to_intel_crtc(new_crtc_state->uapi.crtc);
+	struct intel_plane *plane = to_intel_plane(new_plane_state->uapi.plane);
+	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
+	bool mode_changed = intel_crtc_needs_modeset(new_crtc_state);
+	bool was_crtc_enabled = old_crtc_state->hw.active;
+	bool is_crtc_enabled = new_crtc_state->hw.active;
+	bool turn_off, turn_on, visible, was_visible;
+	int ret;
+
+	if (DISPLAY_VER(dev_priv) >= 9 && plane->id != PLANE_CURSOR) {
+		ret = skl_update_scaler_plane(new_crtc_state, new_plane_state);
+		if (ret)
+			return ret;
+	}
+
+	was_visible = old_plane_state->uapi.visible;
+	visible = new_plane_state->uapi.visible;
+
+	if (!was_crtc_enabled && drm_WARN_ON(&dev_priv->drm, was_visible))
+		was_visible = false;
+
+	/*
+	 * Visibility is calculated as if the crtc was on, but
+	 * after scaler setup everything depends on it being off
+	 * when the crtc isn't active.
+	 *
+	 * FIXME this is wrong for watermarks. Watermarks should also
+	 * be computed as if the pipe would be active. Perhaps move
+	 * per-plane wm computation to the .check_plane() hook, and
+	 * only combine the results from all planes in the current place?
+	 */
+	if (!is_crtc_enabled) {
+		intel_plane_set_invisible(new_crtc_state, new_plane_state);
+		visible = false;
+	}
+
+	if (!was_visible && !visible)
+		return 0;
+
+	turn_off = was_visible && (!visible || mode_changed);
+	turn_on = visible && (!was_visible || mode_changed);
+
+	drm_dbg_atomic(&dev_priv->drm,
+		       "[CRTC:%d:%s] with [PLANE:%d:%s] visible %i -> %i, off %i, on %i, ms %i\n",
+		       crtc->base.base.id, crtc->base.name,
+		       plane->base.base.id, plane->base.name,
+		       was_visible, visible,
+		       turn_off, turn_on, mode_changed);
+
+	if (visible || was_visible)
+		new_crtc_state->fb_bits |= plane->frontbuffer_bit;
+
+	if (HAS_GMCH(dev_priv) &&
+	    i9xx_must_disable_cxsr(new_crtc_state, old_plane_state, new_plane_state))
+		new_crtc_state->disable_cxsr = true;
+
+	if ((IS_IRONLAKE(dev_priv) || IS_SANDYBRIDGE(dev_priv) || IS_IVYBRIDGE(dev_priv)) &&
+	    ilk_must_disable_cxsr(new_crtc_state, old_plane_state, new_plane_state))
+		new_crtc_state->disable_cxsr = true;
+
+	if (intel_plane_do_async_flip(plane, old_crtc_state, new_crtc_state)) {
+		new_crtc_state->do_async_flip = true;
+		new_crtc_state->async_flip_planes |= BIT(plane->id);
+	} else if (plane->need_async_flip_toggle_wa &&
+		   new_crtc_state->uapi.async_flip) {
+		/*
+		 * On platforms with double buffered async flip bit we
+		 * set the bit already one frame early during the sync
+		 * flip (see {i9xx,skl}_plane_update_arm()). The
+		 * hardware will therefore be ready to perform a real
+		 * async flip during the next commit, without having
+		 * to wait yet another frame for the bit to latch.
+		 */
+		new_crtc_state->async_flip_planes |= BIT(plane->id);
+	}
+
+	return 0;
 }
 
 int intel_plane_atomic_check_with_state(const struct intel_crtc_state *old_crtc_state,
@@ -356,6 +623,10 @@ int intel_plane_atomic_check_with_state(const struct intel_crtc_state *old_crtc_
 		new_crtc_state->active_planes |= BIT(plane->id);
 
 	if (new_plane_state->uapi.visible &&
+	    intel_plane_is_scaled(new_plane_state))
+		new_crtc_state->scaled_planes |= BIT(plane->id);
+
+	if (new_plane_state->uapi.visible &&
 	    intel_format_info_is_yuv_semiplanar(fb->format, fb->modifier))
 		new_crtc_state->nv12_planes |= BIT(plane->id);
 
@@ -366,8 +637,27 @@ int intel_plane_atomic_check_with_state(const struct intel_crtc_state *old_crtc_
 	if (new_plane_state->uapi.visible || old_plane_state->uapi.visible)
 		new_crtc_state->update_planes |= BIT(plane->id);
 
-	new_crtc_state->data_rate[plane->id] =
-		intel_plane_data_rate(new_crtc_state, new_plane_state);
+	if (new_plane_state->uapi.visible &&
+	    intel_format_info_is_yuv_semiplanar(fb->format, fb->modifier)) {
+		new_crtc_state->data_rate_y[plane->id] =
+			intel_plane_data_rate(new_crtc_state, new_plane_state, 0);
+		new_crtc_state->data_rate[plane->id] =
+			intel_plane_data_rate(new_crtc_state, new_plane_state, 1);
+
+		new_crtc_state->rel_data_rate_y[plane->id] =
+			intel_plane_relative_data_rate(new_crtc_state,
+						       new_plane_state, 0);
+		new_crtc_state->rel_data_rate[plane->id] =
+			intel_plane_relative_data_rate(new_crtc_state,
+						       new_plane_state, 1);
+	} else if (new_plane_state->uapi.visible) {
+		new_crtc_state->data_rate[plane->id] =
+			intel_plane_data_rate(new_crtc_state, new_plane_state, 0);
+
+		new_crtc_state->rel_data_rate[plane->id] =
+			intel_plane_relative_data_rate(new_crtc_state,
+						       new_plane_state, 0);
+	}
 
 	return intel_plane_atomic_calc_changes(old_crtc_state, new_crtc_state,
 					       old_plane_state, new_plane_state);
@@ -390,31 +680,32 @@ intel_crtc_get_plane(struct intel_crtc *crtc, enum plane_id plane_id)
 int intel_plane_atomic_check(struct intel_atomic_state *state,
 			     struct intel_plane *plane)
 {
-	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	struct intel_display *display = to_intel_display(state);
 	struct intel_plane_state *new_plane_state =
 		intel_atomic_get_new_plane_state(state, plane);
 	const struct intel_plane_state *old_plane_state =
 		intel_atomic_get_old_plane_state(state, plane);
-	const struct intel_plane_state *new_master_plane_state;
-	struct intel_crtc *crtc = intel_crtc_for_pipe(i915, plane->pipe);
+	const struct intel_plane_state *new_primary_crtc_plane_state;
+	struct intel_crtc *crtc = intel_crtc_for_pipe(display, plane->pipe);
 	const struct intel_crtc_state *old_crtc_state =
 		intel_atomic_get_old_crtc_state(state, crtc);
 	struct intel_crtc_state *new_crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
 
-	if (new_crtc_state && new_crtc_state->bigjoiner_slave) {
-		struct intel_plane *master_plane =
-			intel_crtc_get_plane(new_crtc_state->bigjoiner_linked_crtc,
-					     plane->id);
+	if (new_crtc_state && intel_crtc_is_joiner_secondary(new_crtc_state)) {
+		struct intel_crtc *primary_crtc =
+			intel_primary_crtc(new_crtc_state);
+		struct intel_plane *primary_crtc_plane =
+			intel_crtc_get_plane(primary_crtc, plane->id);
 
-		new_master_plane_state =
-			intel_atomic_get_new_plane_state(state, master_plane);
+		new_primary_crtc_plane_state =
+			intel_atomic_get_new_plane_state(state, primary_crtc_plane);
 	} else {
-		new_master_plane_state = new_plane_state;
+		new_primary_crtc_plane_state = new_plane_state;
 	}
 
 	intel_plane_copy_uapi_to_hw_state(new_plane_state,
-					  new_master_plane_state,
+					  new_primary_crtc_plane_state,
 					  crtc);
 
 	new_plane_state->uapi.visible = false;
@@ -430,13 +721,13 @@ int intel_plane_atomic_check(struct intel_atomic_state *state,
 static struct intel_plane *
 skl_next_plane_to_commit(struct intel_atomic_state *state,
 			 struct intel_crtc *crtc,
-			 struct skl_ddb_entry entries_y[I915_MAX_PLANES],
-			 struct skl_ddb_entry entries_uv[I915_MAX_PLANES],
+			 struct skl_ddb_entry ddb[I915_MAX_PLANES],
+			 struct skl_ddb_entry ddb_y[I915_MAX_PLANES],
 			 unsigned int *update_mask)
 {
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct intel_plane_state *plane_state;
+	struct intel_plane_state __maybe_unused *plane_state;
 	struct intel_plane *plane;
 	int i;
 
@@ -450,17 +741,15 @@ skl_next_plane_to_commit(struct intel_atomic_state *state,
 		    !(*update_mask & BIT(plane_id)))
 			continue;
 
-		if (skl_ddb_allocation_overlaps(&crtc_state->wm.skl.plane_ddb_y[plane_id],
-						entries_y,
-						I915_MAX_PLANES, plane_id) ||
-		    skl_ddb_allocation_overlaps(&crtc_state->wm.skl.plane_ddb_uv[plane_id],
-						entries_uv,
-						I915_MAX_PLANES, plane_id))
+		if (skl_ddb_allocation_overlaps(&crtc_state->wm.skl.plane_ddb[plane_id],
+						ddb, I915_MAX_PLANES, plane_id) ||
+		    skl_ddb_allocation_overlaps(&crtc_state->wm.skl.plane_ddb_y[plane_id],
+						ddb_y, I915_MAX_PLANES, plane_id))
 			continue;
 
 		*update_mask &= ~BIT(plane_id);
-		entries_y[plane_id] = crtc_state->wm.skl.plane_ddb_y[plane_id];
-		entries_uv[plane_id] = crtc_state->wm.skl.plane_ddb_uv[plane_id];
+		ddb[plane_id] = crtc_state->wm.skl.plane_ddb[plane_id];
+		ddb_y[plane_id] = crtc_state->wm.skl.plane_ddb_y[plane_id];
 
 		return plane;
 	}
@@ -471,43 +760,60 @@ skl_next_plane_to_commit(struct intel_atomic_state *state,
 	return NULL;
 }
 
-void intel_plane_update_noarm(struct intel_plane *plane,
+void intel_plane_update_noarm(struct intel_dsb *dsb,
+			      struct intel_plane *plane,
 			      const struct intel_crtc_state *crtc_state,
 			      const struct intel_plane_state *plane_state)
 {
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
 
-	trace_intel_plane_update_noarm(&plane->base, crtc);
+	trace_intel_plane_update_noarm(plane, crtc);
 
 	if (plane->update_noarm)
-		plane->update_noarm(plane, crtc_state, plane_state);
+		plane->update_noarm(dsb, plane, crtc_state, plane_state);
 }
 
-void intel_plane_update_arm(struct intel_plane *plane,
+void intel_plane_async_flip(struct intel_dsb *dsb,
+			    struct intel_plane *plane,
+			    const struct intel_crtc_state *crtc_state,
+			    const struct intel_plane_state *plane_state,
+			    bool async_flip)
+{
+	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+
+	trace_intel_plane_async_flip(plane, crtc, async_flip);
+	plane->async_flip(dsb, plane, crtc_state, plane_state, async_flip);
+}
+
+void intel_plane_update_arm(struct intel_dsb *dsb,
+			    struct intel_plane *plane,
 			    const struct intel_crtc_state *crtc_state,
 			    const struct intel_plane_state *plane_state)
 {
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
 
-	trace_intel_plane_update_arm(&plane->base, crtc);
+	if (crtc_state->do_async_flip && plane->async_flip) {
+		intel_plane_async_flip(dsb, plane, crtc_state, plane_state, true);
+		return;
+	}
 
-	if (crtc_state->uapi.async_flip && plane->async_flip)
-		plane->async_flip(plane, crtc_state, plane_state, true);
-	else
-		plane->update_arm(plane, crtc_state, plane_state);
+	trace_intel_plane_update_arm(plane, crtc);
+	plane->update_arm(dsb, plane, crtc_state, plane_state);
 }
 
-void intel_plane_disable_arm(struct intel_plane *plane,
+void intel_plane_disable_arm(struct intel_dsb *dsb,
+			     struct intel_plane *plane,
 			     const struct intel_crtc_state *crtc_state)
 {
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
 
-	trace_intel_plane_disable_arm(&plane->base, crtc);
-	plane->disable_arm(plane, crtc_state);
+	trace_intel_plane_disable_arm(plane, crtc);
+	plane->disable_arm(dsb, plane, crtc_state);
 }
 
-void intel_update_planes_on_crtc(struct intel_atomic_state *state,
-				 struct intel_crtc *crtc)
+void intel_crtc_planes_update_noarm(struct intel_dsb *dsb,
+				    struct intel_atomic_state *state,
+				    struct intel_crtc *crtc)
 {
 	struct intel_crtc_state *new_crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
@@ -516,7 +822,7 @@ void intel_update_planes_on_crtc(struct intel_atomic_state *state,
 	struct intel_plane *plane;
 	int i;
 
-	if (new_crtc_state->uapi.async_flip)
+	if (new_crtc_state->do_async_flip)
 		return;
 
 	/*
@@ -531,30 +837,30 @@ void intel_update_planes_on_crtc(struct intel_atomic_state *state,
 		/* TODO: for mailbox updates this should be skipped */
 		if (new_plane_state->uapi.visible ||
 		    new_plane_state->planar_slave)
-			intel_plane_update_noarm(plane, new_crtc_state, new_plane_state);
+			intel_plane_update_noarm(dsb, plane,
+						 new_crtc_state, new_plane_state);
 	}
 }
 
-void skl_arm_planes_on_crtc(struct intel_atomic_state *state,
-			    struct intel_crtc *crtc)
+static void skl_crtc_planes_update_arm(struct intel_dsb *dsb,
+				       struct intel_atomic_state *state,
+				       struct intel_crtc *crtc)
 {
 	struct intel_crtc_state *old_crtc_state =
 		intel_atomic_get_old_crtc_state(state, crtc);
 	struct intel_crtc_state *new_crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct skl_ddb_entry entries_y[I915_MAX_PLANES];
-	struct skl_ddb_entry entries_uv[I915_MAX_PLANES];
+	struct skl_ddb_entry ddb[I915_MAX_PLANES];
+	struct skl_ddb_entry ddb_y[I915_MAX_PLANES];
 	u32 update_mask = new_crtc_state->update_planes;
 	struct intel_plane *plane;
 
-	memcpy(entries_y, old_crtc_state->wm.skl.plane_ddb_y,
+	memcpy(ddb, old_crtc_state->wm.skl.plane_ddb,
+	       sizeof(old_crtc_state->wm.skl.plane_ddb));
+	memcpy(ddb_y, old_crtc_state->wm.skl.plane_ddb_y,
 	       sizeof(old_crtc_state->wm.skl.plane_ddb_y));
-	memcpy(entries_uv, old_crtc_state->wm.skl.plane_ddb_uv,
-	       sizeof(old_crtc_state->wm.skl.plane_ddb_uv));
 
-	while ((plane = skl_next_plane_to_commit(state, crtc,
-						 entries_y, entries_uv,
-						 &update_mask))) {
+	while ((plane = skl_next_plane_to_commit(state, crtc, ddb, ddb_y, &update_mask))) {
 		struct intel_plane_state *new_plane_state =
 			intel_atomic_get_new_plane_state(state, plane);
 
@@ -564,14 +870,15 @@ void skl_arm_planes_on_crtc(struct intel_atomic_state *state,
 		 */
 		if (new_plane_state->uapi.visible ||
 		    new_plane_state->planar_slave)
-			intel_plane_update_arm(plane, new_crtc_state, new_plane_state);
+			intel_plane_update_arm(dsb, plane, new_crtc_state, new_plane_state);
 		else
-			intel_plane_disable_arm(plane, new_crtc_state);
+			intel_plane_disable_arm(dsb, plane, new_crtc_state);
 	}
 }
 
-void i9xx_arm_planes_on_crtc(struct intel_atomic_state *state,
-			     struct intel_crtc *crtc)
+static void i9xx_crtc_planes_update_arm(struct intel_dsb *dsb,
+					struct intel_atomic_state *state,
+					struct intel_crtc *crtc)
 {
 	struct intel_crtc_state *new_crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
@@ -590,10 +897,22 @@ void i9xx_arm_planes_on_crtc(struct intel_atomic_state *state,
 		 * would have to be called here as well.
 		 */
 		if (new_plane_state->uapi.visible)
-			intel_plane_update_arm(plane, new_crtc_state, new_plane_state);
+			intel_plane_update_arm(dsb, plane, new_crtc_state, new_plane_state);
 		else
-			intel_plane_disable_arm(plane, new_crtc_state);
+			intel_plane_disable_arm(dsb, plane, new_crtc_state);
 	}
+}
+
+void intel_crtc_planes_update_arm(struct intel_dsb *dsb,
+				  struct intel_atomic_state *state,
+				  struct intel_crtc *crtc)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+
+	if (DISPLAY_VER(i915) >= 9)
+		skl_crtc_planes_update_arm(dsb, state, crtc);
+	else
+		i9xx_crtc_planes_update_arm(dsb, state, crtc);
 }
 
 int intel_atomic_plane_check_clipping(struct intel_plane_state *plane_state,
@@ -601,11 +920,12 @@ int intel_atomic_plane_check_clipping(struct intel_plane_state *plane_state,
 				      int min_scale, int max_scale,
 				      bool can_position)
 {
+	struct drm_i915_private *i915 = to_i915(plane_state->uapi.plane->dev);
 	struct drm_framebuffer *fb = plane_state->hw.fb;
 	struct drm_rect *src = &plane_state->uapi.src;
 	struct drm_rect *dst = &plane_state->uapi.dst;
+	const struct drm_rect *clip = &crtc_state->pipe_src;
 	unsigned int rotation = plane_state->hw.rotation;
-	struct drm_rect clip = {};
 	int hscale, vscale;
 
 	if (!fb) {
@@ -619,96 +939,139 @@ int intel_atomic_plane_check_clipping(struct intel_plane_state *plane_state,
 	hscale = drm_rect_calc_hscale(src, dst, min_scale, max_scale);
 	vscale = drm_rect_calc_vscale(src, dst, min_scale, max_scale);
 	if (hscale < 0 || vscale < 0) {
-		DRM_DEBUG_KMS("Invalid scaling of plane\n");
+		drm_dbg_kms(&i915->drm, "Invalid scaling of plane\n");
 		drm_rect_debug_print("src: ", src, true);
 		drm_rect_debug_print("dst: ", dst, false);
 		return -ERANGE;
 	}
 
-	if (crtc_state->hw.enable) {
-		clip.x2 = crtc_state->pipe_src_w;
-		clip.y2 = crtc_state->pipe_src_h;
-	}
-
-	/* right side of the image is on the slave crtc, adjust dst to match */
-	if (crtc_state->bigjoiner_slave)
-		drm_rect_translate(dst, -crtc_state->pipe_src_w, 0);
-
 	/*
 	 * FIXME: This might need further adjustment for seamless scaling
 	 * with phase information, for the 2p2 and 2p1 scenarios.
 	 */
-	plane_state->uapi.visible = drm_rect_clip_scaled(src, dst, &clip);
+	plane_state->uapi.visible = drm_rect_clip_scaled(src, dst, clip);
 
 	drm_rect_rotate_inv(src, fb->width << 16, fb->height << 16, rotation);
 
 	if (!can_position && plane_state->uapi.visible &&
-	    !drm_rect_equals(dst, &clip)) {
-		DRM_DEBUG_KMS("Plane must cover entire CRTC\n");
+	    !drm_rect_equals(dst, clip)) {
+		drm_dbg_kms(&i915->drm, "Plane must cover entire CRTC\n");
 		drm_rect_debug_print("dst: ", dst, false);
-		drm_rect_debug_print("clip: ", &clip, false);
+		drm_rect_debug_print("clip: ", clip, false);
+		return -EINVAL;
+	}
+
+	/* final plane coordinates will be relative to the plane's pipe */
+	drm_rect_translate(dst, -clip->x1, -clip->y1);
+
+	return 0;
+}
+
+int intel_plane_check_src_coordinates(struct intel_plane_state *plane_state)
+{
+	struct drm_i915_private *i915 = to_i915(plane_state->uapi.plane->dev);
+	const struct drm_framebuffer *fb = plane_state->hw.fb;
+	struct drm_rect *src = &plane_state->uapi.src;
+	u32 src_x, src_y, src_w, src_h, hsub, vsub;
+	bool rotated = drm_rotation_90_or_270(plane_state->hw.rotation);
+
+	/*
+	 * FIXME hsub/vsub vs. block size is a mess. Pre-tgl CCS
+	 * abuses hsub/vsub so we can't use them here. But as they
+	 * are limited to 32bpp RGB formats we don't actually need
+	 * to check anything.
+	 */
+	if (fb->modifier == I915_FORMAT_MOD_Y_TILED_CCS ||
+	    fb->modifier == I915_FORMAT_MOD_Yf_TILED_CCS)
+		return 0;
+
+	/*
+	 * Hardware doesn't handle subpixel coordinates.
+	 * Adjust to (macro)pixel boundary, but be careful not to
+	 * increase the source viewport size, because that could
+	 * push the downscaling factor out of bounds.
+	 */
+	src_x = src->x1 >> 16;
+	src_w = drm_rect_width(src) >> 16;
+	src_y = src->y1 >> 16;
+	src_h = drm_rect_height(src) >> 16;
+
+	drm_rect_init(src, src_x << 16, src_y << 16,
+		      src_w << 16, src_h << 16);
+
+	if (fb->format->format == DRM_FORMAT_RGB565 && rotated) {
+		hsub = 2;
+		vsub = 2;
+	} else if (DISPLAY_VER(i915) >= 20 &&
+		   intel_format_info_is_yuv_semiplanar(fb->format, fb->modifier)) {
+		/*
+		 * This allows NV12 and P0xx formats to have odd size and/or odd
+		 * source coordinates on DISPLAY_VER(i915) >= 20
+		 */
+		hsub = 1;
+		vsub = 1;
+
+		/* Wa_16023981245 */
+		if ((DISPLAY_VERx100(i915) == 2000 ||
+		     DISPLAY_VERx100(i915) == 3000) &&
+		     src_x % 2 != 0)
+			hsub = 2;
+	} else {
+		hsub = fb->format->hsub;
+		vsub = fb->format->vsub;
+	}
+
+	if (rotated)
+		hsub = vsub = max(hsub, vsub);
+
+	if (src_x % hsub || src_w % hsub) {
+		drm_dbg_kms(&i915->drm, "src x/w (%u, %u) must be a multiple of %u (rotated: %s)\n",
+			    src_x, src_w, hsub, str_yes_no(rotated));
+		return -EINVAL;
+	}
+
+	if (src_y % vsub || src_h % vsub) {
+		drm_dbg_kms(&i915->drm, "src y/h (%u, %u) must be a multiple of %u (rotated: %s)\n",
+			    src_y, src_h, vsub, str_yes_no(rotated));
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-struct wait_rps_boost {
-	struct wait_queue_entry wait;
-
-	struct drm_crtc *crtc;
-	struct i915_request *request;
-};
-
-static int do_rps_boost(struct wait_queue_entry *_wait,
-			unsigned mode, int sync, void *key)
+static int add_dma_resv_fences(struct dma_resv *resv,
+			       struct drm_plane_state *new_plane_state)
 {
-	struct wait_rps_boost *wait = container_of(_wait, typeof(*wait), wait);
-	struct i915_request *rq = wait->request;
+	struct dma_fence *fence = dma_fence_get(new_plane_state->fence);
+	struct dma_fence *new;
+	int ret;
 
-	/*
-	 * If we missed the vblank, but the request is already running it
-	 * is reasonable to assume that it will complete before the next
-	 * vblank without our intervention, so leave RPS alone.
-	 */
-	if (!i915_request_started(rq))
-		intel_rps_boost(rq);
-	i915_request_put(rq);
+	ret = dma_resv_get_singleton(resv, dma_resv_usage_rw(false), &new);
+	if (ret)
+		goto error;
 
-	drm_crtc_vblank_put(wait->crtc);
+	if (new && fence) {
+		struct dma_fence_chain *chain = dma_fence_chain_alloc();
 
-	list_del(&wait->wait.entry);
-	kfree(wait);
-	return 1;
-}
+		if (!chain) {
+			ret = -ENOMEM;
+			goto error;
+		}
 
-static void add_rps_boost_after_vblank(struct drm_crtc *crtc,
-				       struct dma_fence *fence)
-{
-	struct wait_rps_boost *wait;
+		dma_fence_chain_init(chain, fence, new, 1);
+		fence = &chain->base;
 
-	if (!dma_fence_is_i915(fence))
-		return;
-
-	if (DISPLAY_VER(to_i915(crtc->dev)) < 6)
-		return;
-
-	if (drm_crtc_vblank_get(crtc))
-		return;
-
-	wait = kmalloc(sizeof(*wait), GFP_KERNEL);
-	if (!wait) {
-		drm_crtc_vblank_put(crtc);
-		return;
+	} else if (new) {
+		fence = new;
 	}
 
-	wait->request = to_request(dma_fence_get(fence));
-	wait->crtc = crtc;
+	dma_fence_put(new_plane_state->fence);
+	new_plane_state->fence = fence;
+	return 0;
 
-	wait->wait.func = do_rps_boost;
-	wait->wait.flags = 0;
-
-	add_wait_queue(drm_crtc_vblank_waitqueue(crtc), &wait->wait);
+error:
+	dma_fence_put(fence);
+	return ret;
 }
 
 /**
@@ -734,14 +1097,14 @@ intel_prepare_plane_fb(struct drm_plane *_plane,
 	struct intel_atomic_state *state =
 		to_intel_atomic_state(new_plane_state->uapi.state);
 	struct drm_i915_private *dev_priv = to_i915(plane->base.dev);
-	const struct intel_plane_state *old_plane_state =
+	struct intel_plane_state *old_plane_state =
 		intel_atomic_get_old_plane_state(state, plane);
-	struct drm_i915_gem_object *obj = intel_fb_obj(new_plane_state->hw.fb);
-	struct drm_i915_gem_object *old_obj = intel_fb_obj(old_plane_state->hw.fb);
+	struct drm_gem_object *obj = intel_fb_bo(new_plane_state->hw.fb);
+	struct drm_gem_object *old_obj = intel_fb_bo(old_plane_state->hw.fb);
 	int ret;
 
 	if (old_obj) {
-		const struct intel_crtc_state *crtc_state =
+		const struct intel_crtc_state *new_crtc_state =
 			intel_atomic_get_new_crtc_state(state,
 							to_intel_crtc(old_plane_state->hw.crtc));
 
@@ -756,58 +1119,31 @@ intel_prepare_plane_fb(struct drm_plane *_plane,
 		 * This should only fail upon a hung GPU, in which case we
 		 * can safely continue.
 		 */
-		if (intel_crtc_needs_modeset(crtc_state)) {
-			ret = i915_sw_fence_await_reservation(&state->commit_ready,
-							      old_obj->base.resv, NULL,
-							      false, 0,
-							      GFP_KERNEL);
+		if (new_crtc_state && intel_crtc_needs_modeset(new_crtc_state)) {
+			ret = add_dma_resv_fences(old_obj->resv,
+						  &new_plane_state->uapi);
 			if (ret < 0)
 				return ret;
 		}
 	}
 
-	if (new_plane_state->uapi.fence) { /* explicit fencing */
-		i915_gem_fence_wait_priority(new_plane_state->uapi.fence,
-					     &attr);
-		ret = i915_sw_fence_await_dma_fence(&state->commit_ready,
-						    new_plane_state->uapi.fence,
-						    i915_fence_timeout(dev_priv),
-						    GFP_KERNEL);
-		if (ret < 0)
-			return ret;
-	}
-
 	if (!obj)
 		return 0;
-
 
 	ret = intel_plane_pin_fb(new_plane_state);
 	if (ret)
 		return ret;
 
-	i915_gem_object_wait_priority(obj, 0, &attr);
+	ret = drm_gem_plane_helper_prepare_fb(&plane->base, &new_plane_state->uapi);
+	if (ret < 0)
+		goto unpin_fb;
 
-	if (!new_plane_state->uapi.fence) { /* implicit fencing */
-		struct dma_resv_iter cursor;
-		struct dma_fence *fence;
+	if (new_plane_state->uapi.fence) {
+		i915_gem_fence_wait_priority(new_plane_state->uapi.fence,
+					     &attr);
 
-		ret = i915_sw_fence_await_reservation(&state->commit_ready,
-						      obj->base.resv, NULL,
-						      false,
-						      i915_fence_timeout(dev_priv),
-						      GFP_KERNEL);
-		if (ret < 0)
-			goto unpin_fb;
-
-		dma_resv_iter_begin(&cursor, obj->base.resv, false);
-		dma_resv_for_each_fence_unlocked(&cursor, fence) {
-			add_rps_boost_after_vblank(new_plane_state->hw.crtc,
-						   fence);
-		}
-		dma_resv_iter_end(&cursor);
-	} else {
-		add_rps_boost_after_vblank(new_plane_state->hw.crtc,
-					   new_plane_state->uapi.fence);
+		intel_display_rps_boost_after_vblank(new_plane_state->hw.crtc,
+						     new_plane_state->uapi.fence);
 	}
 
 	/*
@@ -818,10 +1154,7 @@ intel_prepare_plane_fb(struct drm_plane *_plane,
 	 * that are not quite steady state without resorting to forcing
 	 * maximum clocks following a vblank miss (see do_rps_boost()).
 	 */
-	if (!state->rps_interactive) {
-		intel_rps_mark_interactive(&to_gt(dev_priv)->rps, true);
-		state->rps_interactive = true;
-	}
+	intel_display_rps_mark_interactive(dev_priv, state, true);
 
 	return 0;
 
@@ -847,17 +1180,13 @@ intel_cleanup_plane_fb(struct drm_plane *plane,
 	struct intel_atomic_state *state =
 		to_intel_atomic_state(old_plane_state->uapi.state);
 	struct drm_i915_private *dev_priv = to_i915(plane->dev);
-	struct drm_i915_gem_object *obj = intel_fb_obj(old_plane_state->hw.fb);
+	struct drm_gem_object *obj = intel_fb_bo(old_plane_state->hw.fb);
 
 	if (!obj)
 		return;
 
-	if (state->rps_interactive) {
-		intel_rps_mark_interactive(&to_gt(dev_priv)->rps, false);
-		state->rps_interactive = false;
-	}
+	intel_display_rps_mark_interactive(dev_priv, state, false);
 
-	/* Should only be called after a successful intel_prepare_plane_fb()! */
 	intel_plane_unpin_fb(old_plane_state);
 }
 
@@ -869,4 +1198,15 @@ static const struct drm_plane_helper_funcs intel_plane_helper_funcs = {
 void intel_plane_helper_add(struct intel_plane *plane)
 {
 	drm_plane_helper_add(&plane->base, &intel_plane_helper_funcs);
+}
+
+void intel_plane_init_cursor_vblank_work(struct intel_plane_state *old_plane_state,
+					 struct intel_plane_state *new_plane_state)
+{
+	if (!old_plane_state->ggtt_vma ||
+	    old_plane_state->ggtt_vma == new_plane_state->ggtt_vma)
+		return;
+
+	drm_vblank_work_init(&old_plane_state->unpin_work, old_plane_state->uapi.crtc,
+			     intel_cursor_unpin_work);
 }

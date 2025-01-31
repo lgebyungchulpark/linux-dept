@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 /*
- * Copyright 2018-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
+ * Copyright 2018-2024 Amazon.com, Inc. or its affiliates. All rights reserved.
  */
 
 #include "efa_com.h"
@@ -31,6 +31,10 @@ int efa_com_create_qp(struct efa_com_dev *edev,
 	create_qp_cmd.qp_alloc_size.recv_queue_depth =
 			params->rq_depth;
 	create_qp_cmd.uar = params->uarn;
+	create_qp_cmd.sl = params->sl;
+
+	if (params->unsolicited_write_recv)
+		EFA_SET(&create_qp_cmd.flags, EFA_ADMIN_CREATE_QP_CMD_UNSOLICITED_WRITE_RECV, 1);
 
 	err = efa_com_cmd_exec(aq,
 			       (struct efa_admin_aq_entry *)&create_qp_cmd,
@@ -160,7 +164,7 @@ int efa_com_create_cq(struct efa_com_dev *edev,
 	EFA_SET(&create_cmd.cq_caps_2,
 		EFA_ADMIN_CREATE_CQ_CMD_CQ_ENTRY_SIZE_WORDS,
 		params->entry_size_in_bytes / 4);
-	create_cmd.cq_depth = params->cq_depth;
+	create_cmd.sub_cq_depth = params->sub_cq_depth;
 	create_cmd.num_sub_cqs = params->num_sub_cqs;
 	create_cmd.uar = params->uarn;
 	if (params->interrupt_mode_enabled) {
@@ -168,7 +172,10 @@ int efa_com_create_cq(struct efa_com_dev *edev,
 			EFA_ADMIN_CREATE_CQ_CMD_INTERRUPT_MODE_ENABLED, 1);
 		create_cmd.eqn = params->eqn;
 	}
-
+	if (params->set_src_addr) {
+		EFA_SET(&create_cmd.cq_caps_2,
+			EFA_ADMIN_CREATE_CQ_CMD_SET_SRC_ADDR, 1);
+	}
 	efa_com_set_dma_addr(params->dma_addr,
 			     &create_cmd.cq_ba.mem_addr_high,
 			     &create_cmd.cq_ba.mem_addr_low);
@@ -185,7 +192,7 @@ int efa_com_create_cq(struct efa_com_dev *edev,
 	}
 
 	result->cq_idx = cmd_completion.cq_idx;
-	result->actual_depth = params->cq_depth;
+	result->actual_depth = params->sub_cq_depth;
 	result->db_off = cmd_completion.db_offset;
 	result->db_valid = EFA_GET(&cmd_completion.flags,
 				   EFA_ADMIN_CREATE_CQ_RESP_DB_VALID);
@@ -267,6 +274,15 @@ int efa_com_register_mr(struct efa_com_dev *edev,
 
 	result->l_key = cmd_completion.l_key;
 	result->r_key = cmd_completion.r_key;
+	result->ic_info.recv_ic_id = cmd_completion.recv_ic_id;
+	result->ic_info.rdma_read_ic_id = cmd_completion.rdma_read_ic_id;
+	result->ic_info.rdma_recv_ic_id = cmd_completion.rdma_recv_ic_id;
+	result->ic_info.recv_ic_id_valid = EFA_GET(&cmd_completion.validity,
+						   EFA_ADMIN_REG_MR_RESP_RECV_IC_ID);
+	result->ic_info.rdma_read_ic_id_valid = EFA_GET(&cmd_completion.validity,
+							EFA_ADMIN_REG_MR_RESP_RDMA_READ_IC_ID);
+	result->ic_info.rdma_recv_ic_id_valid = EFA_GET(&cmd_completion.validity,
+							EFA_ADMIN_REG_MR_RESP_RDMA_RECV_IC_ID);
 
 	return 0;
 }
@@ -450,6 +466,8 @@ int efa_com_get_device_attr(struct efa_com_dev *edev,
 	result->db_bar = resp.u.device_attr.db_bar;
 	result->max_rdma_size = resp.u.device_attr.max_rdma_size;
 	result->device_caps = resp.u.device_attr.device_caps;
+	result->guid = resp.u.device_attr.guid;
+	result->max_link_speed_gbps = resp.u.device_attr.max_link_speed_gbps;
 
 	if (result->admin_api_version < 1) {
 		ibdev_err_ratelimited(
@@ -790,6 +808,12 @@ int efa_com_get_stats(struct efa_com_dev *edev,
 		result->rdma_read_stats.read_bytes = resp.u.rdma_read_stats.read_bytes;
 		result->rdma_read_stats.read_wr_err = resp.u.rdma_read_stats.read_wr_err;
 		result->rdma_read_stats.read_resp_bytes = resp.u.rdma_read_stats.read_resp_bytes;
+		break;
+	case EFA_ADMIN_GET_STATS_TYPE_RDMA_WRITE:
+		result->rdma_write_stats.write_wrs = resp.u.rdma_write_stats.write_wrs;
+		result->rdma_write_stats.write_bytes = resp.u.rdma_write_stats.write_bytes;
+		result->rdma_write_stats.write_wr_err = resp.u.rdma_write_stats.write_wr_err;
+		result->rdma_write_stats.write_recv_bytes = resp.u.rdma_write_stats.write_recv_bytes;
 		break;
 	}
 

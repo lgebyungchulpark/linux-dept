@@ -11,7 +11,6 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/module.h>
-#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/irqdomain.h>
@@ -117,8 +116,8 @@ static irqreturn_t hi6421v600_irq_handler(int irq, void *__priv)
 			 * If both powerkey down and up IRQs are received,
 			 * handle them at the right order
 			 */
-			generic_handle_irq(priv->irqs[POWERKEY_DOWN]);
-			generic_handle_irq(priv->irqs[POWERKEY_UP]);
+			generic_handle_irq_safe(priv->irqs[POWERKEY_DOWN]);
+			generic_handle_irq_safe(priv->irqs[POWERKEY_UP]);
 			pending &= ~HISI_IRQ_POWERKEY_UP_DOWN;
 		}
 
@@ -126,7 +125,7 @@ static irqreturn_t hi6421v600_irq_handler(int irq, void *__priv)
 			continue;
 
 		for_each_set_bit(offset, &pending, BITS_PER_BYTE) {
-			generic_handle_irq(priv->irqs[offset + i * BITS_PER_BYTE]);
+			generic_handle_irq_safe(priv->irqs[offset + i * BITS_PER_BYTE]);
 		}
 	}
 
@@ -244,10 +243,8 @@ static int hi6421v600_irq_probe(struct platform_device *pdev)
 	pmic_pdev = container_of(pmic_dev, struct platform_device, dev);
 
 	priv->irq = platform_get_irq(pmic_pdev, 0);
-	if (priv->irq < 0) {
-		dev_err(dev, "Error %d when getting IRQs\n", priv->irq);
+	if (priv->irq < 0)
 		return priv->irq;
-	}
 
 	platform_set_drvdata(pdev, priv);
 

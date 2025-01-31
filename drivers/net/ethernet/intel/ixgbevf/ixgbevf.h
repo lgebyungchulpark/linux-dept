@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright(c) 1999 - 2018 Intel Corporation. */
+/* Copyright(c) 1999 - 2024 Intel Corporation. */
 
 #ifndef _IXGBEVF_H_
 #define _IXGBEVF_H_
@@ -387,6 +387,8 @@ struct ixgbevf_adapter {
 	u32 *rss_key;
 	u8 rss_indir_tbl[IXGBEVF_X550_VFRETA_SIZE];
 	u32 flags;
+	bool link_state;
+
 #define IXGBEVF_FLAGS_LEGACY_RX		BIT(1)
 
 #ifdef CONFIG_XFRM
@@ -416,6 +418,8 @@ enum ixgbevf_boards {
 	board_X550EM_x_vf,
 	board_X550EM_x_vf_hv,
 	board_x550em_a_vf,
+	board_e610_vf,
+	board_e610_vf_hv,
 };
 
 enum ixgbevf_xcast_modes {
@@ -432,12 +436,13 @@ extern const struct ixgbevf_info ixgbevf_X550EM_x_vf_info;
 extern const struct ixgbe_mbx_operations ixgbevf_mbx_ops;
 extern const struct ixgbe_mbx_operations ixgbevf_mbx_ops_legacy;
 extern const struct ixgbevf_info ixgbevf_x550em_a_vf_info;
+extern const struct ixgbevf_info ixgbevf_e610_vf_info;
 
 extern const struct ixgbevf_info ixgbevf_82599_vf_hv_info;
 extern const struct ixgbevf_info ixgbevf_X540_vf_hv_info;
 extern const struct ixgbevf_info ixgbevf_X550_vf_hv_info;
 extern const struct ixgbevf_info ixgbevf_X550EM_x_vf_hv_info;
-extern const struct ixgbe_mbx_operations ixgbevf_hv_mbx_ops;
+extern const struct ixgbevf_info ixgbevf_e610_vf_hv_info;
 
 /* needed by ethtool.c */
 extern const char ixgbevf_driver_name[];
@@ -483,9 +488,6 @@ static inline int ixgbevf_ipsec_tx(struct ixgbevf_ring *tx_ring,
 				   struct ixgbevf_ipsec_tx_data *itd)
 { return 0; }
 #endif /* CONFIG_IXGBEVF_IPSEC */
-
-void ixgbe_napi_add_all(struct ixgbevf_adapter *adapter);
-void ixgbe_napi_del_all(struct ixgbevf_adapter *adapter);
 
 #define ixgbevf_hw_to_netdev(hw) \
 	(((struct ixgbevf_adapter *)(hw)->back)->netdev)

@@ -965,7 +965,7 @@ static int pxa168_init_phy(struct net_device *dev)
 	if (dev->phydev)
 		return 0;
 
-	phy = mdiobus_scan(pep->smi_bus, pep->phy_addr);
+	phy = mdiobus_scan_c22(pep->smi_bus, pep->phy_addr);
 	if (IS_ERR(phy))
 		return PTR_ERR(phy);
 
@@ -1188,7 +1188,7 @@ static int pxa168_eth_change_mtu(struct net_device *dev, int mtu)
 {
 	struct pxa168_eth_private *pep = netdev_priv(dev);
 
-	dev->mtu = mtu;
+	WRITE_ONCE(dev->mtu, mtu);
 	set_port_config_ext(pep);
 
 	if (!netif_running(dev))
@@ -1354,10 +1354,10 @@ static void pxa168_eth_netpoll(struct net_device *dev)
 static void pxa168_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRIVER_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRIVER_VERSION, sizeof(info->version));
-	strlcpy(info->fw_version, "N/A", sizeof(info->fw_version));
-	strlcpy(info->bus_info, "N/A", sizeof(info->bus_info));
+	strscpy(info->driver, DRIVER_NAME, sizeof(info->driver));
+	strscpy(info->version, DRIVER_VERSION, sizeof(info->version));
+	strscpy(info->fw_version, "N/A", sizeof(info->fw_version));
+	strscpy(info->bus_info, "N/A", sizeof(info->bus_info));
 }
 
 static const struct ethtool_ops pxa168_ethtool_ops = {
@@ -1394,18 +1394,15 @@ static int pxa168_eth_probe(struct platform_device *pdev)
 
 	printk(KERN_NOTICE "PXA168 10/100 Ethernet Driver\n");
 
-	clk = devm_clk_get(&pdev->dev, NULL);
+	clk = devm_clk_get_enabled(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
-		dev_err(&pdev->dev, "Fast Ethernet failed to get clock\n");
+		dev_err(&pdev->dev, "Fast Ethernet failed to get and enable clock\n");
 		return -ENODEV;
 	}
-	clk_prepare_enable(clk);
 
 	dev = alloc_etherdev(sizeof(struct pxa168_eth_private));
-	if (!dev) {
-		err = -ENOMEM;
-		goto err_clk;
-	}
+	if (!dev)
+		return -ENOMEM;
 
 	platform_set_drvdata(pdev, dev);
 	pep = netdev_priv(dev);
@@ -1486,7 +1483,8 @@ static int pxa168_eth_probe(struct platform_device *pdev)
 
 	/* Hardware supports only 3 ports */
 	BUG_ON(pep->port_num > 2);
-	netif_napi_add(dev, &pep->napi, pxa168_rx_poll, pep->rx_ring_size);
+	netif_napi_add_weight(dev, &pep->napi, pxa168_rx_poll,
+			      pep->rx_ring_size);
 
 	memset(&pep->timeout, 0, sizeof(struct timer_list));
 	timer_setup(&pep->timeout, rxq_refill_timer_wrapper, 0);
@@ -1522,12 +1520,10 @@ err_free_mdio:
 	mdiobus_free(pep->smi_bus);
 err_netdev:
 	free_netdev(dev);
-err_clk:
-	clk_disable_unprepare(clk);
 	return err;
 }
 
-static int pxa168_eth_remove(struct platform_device *pdev)
+static void pxa168_eth_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct pxa168_eth_private *pep = netdev_priv(dev);
@@ -1541,12 +1537,10 @@ static int pxa168_eth_remove(struct platform_device *pdev)
 	if (dev->phydev)
 		phy_disconnect(dev->phydev);
 
-	clk_disable_unprepare(pep->clk);
 	mdiobus_unregister(pep->smi_bus);
 	mdiobus_free(pep->smi_bus);
 	unregister_netdev(dev);
 	free_netdev(dev);
-	return 0;
 }
 
 static void pxa168_eth_shutdown(struct platform_device *pdev)
@@ -1585,7 +1579,7 @@ static struct platform_driver pxa168_eth_driver = {
 	.suspend = pxa168_eth_suspend,
 	.driver = {
 		.name		= DRIVER_NAME,
-		.of_match_table	= of_match_ptr(pxa168_eth_of_match),
+		.of_match_table	= pxa168_eth_of_match,
 	},
 };
 

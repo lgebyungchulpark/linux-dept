@@ -11,19 +11,26 @@
  *	Jianhua Li <lijianhua@huawei.com>
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 
-#include <drm/drm_aperture.h>
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_fbdev_ttm.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_managed.h>
+#include <drm/drm_module.h>
 #include <drm/drm_vblank.h>
 
 #include "hibmc_drm_drv.h"
 #include "hibmc_drm_regs.h"
+
+#define HIBMC_DP_HOST_SERDES_CTRL		0x1f001c
+#define HIBMC_DP_HOST_SERDES_CTRL_VAL		0x8a00
+#define HIBMC_DP_HOST_SERDES_CTRL_MASK		0x7ffff
 
 DEFINE_DRM_GEM_FOPS(hibmc_fops);
 
@@ -54,14 +61,13 @@ static const struct drm_driver hibmc_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops			= &hibmc_fops,
 	.name			= "hibmc",
-	.date			= "20160828",
 	.desc			= "hibmc drm driver",
 	.major			= 1,
 	.minor			= 0,
 	.debugfs_init		= drm_vram_mm_debugfs_init,
 	.dumb_create            = hibmc_dumb_create,
 	.dumb_map_offset        = drm_gem_ttm_dumb_map_offset,
-	.gem_prime_mmap		= drm_gem_prime_mmap,
+	DRM_FBDEV_TTM_DRIVER_OPS,
 };
 
 static int __maybe_unused hibmc_pm_suspend(struct device *dev)
@@ -104,8 +110,7 @@ static int hibmc_kms_init(struct hibmc_drm_private *priv)
 	dev->mode_config.max_width = 1920;
 	dev->mode_config.max_height = 1200;
 
-	dev->mode_config.fb_base = priv->fb_base;
-	dev->mode_config.preferred_depth = 32;
+	dev->mode_config.preferred_depth = 24;
 	dev->mode_config.prefer_shadow = 1;
 
 	dev->mode_config.funcs = (void *)&hibmc_mode_funcs;
@@ -114,6 +119,14 @@ static int hibmc_kms_init(struct hibmc_drm_private *priv)
 	if (ret) {
 		drm_err(dev, "failed to init de: %d\n", ret);
 		return ret;
+	}
+
+	/* if DP existed, init DP */
+	if ((readl(priv->mmio + HIBMC_DP_HOST_SERDES_CTRL) &
+	     HIBMC_DP_HOST_SERDES_CTRL_MASK) == HIBMC_DP_HOST_SERDES_CTRL_VAL) {
+		ret = hibmc_dp_init(priv);
+		if (ret)
+			drm_err(dev, "failed to init dp: %d\n", ret);
 	}
 
 	ret = hibmc_vdac_init(priv);
@@ -211,7 +224,7 @@ static int hibmc_hw_map(struct hibmc_drm_private *priv)
 {
 	struct drm_device *dev = &priv->dev;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
-	resource_size_t addr, size, ioaddr, iosize;
+	resource_size_t ioaddr, iosize;
 
 	ioaddr = pci_resource_start(pdev, 1);
 	iosize = pci_resource_len(pdev, 1);
@@ -220,16 +233,6 @@ static int hibmc_hw_map(struct hibmc_drm_private *priv)
 		drm_err(dev, "Cannot map mmio region\n");
 		return -ENOMEM;
 	}
-
-	addr = pci_resource_start(pdev, 0);
-	size = pci_resource_len(pdev, 0);
-	priv->fb_map = devm_ioremap(dev->dev, addr, size);
-	if (!priv->fb_map) {
-		drm_err(dev, "Cannot map framebuffer\n");
-		return -ENOMEM;
-	}
-	priv->fb_base = addr;
-	priv->fb_size = size;
 
 	return 0;
 }
@@ -270,7 +273,8 @@ static int hibmc_load(struct drm_device *dev)
 	if (ret)
 		goto err;
 
-	ret = drmm_vram_helper_init(dev, pci_resource_start(pdev, 0), priv->fb_size);
+	ret = drmm_vram_helper_init(dev, pci_resource_start(pdev, 0),
+				    pci_resource_len(pdev, 0));
 	if (ret) {
 		drm_err(dev, "Error initializing VRAM MM; %d\n", ret);
 		goto err;
@@ -315,7 +319,7 @@ static int hibmc_pci_probe(struct pci_dev *pdev,
 	struct drm_device *dev;
 	int ret;
 
-	ret = drm_aperture_remove_conflicting_pci_framebuffers(pdev, &hibmc_driver);
+	ret = aperture_remove_conflicting_pci_devices(pdev, hibmc_driver.name);
 	if (ret)
 		return ret;
 
@@ -335,6 +339,8 @@ static int hibmc_pci_probe(struct pci_dev *pdev,
 		goto err_return;
 	}
 
+	pci_set_master(pdev);
+
 	ret = hibmc_load(dev);
 	if (ret) {
 		drm_err(dev, "failed to load hibmc: %d\n", ret);
@@ -348,7 +354,7 @@ static int hibmc_pci_probe(struct pci_dev *pdev,
 		goto err_unload;
 	}
 
-	drm_fbdev_generic_setup(dev, dev->mode_config.preferred_depth);
+	drm_client_setup(dev, NULL);
 
 	return 0;
 
@@ -366,6 +372,11 @@ static void hibmc_pci_remove(struct pci_dev *pdev)
 	hibmc_unload(dev);
 }
 
+static void hibmc_pci_shutdown(struct pci_dev *pdev)
+{
+	drm_atomic_helper_shutdown(pci_get_drvdata(pdev));
+}
+
 static const struct pci_device_id hibmc_pci_table[] = {
 	{ PCI_VDEVICE(HUAWEI, 0x1711) },
 	{0,}
@@ -376,10 +387,11 @@ static struct pci_driver hibmc_pci_driver = {
 	.id_table =	hibmc_pci_table,
 	.probe =	hibmc_pci_probe,
 	.remove =	hibmc_pci_remove,
+	.shutdown =	hibmc_pci_shutdown,
 	.driver.pm =    &hibmc_pm_ops,
 };
 
-module_pci_driver(hibmc_pci_driver);
+drm_module_pci_driver(hibmc_pci_driver);
 
 MODULE_DEVICE_TABLE(pci, hibmc_pci_table);
 MODULE_AUTHOR("RongrongZou <zourongrong@huawei.com>");

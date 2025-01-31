@@ -25,7 +25,7 @@
 #include <linux/compiler.h>
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 
 #include <asm/abi.h>
 #include <asm/asm.h>
@@ -35,10 +35,10 @@
 #include <asm/sim.h>
 #include <asm/ucontext.h>
 #include <asm/cpu-features.h>
-#include <asm/war.h>
 #include <asm/dsp.h>
 #include <asm/inst.h>
 #include <asm/msa.h>
+#include <asm/syscalls.h>
 
 #include "signal-common.h"
 
@@ -570,7 +570,7 @@ void __user *get_sigframe(struct ksignal *ksig, struct pt_regs *regs,
 		return (void __user __force *)(-1UL);
 
 	/*
-	 * FPU emulator may have it's own trampoline active just
+	 * FPU emulator may have its own trampoline active just
 	 * above the user stack, 16-bytes before the next lowest
 	 * 16 byte boundary.  Try to avoid trashing it.
 	 */
@@ -916,7 +916,7 @@ asmlinkage void do_notify_resume(struct pt_regs *regs, void *unused,
 		do_signal(regs);
 
 	if (thread_info_flags & _TIF_NOTIFY_RESUME)
-		tracehook_notify_resume(regs);
+		resume_user_mode_work(regs);
 
 	user_enter();
 }

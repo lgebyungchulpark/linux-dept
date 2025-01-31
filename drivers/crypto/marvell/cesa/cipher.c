@@ -297,7 +297,7 @@ static int mv_cesa_des_setkey(struct crypto_skcipher *cipher, const u8 *key,
 static int mv_cesa_des3_ede_setkey(struct crypto_skcipher *cipher,
 				   const u8 *key, unsigned int len)
 {
-	struct mv_cesa_des_ctx *ctx = crypto_skcipher_ctx(cipher);
+	struct mv_cesa_des3_ctx *ctx = crypto_skcipher_ctx(cipher);
 	int err;
 
 	err = verify_skcipher_des3_key(cipher, key);
@@ -489,7 +489,7 @@ static int mv_cesa_des_op(struct skcipher_request *req,
 
 static int mv_cesa_ecb_des_encrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_ECB |
@@ -500,7 +500,7 @@ static int mv_cesa_ecb_des_encrypt(struct skcipher_request *req)
 
 static int mv_cesa_ecb_des_decrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_ECB |
@@ -543,7 +543,7 @@ static int mv_cesa_cbc_des_op(struct skcipher_request *req,
 
 static int mv_cesa_cbc_des_encrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl, CESA_SA_DESC_CFG_DIR_ENC);
 
@@ -552,7 +552,7 @@ static int mv_cesa_cbc_des_encrypt(struct skcipher_request *req)
 
 static int mv_cesa_cbc_des_decrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl, CESA_SA_DESC_CFG_DIR_DEC);
 
@@ -596,7 +596,7 @@ static int mv_cesa_des3_op(struct skcipher_request *req,
 
 static int mv_cesa_ecb_des3_ede_encrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_ECB |
@@ -608,7 +608,7 @@ static int mv_cesa_ecb_des3_ede_encrypt(struct skcipher_request *req)
 
 static int mv_cesa_ecb_des3_ede_decrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_ECB |
@@ -624,7 +624,6 @@ struct skcipher_alg mv_cesa_ecb_des3_ede_alg = {
 	.decrypt = mv_cesa_ecb_des3_ede_decrypt,
 	.min_keysize = DES3_EDE_KEY_SIZE,
 	.max_keysize = DES3_EDE_KEY_SIZE,
-	.ivsize = DES3_EDE_BLOCK_SIZE,
 	.base = {
 		.cra_name = "ecb(des3_ede)",
 		.cra_driver_name = "mv-ecb-des3-ede",
@@ -650,7 +649,7 @@ static int mv_cesa_cbc_des3_op(struct skcipher_request *req,
 
 static int mv_cesa_cbc_des3_ede_encrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_CBC |
@@ -662,7 +661,7 @@ static int mv_cesa_cbc_des3_ede_encrypt(struct skcipher_request *req)
 
 static int mv_cesa_cbc_des3_ede_decrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_CBC |
@@ -726,7 +725,7 @@ static int mv_cesa_aes_op(struct skcipher_request *req,
 
 static int mv_cesa_ecb_aes_encrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_ECB |
@@ -737,7 +736,7 @@ static int mv_cesa_ecb_aes_encrypt(struct skcipher_request *req)
 
 static int mv_cesa_ecb_aes_decrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl,
 			   CESA_SA_DESC_CFG_CRYPTCM_ECB |
@@ -779,7 +778,7 @@ static int mv_cesa_cbc_aes_op(struct skcipher_request *req,
 
 static int mv_cesa_cbc_aes_encrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl, CESA_SA_DESC_CFG_DIR_ENC);
 
@@ -788,7 +787,7 @@ static int mv_cesa_cbc_aes_encrypt(struct skcipher_request *req)
 
 static int mv_cesa_cbc_aes_decrypt(struct skcipher_request *req)
 {
-	struct mv_cesa_op_ctx tmpl;
+	struct mv_cesa_op_ctx tmpl = { };
 
 	mv_cesa_set_op_cfg(&tmpl, CESA_SA_DESC_CFG_DIR_DEC);
 

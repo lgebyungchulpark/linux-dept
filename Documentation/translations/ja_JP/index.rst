@@ -3,16 +3,16 @@
 	\renewcommand\thesection*
 	\renewcommand\thesubsection*
 	\kerneldocCJKon
-	\kerneldocBeginJP
+	\kerneldocBeginJP{
 
-Japanese translations
+日本語訳
 =====================
 
 .. toctree::
    :maxdepth: 1
 
-   howto
+   process/howto
 
 .. raw:: latex
 
-	\kerneldocEndJP
+	}\kerneldocEndJP

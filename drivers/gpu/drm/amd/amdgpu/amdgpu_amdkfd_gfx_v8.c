@@ -72,7 +72,7 @@ static void kgd_program_sh_mem_settings(struct amdgpu_device *adev, uint32_t vmi
 					uint32_t sh_mem_config,
 					uint32_t sh_mem_ape1_base,
 					uint32_t sh_mem_ape1_limit,
-					uint32_t sh_mem_bases)
+					uint32_t sh_mem_bases, uint32_t inst)
 {
 	lock_srbm(adev, 0, 0, 0, vmid);
 
@@ -85,7 +85,7 @@ static void kgd_program_sh_mem_settings(struct amdgpu_device *adev, uint32_t vmi
 }
 
 static int kgd_set_pasid_vmid_mapping(struct amdgpu_device *adev, u32 pasid,
-					unsigned int vmid)
+					unsigned int vmid, uint32_t inst)
 {
 	/*
 	 * We have to assume that there is no outstanding mapping.
@@ -109,7 +109,8 @@ static int kgd_set_pasid_vmid_mapping(struct amdgpu_device *adev, u32 pasid,
 	return 0;
 }
 
-static int kgd_init_interrupts(struct amdgpu_device *adev, uint32_t pipe_id)
+static int kgd_init_interrupts(struct amdgpu_device *adev, uint32_t pipe_id,
+				uint32_t inst)
 {
 	uint32_t mec;
 	uint32_t pipe;
@@ -153,7 +154,7 @@ static inline struct vi_sdma_mqd *get_sdma_mqd(void *mqd)
 static int kgd_hqd_load(struct amdgpu_device *adev, void *mqd,
 			uint32_t pipe_id, uint32_t queue_id,
 			uint32_t __user *wptr, uint32_t wptr_shift,
-			uint32_t wptr_mask, struct mm_struct *mm)
+			uint32_t wptr_mask, struct mm_struct *mm, uint32_t inst)
 {
 	struct vi_mqd *m;
 	uint32_t *mqd_hqd;
@@ -208,7 +209,7 @@ static int kgd_hqd_load(struct amdgpu_device *adev, void *mqd,
 
 	/* read_user_ptr may take the mm->mmap_lock.
 	 * release srbm_mutex to avoid circular dependency between
-	 * srbm_mutex->mm_sem->reservation_ww_class_mutex->srbm_mutex.
+	 * srbm_mutex->mmap_lock->reservation_ww_class_mutex->srbm_mutex.
 	 */
 	release_queue(adev);
 	valid_wptr = read_user_wptr(mm, wptr, wptr_val);
@@ -226,7 +227,7 @@ static int kgd_hqd_load(struct amdgpu_device *adev, void *mqd,
 
 static int kgd_hqd_dump(struct amdgpu_device *adev,
 			uint32_t pipe_id, uint32_t queue_id,
-			uint32_t (**dump)[2], uint32_t *n_regs)
+			uint32_t (**dump)[2], uint32_t *n_regs, uint32_t inst)
 {
 	uint32_t i = 0, reg;
 #define HQD_N_REGS (54+4)
@@ -237,7 +238,7 @@ static int kgd_hqd_dump(struct amdgpu_device *adev,
 		(*dump)[i++][1] = RREG32(addr);		\
 	} while (0)
 
-	*dump = kmalloc_array(HQD_N_REGS * 2, sizeof(uint32_t), GFP_KERNEL);
+	*dump = kmalloc_array(HQD_N_REGS, sizeof(**dump), GFP_KERNEL);
 	if (*dump == NULL)
 		return -ENOMEM;
 
@@ -323,7 +324,7 @@ static int kgd_hqd_sdma_dump(struct amdgpu_device *adev,
 #undef HQD_N_REGS
 #define HQD_N_REGS (19+4+2+3+7)
 
-	*dump = kmalloc_array(HQD_N_REGS * 2, sizeof(uint32_t), GFP_KERNEL);
+	*dump = kmalloc_array(HQD_N_REGS, sizeof(**dump), GFP_KERNEL);
 	if (*dump == NULL)
 		return -ENOMEM;
 
@@ -350,7 +351,7 @@ static int kgd_hqd_sdma_dump(struct amdgpu_device *adev,
 
 static bool kgd_hqd_is_occupied(struct amdgpu_device *adev,
 				uint64_t queue_address, uint32_t pipe_id,
-				uint32_t queue_id)
+				uint32_t queue_id, uint32_t inst)
 {
 	uint32_t act;
 	bool retval = false;
@@ -390,7 +391,7 @@ static bool kgd_hqd_sdma_is_occupied(struct amdgpu_device *adev, void *mqd)
 static int kgd_hqd_destroy(struct amdgpu_device *adev, void *mqd,
 				enum kfd_preempt_type reset_type,
 				unsigned int utimeout, uint32_t pipe_id,
-				uint32_t queue_id)
+				uint32_t queue_id, uint32_t inst)
 {
 	uint32_t temp;
 	enum hqd_dequeue_request_type type;
@@ -538,23 +539,9 @@ static bool get_atc_vmid_pasid_mapping_info(struct amdgpu_device *adev,
 	return !!(value & ATC_VMID0_PASID_MAPPING__VALID_MASK);
 }
 
-static int kgd_address_watch_disable(struct amdgpu_device *adev)
-{
-	return 0;
-}
-
-static int kgd_address_watch_execute(struct amdgpu_device *adev,
-					unsigned int watch_point_id,
-					uint32_t cntl_val,
-					uint32_t addr_hi,
-					uint32_t addr_lo)
-{
-	return 0;
-}
-
 static int kgd_wave_control_execute(struct amdgpu_device *adev,
 					uint32_t gfx_index_val,
-					uint32_t sq_cmd)
+					uint32_t sq_cmd, uint32_t inst)
 {
 	uint32_t data = 0;
 
@@ -573,13 +560,6 @@ static int kgd_wave_control_execute(struct amdgpu_device *adev,
 	WREG32(mmGRBM_GFX_INDEX, data);
 	mutex_unlock(&adev->grbm_idx_mutex);
 
-	return 0;
-}
-
-static uint32_t kgd_address_watch_get_offset(struct amdgpu_device *adev,
-					unsigned int watch_point_id,
-					unsigned int reg_offset)
-{
 	return 0;
 }
 
@@ -614,10 +594,7 @@ const struct kfd2kgd_calls gfx_v8_kfd2kgd = {
 	.hqd_sdma_is_occupied = kgd_hqd_sdma_is_occupied,
 	.hqd_destroy = kgd_hqd_destroy,
 	.hqd_sdma_destroy = kgd_hqd_sdma_destroy,
-	.address_watch_disable = kgd_address_watch_disable,
-	.address_watch_execute = kgd_address_watch_execute,
 	.wave_control_execute = kgd_wave_control_execute,
-	.address_watch_get_offset = kgd_address_watch_get_offset,
 	.get_atc_vmid_pasid_mapping_info =
 			get_atc_vmid_pasid_mapping_info,
 	.set_scratch_backing_va = set_scratch_backing_va,

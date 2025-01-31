@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2021 Intel Corporation
+ * Copyright (C) 2021-2022 Intel Corporation
  */
 
 #include <uapi/linux/if_ether.h>
@@ -102,8 +102,8 @@ static bool iwl_mei_rx_filter_arp(struct sk_buff *skb,
 	 * src IP address    - 4 bytes
 	 * target MAC addess - 6 bytes
 	 */
-	target_ip = (void *)((u8 *)(arp + 1) +
-			     ETH_ALEN + sizeof(__be32) + ETH_ALEN);
+	target_ip = (const void *)((const u8 *)(arp + 1) +
+				   ETH_ALEN + sizeof(__be32) + ETH_ALEN);
 
 	/*
 	 * ARP request is forwarded to ME only if IP address match in the
@@ -195,8 +195,7 @@ static bool iwl_mei_rx_filter_ipv4(struct sk_buff *skb,
 	bool match;
 
 	if (!pskb_may_pull(skb, skb_network_offset(skb) + sizeof(*iphdr)) ||
-	    !pskb_may_pull(skb, skb_network_offset(skb) +
-			   sizeof(ip_hdrlen(skb) - sizeof(*iphdr))))
+	    !pskb_may_pull(skb, skb_network_offset(skb) + ip_hdrlen(skb)))
 		return false;
 
 	iphdrlen = ip_hdrlen(skb);
@@ -338,10 +337,14 @@ rx_handler_result_t iwl_mei_rx_filter(struct sk_buff *orig_skb,
 	if (!*pass_to_csme)
 		return RX_HANDLER_PASS;
 
-	if (ret == RX_HANDLER_PASS)
+	if (ret == RX_HANDLER_PASS) {
 		skb = skb_copy(orig_skb, GFP_ATOMIC);
-	else
+
+		if (!skb)
+			return RX_HANDLER_PASS;
+	} else {
 		skb = orig_skb;
+	}
 
 	/* CSME wants the MAC header as well, push it back */
 	skb_push(skb, skb->data - skb_mac_header(skb));

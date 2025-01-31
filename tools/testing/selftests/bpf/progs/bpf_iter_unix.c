@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright Amazon.com Inc. or its affiliates. */
-#include "bpf_iter.h"
+#include <vmlinux.h>
 #include "bpf_tracing_net.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -63,7 +63,7 @@ int dump_unix(struct bpf_iter__unix *ctx)
 			BPF_SEQ_PRINTF(seq, " @");
 
 			for (i = 1; i < len; i++) {
-				/* unix_mkname() tests this upper bound. */
+				/* unix_validate_addr() tests this upper bound. */
 				if (i >= sizeof(struct sockaddr_un))
 					break;
 

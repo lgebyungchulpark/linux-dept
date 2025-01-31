@@ -33,6 +33,7 @@ properties:
     items:
       - enum:
           - apple,t8103-pcie
+          - apple,t8112-pcie
           - apple,t6000-pcie
       - const: apple,pcie
 
@@ -68,6 +69,9 @@ properties:
   iommu-map: true
   iommu-map-mask: true
 
+  power-domains:
+    maxItems: 1
+
 required:
   - compatible
   - reg
@@ -81,7 +85,7 @@ required:
 unevaluatedProperties: false
 
 allOf:
-  - $ref: /schemas/pci/pci-bus.yaml#
+  - $ref: /schemas/pci/pci-host-bridge.yaml#
   - $ref: /schemas/interrupt-controller/msi-controller.yaml#
   - if:
       properties:
@@ -134,7 +138,7 @@ examples:
         ranges = <0x43000000 0x6 0xa0000000 0x6 0xa0000000 0x0 0x20000000>,
                  <0x02000000 0x0 0xc0000000 0x6 0xc0000000 0x0 0x40000000>;
 
-        power-domains = <&ps_apcie>, <&ps_apcie_gp>, <&ps_pcie_ref>;
+        power-domains = <&ps_apcie_gp>;
         pinctrl-0 = <&pcie_pins>;
         pinctrl-names = "default";
 
@@ -142,7 +146,6 @@ examples:
           device_type = "pci";
           reg = <0x0 0x0 0x0 0x0 0x0>;
           reset-gpios = <&pinctrl_ap 152 0>;
-          max-link-speed = <2>;
 
           #address-cells = <3>;
           #size-cells = <2>;
@@ -153,7 +156,6 @@ examples:
           device_type = "pci";
           reg = <0x800 0x0 0x0 0x0 0x0>;
           reset-gpios = <&pinctrl_ap 153 0>;
-          max-link-speed = <2>;
 
           #address-cells = <3>;
           #size-cells = <2>;
@@ -164,7 +166,6 @@ examples:
           device_type = "pci";
           reg = <0x1000 0x0 0x0 0x0 0x0>;
           reset-gpios = <&pinctrl_ap 33 0>;
-          max-link-speed = <1>;
 
           #address-cells = <3>;
           #size-cells = <2>;

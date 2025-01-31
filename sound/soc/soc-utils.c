@@ -9,6 +9,7 @@
 
 #include <linux/platform_device.h>
 #include <linux/export.h>
+#include <linux/math.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -20,7 +21,7 @@ int snd_soc_calc_frame_size(int sample_size, int channels, int tdm_slots)
 }
 EXPORT_SYMBOL_GPL(snd_soc_calc_frame_size);
 
-int snd_soc_params_to_frame_size(struct snd_pcm_hw_params *params)
+int snd_soc_params_to_frame_size(const struct snd_pcm_hw_params *params)
 {
 	int sample_size;
 
@@ -39,7 +40,7 @@ int snd_soc_calc_bclk(int fs, int sample_size, int channels, int tdm_slots)
 }
 EXPORT_SYMBOL_GPL(snd_soc_calc_bclk);
 
-int snd_soc_params_to_bclk(struct snd_pcm_hw_params *params)
+int snd_soc_params_to_bclk(const struct snd_pcm_hw_params *params)
 {
 	int ret;
 
@@ -52,13 +53,58 @@ int snd_soc_params_to_bclk(struct snd_pcm_hw_params *params)
 }
 EXPORT_SYMBOL_GPL(snd_soc_params_to_bclk);
 
+/**
+ * snd_soc_tdm_params_to_bclk - calculate bclk from params and tdm slot info.
+ *
+ * Calculate the bclk from the params sample rate, the tdm slot count and the
+ * tdm slot width. Optionally round-up the slot count to a given multiple.
+ * Either or both of tdm_width and tdm_slots can be 0.
+ *
+ * If tdm_width == 0:	use params_width() as the slot width.
+ * If tdm_slots == 0:	use params_channels() as the slot count.
+ *
+ * If slot_multiple > 1 the slot count (or params_channels() if tdm_slots == 0)
+ * will be rounded up to a multiple of slot_multiple. This is mainly useful for
+ * I2S mode, which has a left and right phase so the number of slots is always
+ * a multiple of 2.
+ *
+ * If tdm_width == 0 && tdm_slots == 0 && slot_multiple < 2, this is equivalent
+ * to calling snd_soc_params_to_bclk().
+ *
+ * @params:        Pointer to struct_pcm_hw_params.
+ * @tdm_width:     Width in bits of the tdm slots. Must be >= 0.
+ * @tdm_slots:     Number of tdm slots per frame. Must be >= 0.
+ * @slot_multiple: If >1 roundup slot count to a multiple of this value.
+ *
+ * Return: bclk frequency in Hz, else a negative error code if params format
+ *	   is invalid.
+ */
+int snd_soc_tdm_params_to_bclk(const struct snd_pcm_hw_params *params,
+			       int tdm_width, int tdm_slots, int slot_multiple)
+{
+	if (!tdm_slots)
+		tdm_slots = params_channels(params);
+
+	if (slot_multiple > 1)
+		tdm_slots = roundup(tdm_slots, slot_multiple);
+
+	if (!tdm_width) {
+		tdm_width = snd_pcm_format_width(params_format(params));
+		if (tdm_width < 0)
+			return tdm_width;
+	}
+
+	return snd_soc_calc_bclk(params_rate(params), tdm_width, 1, tdm_slots);
+}
+EXPORT_SYMBOL_GPL(snd_soc_tdm_params_to_bclk);
+
 static const struct snd_pcm_hardware dummy_dma_hardware = {
 	/* Random values to keep userspace happy when checking constraints */
 	.info			= SNDRV_PCM_INFO_INTERLEAVED |
 				  SNDRV_PCM_INFO_BLOCK_TRANSFER,
 	.buffer_bytes_max	= 128*1024,
-	.period_bytes_min	= PAGE_SIZE,
-	.period_bytes_max	= PAGE_SIZE*2,
+	.period_bytes_min	= 4096,
+	.period_bytes_max	= 4096*2,
 	.periods_min		= 2,
 	.periods_max		= 128,
 };
@@ -69,7 +115,7 @@ static const struct snd_soc_component_driver dummy_platform;
 static int dummy_dma_open(struct snd_soc_component *component,
 			  struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	int i;
 
 	/*
@@ -96,10 +142,8 @@ static const struct snd_soc_component_driver dummy_codec = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
-#define STUB_RATES	SNDRV_PCM_RATE_8000_384000
 #define STUB_FORMATS	(SNDRV_PCM_FMTBIT_S8 | \
 			SNDRV_PCM_FMTBIT_U8 | \
 			SNDRV_PCM_FMTBIT_S16_LE | \
@@ -118,7 +162,7 @@ static const struct snd_soc_component_driver dummy_codec = {
  *	SND_SOC_POSSIBLE_DAIFMT_CBC_CFP
  *	SND_SOC_POSSIBLE_DAIFMT_CBC_CFC
  */
-static u64 dummy_dai_formats =
+static const u64 dummy_dai_formats =
 	SND_SOC_POSSIBLE_DAIFMT_I2S	|
 	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
 	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
@@ -153,31 +197,43 @@ static struct snd_soc_dai_driver dummy_dai = {
 		.stream_name	= "Playback",
 		.channels_min	= 1,
 		.channels_max	= 384,
-		.rates		= STUB_RATES,
+		.rates		= SNDRV_PCM_RATE_CONTINUOUS,
+		.rate_min	= 5512,
+		.rate_max	= 768000,
 		.formats	= STUB_FORMATS,
 	},
 	.capture = {
 		.stream_name	= "Capture",
 		.channels_min	= 1,
 		.channels_max	= 384,
-		.rates = STUB_RATES,
+		.rates = SNDRV_PCM_RATE_CONTINUOUS,
+		.rate_min	= 5512,
+		.rate_max	= 768000,
 		.formats = STUB_FORMATS,
 	 },
 	.ops = &dummy_dai_ops,
 };
 
-int snd_soc_dai_is_dummy(struct snd_soc_dai *dai)
+int snd_soc_dai_is_dummy(const struct snd_soc_dai *dai)
 {
 	if (dai->driver == &dummy_dai)
 		return 1;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(snd_soc_dai_is_dummy);
 
 int snd_soc_component_is_dummy(struct snd_soc_component *component)
 {
 	return ((component->driver == &dummy_platform) ||
 		(component->driver == &dummy_codec));
 }
+
+struct snd_soc_dai_link_component snd_soc_dummy_dlc = {
+	.of_node	= NULL,
+	.dai_name	= "snd-soc-dummy-dai",
+	.name		= "snd-soc-dummy",
+};
+EXPORT_SYMBOL_GPL(snd_soc_dummy_dlc);
 
 static int snd_soc_dummy_probe(struct platform_device *pdev)
 {
@@ -219,7 +275,7 @@ int __init snd_soc_util_init(void)
 	return ret;
 }
 
-void __exit snd_soc_util_exit(void)
+void snd_soc_util_exit(void)
 {
 	platform_driver_unregister(&soc_dummy_driver);
 	platform_device_unregister(soc_dummy_dev);

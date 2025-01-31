@@ -165,7 +165,7 @@ struct atmel_nand {
 	struct atmel_pmecc_user *pmecc;
 	struct gpio_desc *cdgpio;
 	int numcs;
-	struct atmel_nand_cs cs[];
+	struct atmel_nand_cs cs[] __counted_by(numcs);
 };
 
 static inline struct atmel_nand *to_atmel_nand(struct nand_chip *chip)
@@ -405,6 +405,7 @@ static int atmel_nand_dma_transfer(struct atmel_nand_controller *nc,
 
 	dma_async_issue_pending(nc->dmac);
 	wait_for_completion(&finished);
+	dma_unmap_single(nc->dev, buf_dma, len, dir);
 
 	return 0;
 
@@ -1377,7 +1378,7 @@ static int atmel_smc_nand_prepare_smcconf(struct atmel_nand *nand,
 		return ret;
 
 	/*
-	 * The write cycle timing is directly matching tWC, but is also
+	 * The read cycle timing is directly matching tRC, but is also
 	 * dependent on the setup and hold timings we calculated earlier,
 	 * which gives:
 	 *
@@ -1790,8 +1791,7 @@ atmel_nand_controller_legacy_add_nands(struct atmel_nand_controller *nc)
 
 	nand->numcs = 1;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	nand->cs[0].io.virt = devm_ioremap_resource(dev, res);
+	nand->cs[0].io.virt = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(nand->cs[0].io.virt))
 		return PTR_ERR(nand->cs[0].io.virt);
 
@@ -1938,7 +1938,7 @@ static const struct atmel_smc_nand_ebi_csa_cfg sam9x60_ebi_csa = {
 	.nfd0_on_d16 = AT91_SFR_CCFG_NFD0_ON_D16,
 };
 
-static const struct of_device_id atmel_ebi_csa_regmap_of_ids[] = {
+static const struct of_device_id __maybe_unused atmel_ebi_csa_regmap_of_ids[] = {
 	{
 		.compatible = "atmel,at91sam9260-matrix",
 		.data = &at91sam9260_ebi_csa,
@@ -2049,7 +2049,10 @@ static int atmel_nand_controller_init(struct atmel_nand_controller *nc,
 		dma_cap_set(DMA_MEMCPY, mask);
 
 		nc->dmac = dma_request_channel(mask, NULL, NULL);
-		if (!nc->dmac)
+		if (nc->dmac)
+			dev_info(nc->dev, "using %s for DMA transfers\n",
+				 dma_chan_name(nc->dmac));
+		else
 			dev_err(nc->dev, "Failed to request DMA channel\n");
 	}
 
@@ -2060,13 +2063,15 @@ static int atmel_nand_controller_init(struct atmel_nand_controller *nc,
 	nc->mck = of_clk_get(dev->parent->of_node, 0);
 	if (IS_ERR(nc->mck)) {
 		dev_err(dev, "Failed to retrieve MCK clk\n");
-		return PTR_ERR(nc->mck);
+		ret = PTR_ERR(nc->mck);
+		goto out_release_dma;
 	}
 
 	np = of_parse_phandle(dev->parent->of_node, "atmel,smc", 0);
 	if (!np) {
 		dev_err(dev, "Missing or invalid atmel,smc property\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out_release_dma;
 	}
 
 	nc->smc = syscon_node_to_regmap(np);
@@ -2074,10 +2079,16 @@ static int atmel_nand_controller_init(struct atmel_nand_controller *nc,
 	if (IS_ERR(nc->smc)) {
 		ret = PTR_ERR(nc->smc);
 		dev_err(dev, "Could not get SMC regmap (err = %d)\n", ret);
-		return ret;
+		goto out_release_dma;
 	}
 
 	return 0;
+
+out_release_dma:
+	if (nc->dmac)
+		dma_release_channel(nc->dmac);
+
+	return ret;
 }
 
 static int
@@ -2617,11 +2628,11 @@ static int atmel_nand_controller_probe(struct platform_device *pdev)
 	return caps->ops->probe(pdev, caps);
 }
 
-static int atmel_nand_controller_remove(struct platform_device *pdev)
+static void atmel_nand_controller_remove(struct platform_device *pdev)
 {
 	struct atmel_nand_controller *nc = platform_get_drvdata(pdev);
 
-	return nc->caps->ops->remove(nc);
+	WARN_ON(nc->caps->ops->remove(nc));
 }
 
 static __maybe_unused int atmel_nand_controller_resume(struct device *dev)
@@ -2648,7 +2659,7 @@ static SIMPLE_DEV_PM_OPS(atmel_nand_controller_pm_ops, NULL,
 static struct platform_driver atmel_nand_controller_driver = {
 	.driver = {
 		.name = "atmel-nand-controller",
-		.of_match_table = of_match_ptr(atmel_nand_controller_of_ids),
+		.of_match_table = atmel_nand_controller_of_ids,
 		.pm = &atmel_nand_controller_pm_ops,
 	},
 	.probe = atmel_nand_controller_probe,

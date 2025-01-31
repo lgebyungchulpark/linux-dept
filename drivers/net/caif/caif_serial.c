@@ -159,7 +159,7 @@ static inline void debugfs_tx(struct ser_device *ser, const u8 *data, int size)
 #endif
 
 static void ldisc_receive(struct tty_struct *tty, const u8 *data,
-			const char *flags, int count)
+			  const u8 *flags, size_t count)
 {
 	struct sk_buff *skb = NULL;
 	struct ser_device *ser;
@@ -196,7 +196,7 @@ static void ldisc_receive(struct tty_struct *tty, const u8 *data,
 	skb_reset_mac_header(skb);
 	debugfs_rx(ser, data, count);
 	/* Push received packet up the stack. */
-	ret = netif_rx_ni(skb);
+	ret = netif_rx(skb);
 	if (!ret) {
 		ser->dev->stats.rx_packets++;
 		ser->dev->stats.rx_bytes += count;

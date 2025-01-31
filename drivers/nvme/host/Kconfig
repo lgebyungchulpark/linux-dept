@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config NVME_CORE
 	tristate
-	select BLK_DEV_INTEGRITY_T10 if BLK_DEV_INTEGRITY
 
 config BLK_DEV_NVME
 	tristate "NVM Express block device"
@@ -24,6 +23,14 @@ config NVME_MULTIPATH
 	   /dev/nvmeXnY device will show up for each NVMe namespace,
 	   even if it is accessible through multiple controllers.
 
+config NVME_VERBOSE_ERRORS
+	bool "NVMe verbose error reporting"
+	depends on NVME_CORE
+	help
+	   This option enables verbose reporting for NVMe errors. The
+	   error translation table will grow the kernel image size by
+	   about 4 KB.
+
 config NVME_HWMON
 	bool "NVMe hardware monitoring"
 	depends on (NVME_CORE=y && HWMON=y) || (NVME_CORE=m && HWMON)
@@ -34,6 +41,7 @@ config NVME_HWMON
 
 config NVME_FABRICS
 	select NVME_CORE
+	select NVME_KEYRING if NVME_TCP_TLS
 	tristate
 
 config NVME_RDMA
@@ -83,3 +91,40 @@ config NVME_TCP
 	  from https://github.com/linux-nvme/nvme-cli.
 
 	  If unsure, say N.
+
+config NVME_TCP_TLS
+	bool "NVMe over Fabrics TCP TLS encryption support"
+	depends on NVME_TCP
+	select NET_HANDSHAKE
+	select KEYS
+	help
+	  Enables TLS encryption for NVMe TCP using the netlink handshake API.
+
+	  The TLS handshake daemon is availble at
+	  https://github.com/oracle/ktls-utils.
+
+	  If unsure, say N.
+
+config NVME_HOST_AUTH
+	bool "NVMe over Fabrics In-Band Authentication in host side"
+	depends on NVME_CORE
+	select NVME_AUTH
+	select NVME_KEYRING if NVME_TCP_TLS
+	help
+	  This provides support for NVMe over Fabrics In-Band Authentication in
+	  host side.
+
+	  If unsure, say N.
+
+config NVME_APPLE
+	tristate "Apple ANS2 NVM Express host driver"
+	depends on OF && BLOCK
+	depends on APPLE_RTKIT && APPLE_SART
+	depends on ARCH_APPLE || COMPILE_TEST
+	select NVME_CORE
+	help
+	  This provides support for the NVMe controller embedded in Apple SoCs
+	  such as the M1.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called nvme-apple.

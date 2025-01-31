@@ -227,6 +227,18 @@ struct drm_private_state_funcs {
 	 */
 	void (*atomic_destroy_state)(struct drm_private_obj *obj,
 				     struct drm_private_state *state);
+
+	/**
+	 * @atomic_print_state:
+	 *
+	 * If driver subclasses &struct drm_private_state, it should implement
+	 * this optional hook for printing additional driver specific state.
+	 *
+	 * Do not call this directly, use drm_atomic_private_obj_print_state()
+	 * instead.
+	 */
+	void (*atomic_print_state)(struct drm_printer *p,
+				   const struct drm_private_state *state);
 };
 
 /**
@@ -311,14 +323,21 @@ struct drm_private_obj {
 
 /**
  * struct drm_private_state - base struct for driver private object state
- * @state: backpointer to global drm_atomic_state
  *
- * Currently only contains a backpointer to the overall atomic update, but in
- * the future also might hold synchronization information similar to e.g.
- * &drm_crtc.commit.
+ * Currently only contains a backpointer to the overall atomic update,
+ * and the relevant private object but in the future also might hold
+ * synchronization information similar to e.g. &drm_crtc.commit.
  */
 struct drm_private_state {
+	/**
+	 * @state: backpointer to global drm_atomic_state
+	 */
 	struct drm_atomic_state *state;
+
+	/**
+	 * @obj: backpointer to the private object
+	 */
+	struct drm_private_obj *obj;
 };
 
 struct __drm_private_objs_state {
@@ -327,25 +346,29 @@ struct __drm_private_objs_state {
 };
 
 /**
- * struct drm_atomic_state - the global state object for atomic updates
- * @ref: count of all references to this state (will not be freed until zero)
- * @dev: parent DRM device
- * @async_update: hint for asynchronous plane update
- * @planes: pointer to array of structures with per-plane data
- * @crtcs: pointer to array of CRTC pointers
- * @num_connector: size of the @connectors and @connector_states arrays
- * @connectors: pointer to array of structures with per-connector data
- * @num_private_objs: size of the @private_objs array
- * @private_objs: pointer to array of private object pointers
- * @acquire_ctx: acquire context for this atomic modeset state update
+ * struct drm_atomic_state - Atomic commit structure
+ *
+ * This structure is the kernel counterpart of @drm_mode_atomic and represents
+ * an atomic commit that transitions from an old to a new display state. It
+ * contains all the objects affected by the atomic commit and both the new
+ * state structures and pointers to the old state structures for
+ * these.
  *
  * States are added to an atomic update by calling drm_atomic_get_crtc_state(),
  * drm_atomic_get_plane_state(), drm_atomic_get_connector_state(), or for
  * private state structures, drm_atomic_get_private_obj_state().
  */
 struct drm_atomic_state {
+	/**
+	 * @ref:
+	 *
+	 * Count of all references to this update (will not be freed until zero).
+	 */
 	struct kref ref;
 
+	/**
+	 * @dev: Parent DRM Device.
+	 */
 	struct drm_device *dev;
 
 	/**
@@ -369,7 +392,12 @@ struct drm_atomic_state {
 	 * flag are not allowed.
 	 */
 	bool legacy_cursor_update : 1;
+
+	/**
+	 * @async_update: hint for asynchronous plane update
+	 */
 	bool async_update : 1;
+
 	/**
 	 * @duplicated:
 	 *
@@ -379,13 +407,52 @@ struct drm_atomic_state {
 	 * states.
 	 */
 	bool duplicated : 1;
+
+	/**
+	 * @planes:
+	 *
+	 * Pointer to array of @drm_plane and @drm_plane_state part of this
+	 * update.
+	 */
 	struct __drm_planes_state *planes;
+
+	/**
+	 * @crtcs:
+	 *
+	 * Pointer to array of @drm_crtc and @drm_crtc_state part of this
+	 * update.
+	 */
 	struct __drm_crtcs_state *crtcs;
+
+	/**
+	 * @num_connector: size of the @connectors array
+	 */
 	int num_connector;
+
+	/**
+	 * @connectors:
+	 *
+	 * Pointer to array of @drm_connector and @drm_connector_state part of
+	 * this update.
+	 */
 	struct __drm_connnectors_state *connectors;
+
+	/**
+	 * @num_private_objs: size of the @private_objs array
+	 */
 	int num_private_objs;
+
+	/**
+	 * @private_objs:
+	 *
+	 * Pointer to array of @drm_private_obj and @drm_private_obj_state part
+	 * of this update.
+	 */
 	struct __drm_private_objs_state *private_objs;
 
+	/**
+	 * @acquire_ctx: acquire context for this atomic modeset state update
+	 */
 	struct drm_modeset_acquire_ctx *acquire_ctx;
 
 	/**
@@ -393,7 +460,7 @@ struct drm_atomic_state {
 	 *
 	 * Used for signaling unbound planes/connectors.
 	 * When a connector or plane is not bound to any CRTC, it's still important
-	 * to preserve linearity to prevent the atomic states from being freed to early.
+	 * to preserve linearity to prevent the atomic states from being freed too early.
 	 *
 	 * This commit (if set) is not bound to any CRTC, but will be completed when
 	 * drm_atomic_helper_commit_hw_done() is called.
@@ -496,17 +563,24 @@ struct drm_private_state * __must_check
 drm_atomic_get_private_obj_state(struct drm_atomic_state *state,
 				 struct drm_private_obj *obj);
 struct drm_private_state *
-drm_atomic_get_old_private_obj_state(struct drm_atomic_state *state,
+drm_atomic_get_old_private_obj_state(const struct drm_atomic_state *state,
 				     struct drm_private_obj *obj);
 struct drm_private_state *
-drm_atomic_get_new_private_obj_state(struct drm_atomic_state *state,
+drm_atomic_get_new_private_obj_state(const struct drm_atomic_state *state,
 				     struct drm_private_obj *obj);
 
 struct drm_connector *
-drm_atomic_get_old_connector_for_encoder(struct drm_atomic_state *state,
+drm_atomic_get_old_connector_for_encoder(const struct drm_atomic_state *state,
 					 struct drm_encoder *encoder);
 struct drm_connector *
-drm_atomic_get_new_connector_for_encoder(struct drm_atomic_state *state,
+drm_atomic_get_new_connector_for_encoder(const struct drm_atomic_state *state,
+					 struct drm_encoder *encoder);
+
+struct drm_crtc *
+drm_atomic_get_old_crtc_for_encoder(struct drm_atomic_state *state,
+					 struct drm_encoder *encoder);
+struct drm_crtc *
+drm_atomic_get_new_crtc_for_encoder(struct drm_atomic_state *state,
 					 struct drm_encoder *encoder);
 
 /**
@@ -521,7 +595,7 @@ drm_atomic_get_new_connector_for_encoder(struct drm_atomic_state *state,
  * @drm_atomic_get_new_crtc_state should be used instead.
  */
 static inline struct drm_crtc_state *
-drm_atomic_get_existing_crtc_state(struct drm_atomic_state *state,
+drm_atomic_get_existing_crtc_state(const struct drm_atomic_state *state,
 				   struct drm_crtc *crtc)
 {
 	return state->crtcs[drm_crtc_index(crtc)].state;
@@ -536,7 +610,7 @@ drm_atomic_get_existing_crtc_state(struct drm_atomic_state *state,
  * NULL if the CRTC is not part of the global atomic state.
  */
 static inline struct drm_crtc_state *
-drm_atomic_get_old_crtc_state(struct drm_atomic_state *state,
+drm_atomic_get_old_crtc_state(const struct drm_atomic_state *state,
 			      struct drm_crtc *crtc)
 {
 	return state->crtcs[drm_crtc_index(crtc)].old_state;
@@ -550,7 +624,7 @@ drm_atomic_get_old_crtc_state(struct drm_atomic_state *state,
  * NULL if the CRTC is not part of the global atomic state.
  */
 static inline struct drm_crtc_state *
-drm_atomic_get_new_crtc_state(struct drm_atomic_state *state,
+drm_atomic_get_new_crtc_state(const struct drm_atomic_state *state,
 			      struct drm_crtc *crtc)
 {
 	return state->crtcs[drm_crtc_index(crtc)].new_state;
@@ -568,7 +642,7 @@ drm_atomic_get_new_crtc_state(struct drm_atomic_state *state,
  * @drm_atomic_get_new_plane_state should be used instead.
  */
 static inline struct drm_plane_state *
-drm_atomic_get_existing_plane_state(struct drm_atomic_state *state,
+drm_atomic_get_existing_plane_state(const struct drm_atomic_state *state,
 				    struct drm_plane *plane)
 {
 	return state->planes[drm_plane_index(plane)].state;
@@ -583,7 +657,7 @@ drm_atomic_get_existing_plane_state(struct drm_atomic_state *state,
  * NULL if the plane is not part of the global atomic state.
  */
 static inline struct drm_plane_state *
-drm_atomic_get_old_plane_state(struct drm_atomic_state *state,
+drm_atomic_get_old_plane_state(const struct drm_atomic_state *state,
 			       struct drm_plane *plane)
 {
 	return state->planes[drm_plane_index(plane)].old_state;
@@ -598,7 +672,7 @@ drm_atomic_get_old_plane_state(struct drm_atomic_state *state,
  * NULL if the plane is not part of the global atomic state.
  */
 static inline struct drm_plane_state *
-drm_atomic_get_new_plane_state(struct drm_atomic_state *state,
+drm_atomic_get_new_plane_state(const struct drm_atomic_state *state,
 			       struct drm_plane *plane)
 {
 	return state->planes[drm_plane_index(plane)].new_state;
@@ -616,7 +690,7 @@ drm_atomic_get_new_plane_state(struct drm_atomic_state *state,
  * @drm_atomic_get_new_connector_state should be used instead.
  */
 static inline struct drm_connector_state *
-drm_atomic_get_existing_connector_state(struct drm_atomic_state *state,
+drm_atomic_get_existing_connector_state(const struct drm_atomic_state *state,
 					struct drm_connector *connector)
 {
 	int index = drm_connector_index(connector);
@@ -636,7 +710,7 @@ drm_atomic_get_existing_connector_state(struct drm_atomic_state *state,
  * or NULL if the connector is not part of the global atomic state.
  */
 static inline struct drm_connector_state *
-drm_atomic_get_old_connector_state(struct drm_atomic_state *state,
+drm_atomic_get_old_connector_state(const struct drm_atomic_state *state,
 				   struct drm_connector *connector)
 {
 	int index = drm_connector_index(connector);
@@ -656,7 +730,7 @@ drm_atomic_get_old_connector_state(struct drm_atomic_state *state,
  * or NULL if the connector is not part of the global atomic state.
  */
 static inline struct drm_connector_state *
-drm_atomic_get_new_connector_state(struct drm_atomic_state *state,
+drm_atomic_get_new_connector_state(const struct drm_atomic_state *state,
 				   struct drm_connector *connector)
 {
 	int index = drm_connector_index(connector);
@@ -694,7 +768,7 @@ drm_atomic_get_new_connector_state(struct drm_atomic_state *state,
  * Read-only pointer to the current plane state.
  */
 static inline const struct drm_plane_state *
-__drm_atomic_get_current_plane_state(struct drm_atomic_state *state,
+__drm_atomic_get_current_plane_state(const struct drm_atomic_state *state,
 				     struct drm_plane *plane)
 {
 	if (state->planes[drm_plane_index(plane)].state)
@@ -1003,6 +1077,7 @@ void drm_state_dump(struct drm_device *dev, struct drm_printer *p);
 	for ((__i) = 0; \
 	     (__i) < (__state)->num_private_objs && \
 		     ((obj) = (__state)->private_objs[__i].ptr, \
+		      (void)(obj) /* Only to avoid unused-but-set-variable warning */, \
 		      (new_obj_state) = (__state)->private_objs[__i].new_state, 1); \
 	     (__i)++)
 
@@ -1099,7 +1174,7 @@ struct drm_bridge_state {
 	struct drm_bus_cfg input_bus_cfg;
 
 	/**
-	 * @output_bus_cfg: input bus configuration
+	 * @output_bus_cfg: output bus configuration
 	 */
 	struct drm_bus_cfg output_bus_cfg;
 };
@@ -1114,10 +1189,10 @@ struct drm_bridge_state *
 drm_atomic_get_bridge_state(struct drm_atomic_state *state,
 			    struct drm_bridge *bridge);
 struct drm_bridge_state *
-drm_atomic_get_old_bridge_state(struct drm_atomic_state *state,
+drm_atomic_get_old_bridge_state(const struct drm_atomic_state *state,
 				struct drm_bridge *bridge);
 struct drm_bridge_state *
-drm_atomic_get_new_bridge_state(struct drm_atomic_state *state,
+drm_atomic_get_new_bridge_state(const struct drm_atomic_state *state,
 				struct drm_bridge *bridge);
 
 #endif /* DRM_ATOMIC_H_ */

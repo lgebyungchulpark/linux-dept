@@ -19,16 +19,8 @@
 #include "msm_drv.h"
 #include "hdmi.xml.h"
 
-#define HDMI_MAX_NUM_GPIO	6
-
 struct hdmi_phy;
 struct hdmi_platform_config;
-
-struct hdmi_gpio_data {
-	struct gpio_desc *gpiod;
-	bool output;
-	int value;
-};
 
 struct hdmi_audio {
 	bool enabled;
@@ -61,12 +53,16 @@ struct hdmi {
 	struct clk **hpd_clks;
 	struct clk **pwr_clks;
 
+	struct gpio_desc *hpd_gpiod;
+
 	struct hdmi_phy *phy;
 	struct device *phy_dev;
 
 	struct i2c_adapter *i2c;
 	struct drm_connector *connector;
 	struct drm_bridge *bridge;
+
+	struct drm_bridge *next_bridge;
 
 	/* the encoder we are hooked to (outside of hdmi block) */
 	struct drm_encoder *encoder;
@@ -90,9 +86,6 @@ struct hdmi {
 
 /* platform config data (ie. from DT, or pdata) */
 struct hdmi_platform_config {
-	const char *mmio_name;
-	const char *qfprom_mmio_name;
-
 	/* regulators that need to be on for hpd: */
 	const char **hpd_reg_names;
 	int hpd_reg_cnt;
@@ -109,9 +102,6 @@ struct hdmi_platform_config {
 	/* clks that need to be on for screen pwr (ie pixel clk): */
 	const char **pwr_clk_names;
 	int pwr_clk_cnt;
-
-	/* gpio's: */
-	struct hdmi_gpio_data gpios[HDMI_MAX_NUM_GPIO];
 };
 
 struct hdmi_bridge {
@@ -125,17 +115,17 @@ void msm_hdmi_set_mode(struct hdmi *hdmi, bool power_on);
 
 static inline void hdmi_write(struct hdmi *hdmi, u32 reg, u32 data)
 {
-	msm_writel(data, hdmi->mmio + reg);
+	writel(data, hdmi->mmio + reg);
 }
 
 static inline u32 hdmi_read(struct hdmi *hdmi, u32 reg)
 {
-	return msm_readl(hdmi->mmio + reg);
+	return readl(hdmi->mmio + reg);
 }
 
 static inline u32 hdmi_qfprom_read(struct hdmi *hdmi, u32 reg)
 {
-	return msm_readl(hdmi->qfprom_mmio + reg);
+	return readl(hdmi->qfprom_mmio + reg);
 }
 
 /*
@@ -147,6 +137,7 @@ enum hdmi_phy_type {
 	MSM_HDMI_PHY_8960,
 	MSM_HDMI_PHY_8x74,
 	MSM_HDMI_PHY_8996,
+	MSM_HDMI_PHY_8998,
 	MSM_HDMI_PHY_MAX,
 };
 
@@ -164,6 +155,7 @@ extern const struct hdmi_phy_cfg msm_hdmi_phy_8x60_cfg;
 extern const struct hdmi_phy_cfg msm_hdmi_phy_8960_cfg;
 extern const struct hdmi_phy_cfg msm_hdmi_phy_8x74_cfg;
 extern const struct hdmi_phy_cfg msm_hdmi_phy_8996_cfg;
+extern const struct hdmi_phy_cfg msm_hdmi_phy_8998_cfg;
 
 struct hdmi_phy {
 	struct platform_device *pdev;
@@ -176,12 +168,12 @@ struct hdmi_phy {
 
 static inline void hdmi_phy_write(struct hdmi_phy *phy, u32 reg, u32 data)
 {
-	msm_writel(data, phy->mmio + reg);
+	writel(data, phy->mmio + reg);
 }
 
 static inline u32 hdmi_phy_read(struct hdmi_phy *phy, u32 reg)
 {
-	return msm_readl(phy->mmio + reg);
+	return readl(phy->mmio + reg);
 }
 
 int msm_hdmi_phy_resource_enable(struct hdmi_phy *phy);
@@ -194,6 +186,7 @@ void __exit msm_hdmi_phy_driver_unregister(void);
 #ifdef CONFIG_COMMON_CLK
 int msm_hdmi_pll_8960_init(struct platform_device *pdev);
 int msm_hdmi_pll_8996_init(struct platform_device *pdev);
+int msm_hdmi_pll_8998_init(struct platform_device *pdev);
 #else
 static inline int msm_hdmi_pll_8960_init(struct platform_device *pdev)
 {
@@ -201,6 +194,11 @@ static inline int msm_hdmi_pll_8960_init(struct platform_device *pdev)
 }
 
 static inline int msm_hdmi_pll_8996_init(struct platform_device *pdev)
+{
+	return -ENODEV;
+}
+
+static inline int msm_hdmi_pll_8998_init(struct platform_device *pdev)
 {
 	return -ENODEV;
 }
@@ -234,14 +232,13 @@ void msm_hdmi_audio_set_sample_rate(struct hdmi *hdmi, int rate);
  * hdmi bridge:
  */
 
-struct drm_bridge *msm_hdmi_bridge_init(struct hdmi *hdmi);
-void msm_hdmi_bridge_destroy(struct drm_bridge *bridge);
+int msm_hdmi_bridge_init(struct hdmi *hdmi);
 
 void msm_hdmi_hpd_irq(struct drm_bridge *bridge);
 enum drm_connector_status msm_hdmi_bridge_detect(
 		struct drm_bridge *bridge);
 int msm_hdmi_hpd_enable(struct drm_bridge *bridge);
-void msm_hdmi_hpd_disable(struct hdmi_bridge *hdmi_bridge);
+void msm_hdmi_hpd_disable(struct hdmi *hdmi);
 
 /*
  * i2c adapter for ddc:

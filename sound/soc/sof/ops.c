@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation. All rights reserved.
+// Copyright(c) 2018 Intel Corporation
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //
@@ -177,7 +177,7 @@ void snd_sof_dsp_panic(struct snd_sof_dev *sdev, u32 offset, bool non_recoverabl
 		snd_sof_dsp_dbg_dump(sdev, "DSP panic!",
 				     SOF_DBG_DUMP_REGS | SOF_DBG_DUMP_MBOX);
 		sof_set_fw_state(sdev, SOF_FW_CRASHED);
-		snd_sof_trace_notify_for_error(sdev);
+		sof_fw_trace_fw_crashed(sdev);
 	} else {
 		snd_sof_dsp_dbg_dump(sdev,
 				     "DSP panic (recovery will be attempted)",

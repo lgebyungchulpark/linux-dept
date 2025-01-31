@@ -182,7 +182,7 @@ enum iser_data_dir {
  *
  * @sg:           pointer to the sg list
  * @size:         num entries of this sg
- * @data_len:     total beffer byte len
+ * @data_len:     total buffer byte len
  * @dma_nents:    returned by dma_map_sg
  */
 struct iser_data_buf {
@@ -203,12 +203,12 @@ struct iser_reg_resources;
  *
  * @sge:          memory region sg element
  * @rkey:         memory region remote key
- * @mem_h:        pointer to registration context (FMR/Fastreg)
+ * @desc:         pointer to fast registration context
  */
 struct iser_mem_reg {
-	struct ib_sge	 sge;
-	u32		 rkey;
-	void		*mem_h;
+	struct ib_sge sge;
+	u32 rkey;
+	struct iser_fr_desc *desc;
 };
 
 enum iser_desc_type {
@@ -299,7 +299,6 @@ struct ib_conn;
  *
  * @ib_device:     RDMA device
  * @pd:            Protection Domain for this device
- * @mr:            Global DMA memory region
  * @event_handler: IB events handle routine
  * @ig_list:	   entry in devices list
  * @refcount:      Reference counter, dominated by open iser connections
@@ -317,12 +316,10 @@ struct iser_device {
  *
  * @mr:         memory region
  * @sig_mr:     signature memory region
- * @mr_valid:   is mr valid indicator
  */
 struct iser_reg_resources {
 	struct ib_mr                     *mr;
 	struct ib_mr                     *sig_mr;
-	u8				  mr_valid:1;
 };
 
 /**
@@ -363,7 +360,7 @@ struct iser_fr_pool {
  * @cq:                  Connection completion queue
  * @cq_size:             The number of max outstanding completions
  * @device:              reference to iser device
- * @fr_pool:             connection fast registration poool
+ * @fr_pool:             connection fast registration pool
  * @pi_support:          Indicate device T10-PI support
  * @reg_cqe:             completion handler
  */
@@ -389,7 +386,7 @@ struct ib_conn {
  *                    to max number of post recvs
  * @max_cmds:         maximum cmds allowed for this connection
  * @name:             connection peer portal
- * @release_work:     deffered work for release job
+ * @release_work:     deferred work for release job
  * @state_mutex:      protects iser onnection state
  * @stop_completion:  conn_stop completion
  * @ib_completion:    RDMA cleanup completion
@@ -510,10 +507,6 @@ void iser_task_rdma_finalize(struct iscsi_iser_task *task);
 
 void iser_free_rx_descriptors(struct iser_conn *iser_conn);
 
-void iser_finalize_rdma_unaligned_sg(struct iscsi_iser_task *iser_task,
-				     struct iser_data_buf *mem,
-				     enum iser_data_dir cmd_dir);
-
 int iser_reg_mem_fastreg(struct iscsi_iser_task *task,
 			 enum iser_data_dir dir,
 			 bool all_imm);
@@ -531,13 +524,12 @@ int  iser_post_recvm(struct iser_conn *iser_conn,
 int  iser_post_send(struct ib_conn *ib_conn, struct iser_tx_desc *tx_desc);
 
 int iser_dma_map_task_data(struct iscsi_iser_task *iser_task,
-			   struct iser_data_buf *data,
 			   enum iser_data_dir iser_dir,
 			   enum dma_data_direction dma_dir);
 
 void iser_dma_unmap_task_data(struct iscsi_iser_task *iser_task,
-			      struct iser_data_buf *data,
-			      enum dma_data_direction dir);
+			      enum iser_data_dir iser_dir,
+			      enum dma_data_direction dma_dir);
 
 int  iser_initialize_task_headers(struct iscsi_task *task,
 			struct iser_tx_desc *tx_desc);

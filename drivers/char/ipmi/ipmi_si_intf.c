@@ -264,15 +264,16 @@ static void cleanup_one_si(struct smi_info *smi_info);
 static void cleanup_ipmi_si(void);
 
 #ifdef DEBUG_TIMING
-void debug_timestamp(char *msg)
+void debug_timestamp(struct smi_info *smi_info, char *msg)
 {
 	struct timespec64 t;
 
 	ktime_get_ts64(&t);
-	pr_debug("**%s: %lld.%9.9ld\n", msg, t.tv_sec, t.tv_nsec);
+	dev_dbg(smi_info->io.dev, "**%s: %lld.%9.9ld\n",
+		msg, t.tv_sec, t.tv_nsec);
 }
 #else
-#define debug_timestamp(x)
+#define debug_timestamp(smi_info, x)
 #endif
 
 static ATOMIC_NOTIFIER_HEAD(xaction_notifier_list);
@@ -318,7 +319,7 @@ static enum si_sm_result start_next_msg(struct smi_info *smi_info)
 
 		smi_info->curr_msg = smi_info->waiting_msg;
 		smi_info->waiting_msg = NULL;
-		debug_timestamp("Start2");
+		debug_timestamp(smi_info, "Start2");
 		err = atomic_notifier_call_chain(&xaction_notifier_list,
 				0, smi_info);
 		if (err & NOTIFY_STOP_MASK) {
@@ -538,7 +539,7 @@ static void handle_transaction_done(struct smi_info *smi_info)
 {
 	struct ipmi_smi_msg *msg;
 
-	debug_timestamp("Done");
+	debug_timestamp(smi_info, "Done");
 	switch (smi_info->si_state) {
 	case SI_NORMAL:
 		if (!smi_info->curr_msg)
@@ -901,7 +902,7 @@ static void sender(void                *send_info,
 	struct smi_info   *smi_info = send_info;
 	unsigned long     flags;
 
-	debug_timestamp("Enqueue");
+	debug_timestamp(smi_info, "Enqueue");
 
 	if (smi_info->run_to_completion) {
 		/*
@@ -1079,7 +1080,7 @@ static void smi_timeout(struct timer_list *t)
 	long		  timeout;
 
 	spin_lock_irqsave(&(smi_info->si_lock), flags);
-	debug_timestamp("Timer");
+	debug_timestamp(smi_info, "Timer");
 
 	jiffies_now = jiffies;
 	time_diff = (((long)jiffies_now - (long)smi_info->last_timeout_jiffies)
@@ -1128,7 +1129,7 @@ irqreturn_t ipmi_si_irq_handler(int irq, void *data)
 
 	smi_inc_stat(smi_info, interrupts);
 
-	debug_timestamp("Interrupt");
+	debug_timestamp(smi_info, "Interrupt");
 
 	smi_event_handler(smi_info, 0);
 	spin_unlock_irqrestore(&(smi_info->si_lock), flags);
@@ -1881,7 +1882,8 @@ int ipmi_si_add_smi(struct si_sm_io *io)
 	}
 
 	if (!io->io_setup) {
-		if (io->addr_space == IPMI_IO_ADDR_SPACE) {
+		if (IS_ENABLED(CONFIG_HAS_IOPORT) &&
+		    io->addr_space == IPMI_IO_ADDR_SPACE) {
 			io->io_setup = ipmi_si_port_setup;
 		} else if (io->addr_space == IPMI_MEM_ADDR_SPACE) {
 			io->io_setup = ipmi_si_mem_setup;
@@ -2081,6 +2083,11 @@ static int try_smi_init(struct smi_info *new_smi)
 		new_smi->io.io_cleanup = NULL;
 	}
 
+	if (rv && new_smi->si_sm) {
+		kfree(new_smi->si_sm);
+		new_smi->si_sm = NULL;
+	}
+
 	return rv;
 }
 
@@ -2152,6 +2159,20 @@ skip_fallback_noirq:
 }
 module_init(init_ipmi_si);
 
+static void wait_msg_processed(struct smi_info *smi_info)
+{
+	unsigned long jiffies_now;
+	long time_diff;
+
+	while (smi_info->curr_msg || (smi_info->si_state != SI_NORMAL)) {
+		jiffies_now = jiffies;
+		time_diff = (((long)jiffies_now - (long)smi_info->last_timeout_jiffies)
+		     * SI_USEC_PER_JIFFY);
+		smi_event_handler(smi_info, time_diff);
+		schedule_timeout_uninterruptible(1);
+	}
+}
+
 static void shutdown_smi(void *send_info)
 {
 	struct smi_info *smi_info = send_info;
@@ -2186,16 +2207,13 @@ static void shutdown_smi(void *send_info)
 	 * in the BMC.  Note that timers and CPU interrupts are off,
 	 * so no need for locks.
 	 */
-	while (smi_info->curr_msg || (smi_info->si_state != SI_NORMAL)) {
-		poll(smi_info);
-		schedule_timeout_uninterruptible(1);
-	}
+	wait_msg_processed(smi_info);
+
 	if (smi_info->handlers)
 		disable_si_irq(smi_info);
-	while (smi_info->curr_msg || (smi_info->si_state != SI_NORMAL)) {
-		poll(smi_info);
-		schedule_timeout_uninterruptible(1);
-	}
+
+	wait_msg_processed(smi_info);
+
 	if (smi_info->handlers)
 		smi_info->handlers->cleanup(smi_info->si_sm);
 
@@ -2220,10 +2238,7 @@ static void cleanup_one_si(struct smi_info *smi_info)
 		return;
 
 	list_del(&smi_info->link);
-
-	if (smi_info->intf)
-		ipmi_unregister_smi(smi_info->intf);
-
+	ipmi_unregister_smi(smi_info->intf);
 	kfree(smi_info);
 }
 

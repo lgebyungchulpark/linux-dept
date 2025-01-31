@@ -9,9 +9,9 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
 
@@ -522,8 +522,6 @@ static const struct vb2_ops rotate_qops = {
 	.buf_queue		= rotate_buf_queue,
 	.start_streaming	= rotate_start_streaming,
 	.stop_streaming		= rotate_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int rotate_queue_init(void *priv, struct vb2_queue *src_vq,
@@ -536,7 +534,7 @@ static int rotate_queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->io_modes = VB2_MMAP | VB2_DMABUF;
 	src_vq->drv_priv = ctx;
 	src_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
-	src_vq->min_buffers_needed = 1;
+	src_vq->min_queued_buffers = 1;
 	src_vq->ops = &rotate_qops;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
@@ -551,7 +549,7 @@ static int rotate_queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->io_modes = VB2_MMAP | VB2_DMABUF;
 	dst_vq->drv_priv = ctx;
 	dst_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
-	dst_vq->min_buffers_needed = 2;
+	dst_vq->min_queued_buffers = 2;
 	dst_vq->ops = &rotate_qops;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
@@ -833,7 +831,7 @@ err_v4l2:
 	return ret;
 }
 
-static int rotate_remove(struct platform_device *pdev)
+static void rotate_remove(struct platform_device *pdev)
 {
 	struct rotate_dev *dev = platform_get_drvdata(pdev);
 
@@ -842,8 +840,6 @@ static int rotate_remove(struct platform_device *pdev)
 	v4l2_device_unregister(&dev->v4l2_dev);
 
 	pm_runtime_force_suspend(&pdev->dev);
-
-	return 0;
 }
 
 static int rotate_runtime_resume(struct device *device)

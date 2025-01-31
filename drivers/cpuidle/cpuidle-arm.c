@@ -31,8 +31,8 @@
  * Called from the CPUidle framework to program the device to the
  * specified target state selected by the governor.
  */
-static int arm_enter_idle_state(struct cpuidle_device *dev,
-				struct cpuidle_driver *drv, int idx)
+static __cpuidle int arm_enter_idle_state(struct cpuidle_device *dev,
+					  struct cpuidle_driver *drv, int idx)
 {
 	/*
 	 * Pass idle state index to arm_cpuidle_suspend which in turn
@@ -139,7 +139,7 @@ out_kfree_drv:
  *
  * Initializes arm cpuidle driver for all CPUs, if any CPU fails
  * to register cpuidle driver then rollback to cancel all CPUs
- * registeration.
+ * registration.
  */
 static int __init arm_idle_init(void)
 {

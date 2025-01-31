@@ -40,6 +40,7 @@
 #include <linux/of_fdt.h>
 #include <linux/libfdt.h>
 #include <linux/memremap.h>
+#include <linux/memory.h>
 
 #include <asm/pgalloc.h>
 #include <asm/page.h>
@@ -59,6 +60,7 @@
 #include <asm/sections.h>
 #include <asm/iommu.h>
 #include <asm/vdso.h>
+#include <asm/hugetlb.h>
 
 #include <mm/mmu_decl.h>
 
@@ -91,7 +93,7 @@ static struct page * __meminit vmemmap_subsection_start(unsigned long vmemmap_ad
  * a page table lookup here because with the hash translation we don't keep
  * vmemmap details in linux page table.
  */
-static int __meminit vmemmap_populated(unsigned long vmemmap_addr, int vmemmap_map_size)
+int __meminit vmemmap_populated(unsigned long vmemmap_addr, int vmemmap_map_size)
 {
 	struct page *start;
 	unsigned long vmemmap_end = vmemmap_addr + vmemmap_map_size;
@@ -110,7 +112,7 @@ static int __meminit vmemmap_populated(unsigned long vmemmap_addr, int vmemmap_m
 }
 
 /*
- * vmemmap virtual address space management does not have a traditonal page
+ * vmemmap virtual address space management does not have a traditional page
  * table to track which virtual struct pages are backed by physical mapping.
  * The virtual to physical mappings are tracked in a simple linked list
  * format. 'vmemmap_list' maintains the entire vmemmap physical mapping at
@@ -127,7 +129,7 @@ static struct vmemmap_backing *next;
 
 /*
  * The same pointer 'next' tracks individual chunks inside the allocated
- * full page during the boot time and again tracks the freeed nodes during
+ * full page during the boot time and again tracks the freed nodes during
  * runtime. It is racy but it does not happen as they are separated by the
  * boot process. Will create problem if some how we have memory hotplug
  * operation during boot !!
@@ -182,13 +184,13 @@ static __meminit int vmemmap_list_populate(unsigned long phys,
 	return 0;
 }
 
-static bool altmap_cross_boundary(struct vmem_altmap *altmap, unsigned long start,
-				unsigned long page_size)
+bool altmap_cross_boundary(struct vmem_altmap *altmap, unsigned long start,
+			   unsigned long page_size)
 {
 	unsigned long nr_pfn = page_size / sizeof(struct page);
 	unsigned long start_pfn = page_to_pfn((struct page *)start);
 
-	if ((start_pfn + nr_pfn) > altmap->end_pfn)
+	if ((start_pfn + nr_pfn - 1) > altmap->end_pfn)
 		return true;
 
 	if (start_pfn < altmap->base_pfn)
@@ -197,8 +199,8 @@ static bool altmap_cross_boundary(struct vmem_altmap *altmap, unsigned long star
 	return false;
 }
 
-int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
-		struct vmem_altmap *altmap)
+static int __meminit __vmemmap_populate(unsigned long start, unsigned long end, int node,
+					struct vmem_altmap *altmap)
 {
 	bool altmap_alloc;
 	unsigned long page_size = 1 << mmu_psize_defs[mmu_vmemmap_psize].shift;
@@ -271,6 +273,18 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
 	return 0;
 }
 
+int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
+			       struct vmem_altmap *altmap)
+{
+
+#ifdef CONFIG_PPC_BOOK3S_64
+	if (radix_enabled())
+		return radix__vmemmap_populate(start, end, node, altmap);
+#endif
+
+	return __vmemmap_populate(start, end, node, altmap);
+}
+
 #ifdef CONFIG_MEMORY_HOTPLUG
 static unsigned long vmemmap_list_free(unsigned long start)
 {
@@ -302,8 +316,8 @@ static unsigned long vmemmap_list_free(unsigned long start)
 	return vmem_back->phys;
 }
 
-void __ref vmemmap_free(unsigned long start, unsigned long end,
-		struct vmem_altmap *altmap)
+static void __ref __vmemmap_free(unsigned long start, unsigned long end,
+				 struct vmem_altmap *altmap)
 {
 	unsigned long page_size = 1 << mmu_psize_defs[mmu_vmemmap_psize].shift;
 	unsigned long page_order = get_order(page_size);
@@ -313,8 +327,7 @@ void __ref vmemmap_free(unsigned long start, unsigned long end,
 	start = ALIGN_DOWN(start, page_size);
 	if (altmap) {
 		alt_start = altmap->base_pfn;
-		alt_end = altmap->base_pfn + altmap->reserve +
-			  altmap->free + altmap->alloc + altmap->align;
+		alt_end = altmap->base_pfn + altmap->reserve + altmap->free;
 	}
 
 	pr_debug("vmemmap_free %lx...%lx\n", start, end);
@@ -361,6 +374,17 @@ void __ref vmemmap_free(unsigned long start, unsigned long end,
 		vmemmap_remove_mapping(start, page_size);
 	}
 }
+
+void __ref vmemmap_free(unsigned long start, unsigned long end,
+			struct vmem_altmap *altmap)
+{
+#ifdef CONFIG_PPC_BOOK3S_64
+	if (radix_enabled())
+		return radix__vmemmap_free(start, end, altmap);
+#endif
+	return __vmemmap_free(start, end, altmap);
+}
+
 #endif
 void register_page_bootmem_memmap(unsigned long section_nr,
 				  struct page *start_page, unsigned long size)
@@ -371,6 +395,9 @@ void register_page_bootmem_memmap(unsigned long section_nr,
 
 #ifdef CONFIG_PPC_BOOK3S_64
 unsigned int mmu_lpid_bits;
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+EXPORT_SYMBOL_GPL(mmu_lpid_bits);
+#endif
 unsigned int mmu_pid_bits;
 
 static bool disable_radix = !IS_ENABLED(CONFIG_PPC_RADIX_MMU_DEFAULT);
@@ -467,6 +494,130 @@ static int __init dt_scan_mmu_pid_width(unsigned long node,
 	return 1;
 }
 
+/*
+ * Outside hotplug the kernel uses this value to map the kernel direct map
+ * with radix. To be compatible with older kernels, let's keep this value
+ * as 16M which is also SECTION_SIZE with SPARSEMEM. We can ideally map
+ * things with 1GB size in the case where we don't support hotplug.
+ */
+#ifndef CONFIG_MEMORY_HOTPLUG
+#define DEFAULT_MEMORY_BLOCK_SIZE	SZ_16M
+#else
+#define DEFAULT_MEMORY_BLOCK_SIZE	MIN_MEMORY_BLOCK_SIZE
+#endif
+
+static void update_memory_block_size(unsigned long *block_size, unsigned long mem_size)
+{
+	unsigned long min_memory_block_size = DEFAULT_MEMORY_BLOCK_SIZE;
+
+	for (; *block_size > min_memory_block_size; *block_size >>= 2) {
+		if ((mem_size & *block_size) == 0)
+			break;
+	}
+}
+
+static int __init probe_memory_block_size(unsigned long node, const char *uname, int
+					  depth, void *data)
+{
+	const char *type;
+	unsigned long *block_size = (unsigned long *)data;
+	const __be32 *reg, *endp;
+	int l;
+
+	if (depth != 1)
+		return 0;
+	/*
+	 * If we have dynamic-reconfiguration-memory node, use the
+	 * lmb value.
+	 */
+	if (strcmp(uname, "ibm,dynamic-reconfiguration-memory") == 0) {
+
+		const __be32 *prop;
+
+		prop = of_get_flat_dt_prop(node, "ibm,lmb-size", &l);
+
+		if (!prop || l < dt_root_size_cells * sizeof(__be32))
+			/*
+			 * Nothing in the device tree
+			 */
+			*block_size = DEFAULT_MEMORY_BLOCK_SIZE;
+		else
+			*block_size = of_read_number(prop, dt_root_size_cells);
+		/*
+		 * We have found the final value. Don't probe further.
+		 */
+		return 1;
+	}
+	/*
+	 * Find all the device tree nodes of memory type and make sure
+	 * the area can be mapped using the memory block size value
+	 * we end up using. We start with 1G value and keep reducing
+	 * it such that we can map the entire area using memory_block_size.
+	 * This will be used on powernv and older pseries that don't
+	 * have ibm,lmb-size node.
+	 * For ex: with P5 we can end up with
+	 * memory@0 -> 128MB
+	 * memory@128M -> 64M
+	 * This will end up using 64MB  memory block size value.
+	 */
+	type = of_get_flat_dt_prop(node, "device_type", NULL);
+	if (type == NULL || strcmp(type, "memory") != 0)
+		return 0;
+
+	reg = of_get_flat_dt_prop(node, "linux,usable-memory", &l);
+	if (!reg)
+		reg = of_get_flat_dt_prop(node, "reg", &l);
+	if (!reg)
+		return 0;
+
+	endp = reg + (l / sizeof(__be32));
+	while ((endp - reg) >= (dt_root_addr_cells + dt_root_size_cells)) {
+		const char *compatible;
+		u64 size;
+
+		dt_mem_next_cell(dt_root_addr_cells, &reg);
+		size = dt_mem_next_cell(dt_root_size_cells, &reg);
+
+		if (size) {
+			update_memory_block_size(block_size, size);
+			continue;
+		}
+		/*
+		 * ibm,coherent-device-memory with linux,usable-memory = 0
+		 * Force 256MiB block size. Work around for GPUs on P9 PowerNV
+		 * linux,usable-memory == 0 implies driver managed memory and
+		 * we can't use large memory block size due to hotplug/unplug
+		 * limitations.
+		 */
+		compatible = of_get_flat_dt_prop(node, "compatible", NULL);
+		if (compatible && !strcmp(compatible, "ibm,coherent-device-memory")) {
+			if (*block_size > SZ_256M)
+				*block_size = SZ_256M;
+			/*
+			 * We keep 256M as the upper limit with GPU present.
+			 */
+			return 0;
+		}
+	}
+	/* continue looking for other memory device types */
+	return 0;
+}
+
+/*
+ * start with 1G memory block size. Early init will
+ * fix this with correct value.
+ */
+unsigned long memory_block_size __ro_after_init = 1UL << 30;
+static void __init early_init_memory_block_size(void)
+{
+	/*
+	 * We need to do memory_block_size probe early so that
+	 * radix__early_init_mmu() can use this as limit for
+	 * mapping page size.
+	 */
+	of_scan_flat_dt(probe_memory_block_size, &memory_block_size);
+}
+
 void __init mmu_early_init_devtree(void)
 {
 	bool hvmode = !!(mfmsr() & MSR_HV);
@@ -500,6 +651,8 @@ void __init mmu_early_init_devtree(void)
 	if (!hvmode)
 		early_check_vec5();
 
+	early_init_memory_block_size();
+
 	if (early_radix_enabled()) {
 		radix__early_init_devtree();
 
@@ -512,6 +665,9 @@ void __init mmu_early_init_devtree(void)
 		memblock_set_current_limit(MEMBLOCK_ALLOC_ANYWHERE);
 	} else
 		hash__early_init_devtree();
+
+	if (IS_ENABLED(CONFIG_HUGETLB_PAGE_SIZE_VARIABLE))
+		hugetlbpage_init_defaultsize();
 
 	if (!(cur_cpu_spec->mmu_features & MMU_FTR_HPTE_TABLE) &&
 	    !(cur_cpu_spec->mmu_features & MMU_FTR_TYPE_RADIX))

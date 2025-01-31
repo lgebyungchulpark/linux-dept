@@ -29,12 +29,6 @@
 #define REG_CTCTRL	0xF7
 #define REG_TSTIMER	0xF8
 
-static umode_t i5500_is_visible(const void *drvdata, enum hwmon_sensor_types type, u32 attr,
-				int channel)
-{
-	return 0444;
-}
-
 static int i5500_read(struct device *dev, enum hwmon_sensor_types type, u32 attr, int channel,
 		      long *val)
 {
@@ -84,11 +78,11 @@ static int i5500_read(struct device *dev, enum hwmon_sensor_types type, u32 attr
 }
 
 static const struct hwmon_ops i5500_ops = {
-	.is_visible = i5500_is_visible,
+	.visible = 0444,
 	.read = i5500_read,
 };
 
-static const struct hwmon_channel_info *i5500_info[] = {
+static const struct hwmon_channel_info * const i5500_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_REGISTER_TZ),
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_HYST | HWMON_T_CRIT |
@@ -117,7 +111,7 @@ static int i5500_temp_probe(struct pci_dev *pdev,
 	u32 tstimer;
 	s8 tsfsc;
 
-	err = pci_enable_device(pdev);
+	err = pcim_enable_device(pdev);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to enable device\n");
 		return err;

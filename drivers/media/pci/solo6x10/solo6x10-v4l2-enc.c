@@ -756,21 +756,16 @@ static const struct vb2_ops solo_enc_video_qops = {
 	.buf_finish	= solo_enc_buf_finish,
 	.start_streaming = solo_enc_start_streaming,
 	.stop_streaming = solo_enc_stop_streaming,
-	.wait_prepare	= vb2_ops_wait_prepare,
-	.wait_finish	= vb2_ops_wait_finish,
 };
 
 static int solo_enc_querycap(struct file *file, void  *priv,
 			     struct v4l2_capability *cap)
 {
 	struct solo_enc_dev *solo_enc = video_drvdata(file);
-	struct solo_dev *solo_dev = solo_enc->solo_dev;
 
 	strscpy(cap->driver, SOLO6X10_NAME, sizeof(cap->driver));
 	snprintf(cap->card, sizeof(cap->card), "Softlogic 6x10 Enc %d",
 		 solo_enc->ch);
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "PCI:%s",
-		 pci_name(solo_dev->pdev));
 	return 0;
 }
 
@@ -1023,7 +1018,7 @@ static int solo_g_parm(struct file *file, void *priv,
 	cp->timeperframe.numerator = solo_enc->interval;
 	cp->timeperframe.denominator = solo_enc->solo_dev->fps;
 	cp->capturemode = 0;
-	/* XXX: Shouldn't we be able to get/set this from videobuf? */
+	/* XXX: Shouldn't we be able to get/set this from vb2? */
 	cp->readbuffers = 2;
 
 	return 0;

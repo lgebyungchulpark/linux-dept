@@ -84,10 +84,8 @@ static int hda_hwdep_ioctl_compat(struct snd_hwdep *hw, struct file *file,
 
 static int hda_hwdep_open(struct snd_hwdep *hw, struct file *file)
 {
-#ifndef CONFIG_SND_DEBUG_VERBOSE
 	if (!capable(CAP_SYS_RAWIO))
 		return -EACCES;
-#endif
 	return 0;
 }
 
@@ -114,8 +112,8 @@ int snd_hda_create_hwdep(struct hda_codec *codec)
 #endif
 
 	/* for sysfs */
-	hwdep->dev.groups = snd_hda_dev_attr_groups;
-	dev_set_drvdata(&hwdep->dev, codec);
+	hwdep->dev->groups = snd_hda_dev_attr_groups;
+	dev_set_drvdata(hwdep->dev, codec);
 
 	return 0;
 }

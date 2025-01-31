@@ -672,7 +672,7 @@ static int xge_probe(struct platform_device *pdev)
 	if (ret)
 		goto err;
 
-	netif_napi_add(ndev, &pdata->napi, xge_napi, NAPI_POLL_WEIGHT);
+	netif_napi_add(ndev, &pdata->napi, xge_napi);
 
 	ret = register_netdev(ndev);
 	if (ret) {
@@ -690,7 +690,7 @@ err:
 	return ret;
 }
 
-static int xge_remove(struct platform_device *pdev)
+static void xge_remove(struct platform_device *pdev)
 {
 	struct xge_pdata *pdata;
 	struct net_device *ndev;
@@ -706,8 +706,6 @@ static int xge_remove(struct platform_device *pdev)
 	xge_mdio_remove(ndev);
 	unregister_netdev(ndev);
 	free_netdev(ndev);
-
-	return 0;
 }
 
 static void xge_shutdown(struct platform_device *pdev)

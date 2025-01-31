@@ -69,7 +69,7 @@
 #include <sound/initval.h>
 
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/atomic.h>
 #include <linux/module.h>
 
@@ -2616,7 +2616,7 @@ static int dbri_probe(struct platform_device *op)
 	strcpy(card->driver, "DBRI");
 	strcpy(card->shortname, "Sun DBRI");
 	rp = &op->resource[0];
-	sprintf(card->longname, "%s at 0x%02lx:0x%016Lx, irq %d",
+	sprintf(card->longname, "%s at 0x%02lx:0x%016llx, irq %d",
 		card->shortname,
 		rp->flags & 0xffL, (unsigned long long)rp->start, irq);
 
@@ -2656,14 +2656,12 @@ _err:
 	return err;
 }
 
-static int dbri_remove(struct platform_device *op)
+static void dbri_remove(struct platform_device *op)
 {
 	struct snd_card *card = dev_get_drvdata(&op->dev);
 
 	snd_dbri_free(card->private_data);
 	snd_card_free(card);
-
-	return 0;
 }
 
 static const struct of_device_id dbri_match[] = {

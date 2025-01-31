@@ -23,16 +23,12 @@
  *
  */
 
-#include <linux/delay.h>
-#include <linux/slab.h>
-
 #include "reg_helper.h"
 
 #include "core_types.h"
 #include "link_encoder.h"
 #include "dce_link_encoder.h"
 #include "stream_encoder.h"
-#include "i2caux_interface.h"
 #include "dc_bios_types.h"
 
 #include "gpio_service_interface.h"
@@ -945,9 +941,7 @@ bool dce110_link_encoder_validate_output_with_stream(
 	break;
 	case SIGNAL_TYPE_EDP:
 	case SIGNAL_TYPE_LVDS:
-		is_valid =
-			(stream->timing.
-				pixel_encoding == PIXEL_ENCODING_RGB) ? true : false;
+		is_valid = stream->timing.pixel_encoding == PIXEL_ENCODING_RGB;
 	break;
 	case SIGNAL_TYPE_VIRTUAL:
 		is_valid = true;
@@ -1325,7 +1319,8 @@ void dce110_link_encoder_disable_output(
 
 void dce110_link_encoder_dp_set_lane_settings(
 	struct link_encoder *enc,
-	const struct link_training_settings *link_settings)
+	const struct dc_link_settings *link_settings,
+	const struct dc_lane_settings lane_settings[LANE_COUNT_DP_MAX])
 {
 	struct dce110_link_encoder *enc110 = TO_DCE110_LINK_ENC(enc);
 	union dpcd_training_lane_set training_lane_set = { { 0 } };
@@ -1340,33 +1335,36 @@ void dce110_link_encoder_dp_set_lane_settings(
 	cntl.action = TRANSMITTER_CONTROL_SET_VOLTAGE_AND_PREEMPASIS;
 	cntl.transmitter = enc110->base.transmitter;
 	cntl.connector_obj_id = enc110->base.connector;
-	cntl.lanes_number = link_settings->link_settings.lane_count;
+	cntl.lanes_number = link_settings->lane_count;
 	cntl.hpd_sel = enc110->base.hpd_source;
-	cntl.pixel_clock = link_settings->link_settings.link_rate *
+	cntl.pixel_clock = link_settings->link_rate *
 						LINK_RATE_REF_FREQ_IN_KHZ;
 
-	for (lane = 0; lane < link_settings->link_settings.lane_count; lane++) {
+	for (lane = 0; lane < link_settings->lane_count; lane++) {
 		/* translate lane settings */
 
 		training_lane_set.bits.VOLTAGE_SWING_SET =
-			link_settings->lane_settings[lane].VOLTAGE_SWING;
+				lane_settings[lane].VOLTAGE_SWING;
 		training_lane_set.bits.PRE_EMPHASIS_SET =
-			link_settings->lane_settings[lane].PRE_EMPHASIS;
+				lane_settings[lane].PRE_EMPHASIS;
 
 		/* post cursor 2 setting only applies to HBR2 link rate */
-		if (link_settings->link_settings.link_rate == LINK_RATE_HIGH2) {
+		if (link_settings->link_rate == LINK_RATE_HIGH2) {
 			/* this is passed to VBIOS
 			 * to program post cursor 2 level */
 
 			training_lane_set.bits.POST_CURSOR2_SET =
-				link_settings->lane_settings[lane].POST_CURSOR2;
+					lane_settings[lane].POST_CURSOR2;
 		}
 
 		cntl.lane_select = lane;
 		cntl.lane_settings = training_lane_set.raw;
 
 		/* call VBIOS table to set voltage swing and pre-emphasis */
-		link_transmitter_control(enc110, &cntl);
+		if (link_transmitter_control(enc110, &cntl) != BP_RESULT_OK) {
+			DC_LOG_ERROR("%s: Failed to execute VBIOS command table!\n", __func__);
+			BREAK_TO_DEBUGGER();
+		}
 	}
 }
 
@@ -1648,7 +1646,7 @@ void dce110_link_encoder_enable_hpd(struct link_encoder *enc)
 	uint32_t hpd_enable = 0;
 	uint32_t value = dm_read_reg(ctx, addr);
 
-	get_reg_field_value(hpd_enable, DC_HPD_CONTROL, DC_HPD_EN);
+	hpd_enable = get_reg_field_value(hpd_enable, DC_HPD_CONTROL, DC_HPD_EN);
 
 	if (hpd_enable == 0)
 		set_reg_field_value(value, 1, DC_HPD_CONTROL, DC_HPD_EN);

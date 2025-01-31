@@ -95,9 +95,10 @@ enum {
 };
 
 enum {
-	MLX5_CQ_MODIFY_PERIOD	= 1 << 0,
-	MLX5_CQ_MODIFY_COUNT	= 1 << 1,
-	MLX5_CQ_MODIFY_OVERRUN	= 1 << 2,
+	MLX5_CQ_MODIFY_PERIOD		= BIT(0),
+	MLX5_CQ_MODIFY_COUNT		= BIT(1),
+	MLX5_CQ_MODIFY_OVERRUN		= BIT(2),
+	MLX5_CQ_MODIFY_PERIOD_MODE	= BIT(4),
 };
 
 enum {
@@ -183,6 +184,8 @@ static inline void mlx5_cq_put(struct mlx5_core_cq *cq)
 		complete(&cq->free);
 }
 
+int mlx5_create_cq(struct mlx5_core_dev *dev, struct mlx5_core_cq *cq,
+		   u32 *in, int inlen, u32 *out, int outlen);
 int mlx5_core_create_cq(struct mlx5_core_dev *dev, struct mlx5_core_cq *cq,
 			u32 *in, int inlen, u32 *out, int outlen);
 int mlx5_core_destroy_cq(struct mlx5_core_dev *dev, struct mlx5_core_cq *cq);

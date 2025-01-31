@@ -25,6 +25,7 @@
 #include <linux/kexec.h>
 #include <linux/panic_notifier.h>
 #include <linux/sched.h>
+#include <linux/string_helpers.h>
 #include <linux/sysrq.h>
 #include <linux/init.h>
 #include <linux/nmi.h>
@@ -32,6 +33,9 @@
 #include <linux/bug.h>
 #include <linux/ratelimit.h>
 #include <linux/debugfs.h>
+#include <linux/sysfs.h>
+#include <linux/context_tracking.h>
+#include <linux/seq_buf.h>
 #include <trace/events/error_report.h>
 #include <asm/sections.h>
 
@@ -43,12 +47,14 @@
  * Should we dump all CPUs backtraces in an oops event?
  * Defaults to 0, can be changed via sysctl.
  */
-unsigned int __read_mostly sysctl_oops_all_cpu_backtrace;
+static unsigned int __read_mostly sysctl_oops_all_cpu_backtrace;
+#else
+#define sysctl_oops_all_cpu_backtrace 0
 #endif /* CONFIG_SMP */
 
 int panic_on_oops = CONFIG_PANIC_ON_OOPS_VALUE;
 static unsigned long tainted_mask =
-	IS_ENABLED(CONFIG_GCC_PLUGIN_RANDSTRUCT) ? (1 << TAINT_RANDSTRUCT) : 0;
+	IS_ENABLED(CONFIG_RANDSTRUCT) ? (1 << TAINT_RANDSTRUCT) : 0;
 static int pause_on_oops;
 static int pause_on_oops_flag;
 static DEFINE_SPINLOCK(pause_on_oops_lock);
@@ -56,6 +62,9 @@ bool crash_kexec_post_notifiers;
 int panic_on_warn __read_mostly;
 unsigned long panic_on_taint;
 bool panic_on_taint_nousertaint = false;
+static unsigned int warn_limit __read_mostly;
+
+bool panic_triggering_all_cpu_backtrace;
 
 int panic_timeout = CONFIG_PANIC_TIMEOUT;
 EXPORT_SYMBOL_GPL(panic_timeout);
@@ -66,11 +75,62 @@ EXPORT_SYMBOL_GPL(panic_timeout);
 #define PANIC_PRINT_LOCK_INFO		0x00000008
 #define PANIC_PRINT_FTRACE_INFO		0x00000010
 #define PANIC_PRINT_ALL_PRINTK_MSG	0x00000020
+#define PANIC_PRINT_ALL_CPU_BT		0x00000040
+#define PANIC_PRINT_BLOCKED_TASKS	0x00000080
 unsigned long panic_print;
 
 ATOMIC_NOTIFIER_HEAD(panic_notifier_list);
 
 EXPORT_SYMBOL(panic_notifier_list);
+
+#ifdef CONFIG_SYSCTL
+static const struct ctl_table kern_panic_table[] = {
+#ifdef CONFIG_SMP
+	{
+		.procname       = "oops_all_cpu_backtrace",
+		.data           = &sysctl_oops_all_cpu_backtrace,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE,
+	},
+#endif
+	{
+		.procname       = "warn_limit",
+		.data           = &warn_limit,
+		.maxlen         = sizeof(warn_limit),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec,
+	},
+};
+
+static __init int kernel_panic_sysctls_init(void)
+{
+	register_sysctl_init("kernel", kern_panic_table);
+	return 0;
+}
+late_initcall(kernel_panic_sysctls_init);
+#endif
+
+static atomic_t warn_count = ATOMIC_INIT(0);
+
+#ifdef CONFIG_SYSFS
+static ssize_t warn_count_show(struct kobject *kobj, struct kobj_attribute *attr,
+			       char *page)
+{
+	return sysfs_emit(page, "%d\n", atomic_read(&warn_count));
+}
+
+static struct kobj_attribute warn_count_attr = __ATTR_RO(warn_count);
+
+static __init int kernel_panic_sysfs_init(void)
+{
+	sysfs_add_file_to_group(kernel_kobj, &warn_count_attr.attr, NULL);
+	return 0;
+}
+late_initcall(kernel_panic_sysfs_init);
+#endif
 
 static long no_blink(int state)
 {
@@ -84,7 +144,7 @@ EXPORT_SYMBOL(panic_blink);
 /*
  * Stop ourself in panic -- architecture code may override this
  */
-void __weak panic_smp_self_stop(void)
+void __weak __noreturn panic_smp_self_stop(void)
 {
 	while (1)
 		cpu_relax();
@@ -94,7 +154,7 @@ void __weak panic_smp_self_stop(void)
  * Stop ourselves in NMI context if another CPU has already panicked. Arch code
  * may override this to prepare for crash dumping, e.g. save regs info.
  */
-void __weak nmi_panic_self_stop(struct pt_regs *regs)
+void __weak __noreturn nmi_panic_self_stop(struct pt_regs *regs)
 {
 	panic_smp_self_stop();
 }
@@ -135,28 +195,32 @@ atomic_t panic_cpu = ATOMIC_INIT(PANIC_CPU_INVALID);
  */
 void nmi_panic(struct pt_regs *regs, const char *msg)
 {
-	int old_cpu, cpu;
+	int old_cpu, this_cpu;
 
-	cpu = raw_smp_processor_id();
-	old_cpu = atomic_cmpxchg(&panic_cpu, PANIC_CPU_INVALID, cpu);
+	old_cpu = PANIC_CPU_INVALID;
+	this_cpu = raw_smp_processor_id();
 
-	if (old_cpu == PANIC_CPU_INVALID)
+	/* atomic_try_cmpxchg updates old_cpu on failure */
+	if (atomic_try_cmpxchg(&panic_cpu, &old_cpu, this_cpu))
 		panic("%s", msg);
-	else if (old_cpu != cpu)
+	else if (old_cpu != this_cpu)
 		nmi_panic_self_stop(regs);
 }
 EXPORT_SYMBOL(nmi_panic);
 
-static void panic_print_sys_info(void)
+static void panic_print_sys_info(bool console_flush)
 {
-	if (panic_print & PANIC_PRINT_ALL_PRINTK_MSG)
-		console_flush_on_panic(CONSOLE_REPLAY_ALL);
+	if (console_flush) {
+		if (panic_print & PANIC_PRINT_ALL_PRINTK_MSG)
+			console_flush_on_panic(CONSOLE_REPLAY_ALL);
+		return;
+	}
 
 	if (panic_print & PANIC_PRINT_TASK_INFO)
 		show_state();
 
 	if (panic_print & PANIC_PRINT_MEM_INFO)
-		show_mem(0, NULL);
+		show_mem();
 
 	if (panic_print & PANIC_PRINT_TIMER_INFO)
 		sysrq_timer_list_show();
@@ -166,6 +230,50 @@ static void panic_print_sys_info(void)
 
 	if (panic_print & PANIC_PRINT_FTRACE_INFO)
 		ftrace_dump(DUMP_ALL);
+
+	if (panic_print & PANIC_PRINT_BLOCKED_TASKS)
+		show_state_filter(TASK_UNINTERRUPTIBLE);
+}
+
+void check_panic_on_warn(const char *origin)
+{
+	unsigned int limit;
+
+	if (panic_on_warn)
+		panic("%s: panic_on_warn set ...\n", origin);
+
+	limit = READ_ONCE(warn_limit);
+	if (atomic_inc_return(&warn_count) >= limit && limit)
+		panic("%s: system warned too often (kernel.warn_limit is %d)",
+		      origin, limit);
+}
+
+/*
+ * Helper that triggers the NMI backtrace (if set in panic_print)
+ * and then performs the secondary CPUs shutdown - we cannot have
+ * the NMI backtrace after the CPUs are off!
+ */
+static void panic_other_cpus_shutdown(bool crash_kexec)
+{
+	if (panic_print & PANIC_PRINT_ALL_CPU_BT) {
+		/* Temporary allow non-panic CPUs to write their backtraces. */
+		panic_triggering_all_cpu_backtrace = true;
+		trigger_all_cpu_backtrace();
+		panic_triggering_all_cpu_backtrace = false;
+	}
+
+	/*
+	 * Note that smp_send_stop() is the usual SMP shutdown function,
+	 * which unfortunately may not be hardened to work in a panic
+	 * situation. If we want to do crash dump after notifier calls
+	 * and kmsg_dump, we will need architecture dependent extra
+	 * bits in addition to stopping other CPUs, hence we rely on
+	 * crash_smp_send_stop() for that.
+	 */
+	if (!crash_kexec)
+		smp_send_stop();
+	else
+		crash_smp_send_stop();
 }
 
 /**
@@ -184,6 +292,16 @@ void panic(const char *fmt, ...)
 	int state = 0;
 	int old_cpu, this_cpu;
 	bool _crash_kexec_post_notifiers = crash_kexec_post_notifiers;
+
+	if (panic_on_warn) {
+		/*
+		 * This thread may hit another WARN() in the panic path.
+		 * Resetting this prevents additional WARN() from panicking the
+		 * system on this thread.  Other threads are blocked by the
+		 * panic_mutex in panic().
+		 */
+		panic_on_warn = 0;
+	}
 
 	/*
 	 * Disable local interrupts. This will prevent panic_smp_self_stop
@@ -204,15 +322,18 @@ void panic(const char *fmt, ...)
 	 * stop themself or will wait until they are stopped by the 1st CPU
 	 * with smp_send_stop().
 	 *
-	 * `old_cpu == PANIC_CPU_INVALID' means this is the 1st CPU which
-	 * comes here, so go ahead.
+	 * cmpxchg success means this is the 1st CPU which comes here,
+	 * so go ahead.
 	 * `old_cpu == this_cpu' means we came from nmi_panic() which sets
 	 * panic_cpu to this CPU.  In this case, this is also the 1st CPU.
 	 */
+	old_cpu = PANIC_CPU_INVALID;
 	this_cpu = raw_smp_processor_id();
-	old_cpu  = atomic_cmpxchg(&panic_cpu, PANIC_CPU_INVALID, this_cpu);
 
-	if (old_cpu != PANIC_CPU_INVALID && old_cpu != this_cpu)
+	/* atomic_try_cmpxchg updates old_cpu on failure */
+	if (atomic_try_cmpxchg(&panic_cpu, &old_cpu, this_cpu)) {
+		/* go ahead */
+	} else if (old_cpu != this_cpu)
 		panic_smp_self_stop();
 
 	console_verbose();
@@ -248,23 +369,12 @@ void panic(const char *fmt, ...)
 	 *
 	 * Bypass the panic_cpu check and call __crash_kexec directly.
 	 */
-	if (!_crash_kexec_post_notifiers) {
+	if (!_crash_kexec_post_notifiers)
 		__crash_kexec(NULL);
 
-		/*
-		 * Note smp_send_stop is the usual smp shutdown function, which
-		 * unfortunately means it may not be hardened to work in a
-		 * panic situation.
-		 */
-		smp_send_stop();
-	} else {
-		/*
-		 * If we want to do crash dump after notifier calls and
-		 * kmsg_dump, we will need architecture dependent extra
-		 * works in addition to stopping other CPUs.
-		 */
-		crash_smp_send_stop();
-	}
+	panic_other_cpus_shutdown(_crash_kexec_post_notifiers);
+
+	printk_legacy_allow_panic_sync();
 
 	/*
 	 * Run any panic handlers, including those that might need to
@@ -272,7 +382,9 @@ void panic(const char *fmt, ...)
 	 */
 	atomic_notifier_call_chain(&panic_notifier_list, 0, buf);
 
-	kmsg_dump(KMSG_DUMP_PANIC);
+	panic_print_sys_info(false);
+
+	kmsg_dump_desc(KMSG_DUMP_PANIC, buf);
 
 	/*
 	 * If you doubt kdump always works fine in any situation,
@@ -286,9 +398,6 @@ void panic(const char *fmt, ...)
 	if (_crash_kexec_post_notifiers)
 		__crash_kexec(NULL);
 
-#ifdef CONFIG_VT
-	unblank_screen();
-#endif
 	console_unblank();
 
 	/*
@@ -302,7 +411,7 @@ void panic(const char *fmt, ...)
 	debug_locks_off();
 	console_flush_on_panic(CONSOLE_FLUSH_PENDING);
 
-	panic_print_sys_info();
+	panic_print_sys_info(true);
 
 	if (!panic_blink)
 		panic_blink = no_blink;
@@ -349,6 +458,15 @@ void panic(const char *fmt, ...)
 
 	/* Do not scroll important messages printed above */
 	suppress_printk = 1;
+
+	/*
+	 * The final messages may not have been printed if in a context that
+	 * defers printing (such as NMI) and irq_work is not available.
+	 * Explicitly flush the kernel log buffer one last time.
+	 */
+	console_flush_on_panic(CONSOLE_FLUSH_PENDING);
+	nbcon_atomic_flush_unsafe();
+
 	local_irq_enable();
 	for (i = 0; ; i += PANIC_TIMER_STEP) {
 		touch_softlockup_watchdog();
@@ -362,30 +480,82 @@ void panic(const char *fmt, ...)
 
 EXPORT_SYMBOL(panic);
 
+#define TAINT_FLAG(taint, _c_true, _c_false, _module)			\
+	[ TAINT_##taint ] = {						\
+		.c_true = _c_true, .c_false = _c_false,			\
+		.module = _module,					\
+		.desc = #taint,						\
+	}
+
 /*
  * TAINT_FORCED_RMMOD could be a per-module flag but the module
  * is being removed anyway.
  */
 const struct taint_flag taint_flags[TAINT_FLAGS_COUNT] = {
-	[ TAINT_PROPRIETARY_MODULE ]	= { 'P', 'G', true },
-	[ TAINT_FORCED_MODULE ]		= { 'F', ' ', true },
-	[ TAINT_CPU_OUT_OF_SPEC ]	= { 'S', ' ', false },
-	[ TAINT_FORCED_RMMOD ]		= { 'R', ' ', false },
-	[ TAINT_MACHINE_CHECK ]		= { 'M', ' ', false },
-	[ TAINT_BAD_PAGE ]		= { 'B', ' ', false },
-	[ TAINT_USER ]			= { 'U', ' ', false },
-	[ TAINT_DIE ]			= { 'D', ' ', false },
-	[ TAINT_OVERRIDDEN_ACPI_TABLE ]	= { 'A', ' ', false },
-	[ TAINT_WARN ]			= { 'W', ' ', false },
-	[ TAINT_CRAP ]			= { 'C', ' ', true },
-	[ TAINT_FIRMWARE_WORKAROUND ]	= { 'I', ' ', false },
-	[ TAINT_OOT_MODULE ]		= { 'O', ' ', true },
-	[ TAINT_UNSIGNED_MODULE ]	= { 'E', ' ', true },
-	[ TAINT_SOFTLOCKUP ]		= { 'L', ' ', false },
-	[ TAINT_LIVEPATCH ]		= { 'K', ' ', true },
-	[ TAINT_AUX ]			= { 'X', ' ', true },
-	[ TAINT_RANDSTRUCT ]		= { 'T', ' ', true },
+	TAINT_FLAG(PROPRIETARY_MODULE,		'P', 'G', true),
+	TAINT_FLAG(FORCED_MODULE,		'F', ' ', true),
+	TAINT_FLAG(CPU_OUT_OF_SPEC,		'S', ' ', false),
+	TAINT_FLAG(FORCED_RMMOD,		'R', ' ', false),
+	TAINT_FLAG(MACHINE_CHECK,		'M', ' ', false),
+	TAINT_FLAG(BAD_PAGE,			'B', ' ', false),
+	TAINT_FLAG(USER,			'U', ' ', false),
+	TAINT_FLAG(DIE,				'D', ' ', false),
+	TAINT_FLAG(OVERRIDDEN_ACPI_TABLE,	'A', ' ', false),
+	TAINT_FLAG(WARN,			'W', ' ', false),
+	TAINT_FLAG(CRAP,			'C', ' ', true),
+	TAINT_FLAG(FIRMWARE_WORKAROUND,		'I', ' ', false),
+	TAINT_FLAG(OOT_MODULE,			'O', ' ', true),
+	TAINT_FLAG(UNSIGNED_MODULE,		'E', ' ', true),
+	TAINT_FLAG(SOFTLOCKUP,			'L', ' ', false),
+	TAINT_FLAG(LIVEPATCH,			'K', ' ', true),
+	TAINT_FLAG(AUX,				'X', ' ', true),
+	TAINT_FLAG(RANDSTRUCT,			'T', ' ', true),
+	TAINT_FLAG(TEST,			'N', ' ', true),
 };
+
+#undef TAINT_FLAG
+
+static void print_tainted_seq(struct seq_buf *s, bool verbose)
+{
+	const char *sep = "";
+	int i;
+
+	if (!tainted_mask) {
+		seq_buf_puts(s, "Not tainted");
+		return;
+	}
+
+	seq_buf_printf(s, "Tainted: ");
+	for (i = 0; i < TAINT_FLAGS_COUNT; i++) {
+		const struct taint_flag *t = &taint_flags[i];
+		bool is_set = test_bit(i, &tainted_mask);
+		char c = is_set ? t->c_true : t->c_false;
+
+		if (verbose) {
+			if (is_set) {
+				seq_buf_printf(s, "%s[%c]=%s", sep, c, t->desc);
+				sep = ", ";
+			}
+		} else {
+			seq_buf_putc(s, c);
+		}
+	}
+}
+
+static const char *_print_tainted(bool verbose)
+{
+	/* FIXME: what should the size be? */
+	static char buf[sizeof(taint_flags)];
+	struct seq_buf s;
+
+	BUILD_BUG_ON(ARRAY_SIZE(taint_flags) != TAINT_FLAGS_COUNT);
+
+	seq_buf_init(&s, buf, sizeof(buf));
+
+	print_tainted_seq(&s, verbose);
+
+	return seq_buf_str(&s);
+}
 
 /**
  * print_tainted - return a string to represent the kernel taint state.
@@ -397,25 +567,15 @@ const struct taint_flag taint_flags[TAINT_FLAGS_COUNT] = {
  */
 const char *print_tainted(void)
 {
-	static char buf[TAINT_FLAGS_COUNT + sizeof("Tainted: ")];
+	return _print_tainted(false);
+}
 
-	BUILD_BUG_ON(ARRAY_SIZE(taint_flags) != TAINT_FLAGS_COUNT);
-
-	if (tainted_mask) {
-		char *s;
-		int i;
-
-		s = buf + sprintf(buf, "Tainted: ");
-		for (i = 0; i < TAINT_FLAGS_COUNT; i++) {
-			const struct taint_flag *t = &taint_flags[i];
-			*s++ = test_bit(i, &tainted_mask) ?
-					t->c_true : t->c_false;
-		}
-		*s = 0;
-	} else
-		snprintf(buf, sizeof(buf), "Not tainted");
-
-	return buf;
+/**
+ * print_tainted_verbose - A more verbose version of print_tainted()
+ */
+const char *print_tainted_verbose(void)
+{
+	return _print_tainted(true);
 }
 
 int test_taint(unsigned flag)
@@ -525,6 +685,7 @@ bool oops_may_print(void)
  */
 void oops_enter(void)
 {
+	nbcon_cpu_emergency_enter();
 	tracing_off();
 	/* can't trust the integrity of the kernel anymore: */
 	debug_locks_off();
@@ -547,6 +708,7 @@ void oops_exit(void)
 {
 	do_oops_enter_exit();
 	print_oops_end_marker();
+	nbcon_cpu_emergency_exit();
 	kmsg_dump(KMSG_DUMP_OOPS);
 }
 
@@ -558,6 +720,8 @@ struct warn_args {
 void __warn(const char *file, int line, void *caller, unsigned taint,
 	    struct pt_regs *regs, struct warn_args *args)
 {
+	nbcon_cpu_emergency_enter();
+
 	disable_trace_on_warning();
 
 	if (file)
@@ -568,24 +732,20 @@ void __warn(const char *file, int line, void *caller, unsigned taint,
 		pr_warn("WARNING: CPU: %d PID: %d at %pS\n",
 			raw_smp_processor_id(), current->pid, caller);
 
+#pragma GCC diagnostic push
+#ifndef __clang__
+#pragma GCC diagnostic ignored "-Wsuggest-attribute=format"
+#endif
 	if (args)
 		vprintk(args->fmt, args->args);
+#pragma GCC diagnostic pop
 
 	print_modules();
 
 	if (regs)
 		show_regs(regs);
 
-	if (panic_on_warn) {
-		/*
-		 * This thread may hit another WARN() in the panic path.
-		 * Resetting this prevents additional WARN() from panicking the
-		 * system on this thread.  Other threads are blocked by the
-		 * panic_mutex in panic().
-		 */
-		panic_on_warn = 0;
-		panic("panic_on_warn set ...\n");
-	}
+	check_panic_on_warn("kernel");
 
 	if (!regs)
 		dump_stack();
@@ -597,12 +757,16 @@ void __warn(const char *file, int line, void *caller, unsigned taint,
 
 	/* Just a warning, don't kill lockdep. */
 	add_taint(taint, LOCKDEP_STILL_OK);
+
+	nbcon_cpu_emergency_exit();
 }
 
+#ifdef CONFIG_BUG
 #ifndef __WARN_FLAGS
 void warn_slowpath_fmt(const char *file, int line, unsigned taint,
 		       const char *fmt, ...)
 {
+	bool rcu = warn_rcu_enter();
 	struct warn_args args;
 
 	pr_warn(CUT_HERE);
@@ -610,6 +774,7 @@ void warn_slowpath_fmt(const char *file, int line, unsigned taint,
 	if (!fmt) {
 		__warn(file, line, __builtin_return_address(0), taint,
 		       NULL, NULL);
+		warn_rcu_exit(rcu);
 		return;
 	}
 
@@ -617,11 +782,13 @@ void warn_slowpath_fmt(const char *file, int line, unsigned taint,
 	va_start(args.args, fmt);
 	__warn(file, line, __builtin_return_address(0), taint, NULL, &args);
 	va_end(args.args);
+	warn_rcu_exit(rcu);
 }
 EXPORT_SYMBOL(warn_slowpath_fmt);
 #else
 void __warn_printk(const char *fmt, ...)
 {
+	bool rcu = warn_rcu_enter();
 	va_list args;
 
 	pr_warn(CUT_HERE);
@@ -629,11 +796,10 @@ void __warn_printk(const char *fmt, ...)
 	va_start(args, fmt);
 	vprintk(fmt, args);
 	va_end(args);
+	warn_rcu_exit(rcu);
 }
 EXPORT_SYMBOL(__warn_printk);
 #endif
-
-#ifdef CONFIG_BUG
 
 /* Support resetting WARN*_ONCE state */
 
@@ -711,8 +877,8 @@ static int __init panic_on_taint_setup(char *s)
 	if (s && !strcmp(s, "nousertaint"))
 		panic_on_taint_nousertaint = true;
 
-	pr_info("panic_on_taint: bitmask=0x%lx nousertaint_mode=%sabled\n",
-		panic_on_taint, panic_on_taint_nousertaint ? "en" : "dis");
+	pr_info("panic_on_taint: bitmask=0x%lx nousertaint_mode=%s\n",
+		panic_on_taint, str_enabled_disabled(panic_on_taint_nousertaint));
 
 	return 0;
 }

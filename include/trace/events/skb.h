@@ -9,27 +9,14 @@
 #include <linux/netdevice.h>
 #include <linux/tracepoint.h>
 
-#define TRACE_SKB_DROP_REASON					\
-	EM(SKB_DROP_REASON_NOT_SPECIFIED, NOT_SPECIFIED)	\
-	EM(SKB_DROP_REASON_NO_SOCKET, NO_SOCKET)		\
-	EM(SKB_DROP_REASON_PKT_TOO_SMALL, PKT_TOO_SMALL)	\
-	EM(SKB_DROP_REASON_TCP_CSUM, TCP_CSUM)			\
-	EM(SKB_DROP_REASON_TCP_FILTER, TCP_FILTER)		\
-	EM(SKB_DROP_REASON_UDP_CSUM, UDP_CSUM)			\
-	EMe(SKB_DROP_REASON_MAX, MAX)
+#undef FN
+#define FN(reason)	TRACE_DEFINE_ENUM(SKB_DROP_REASON_##reason);
+DEFINE_DROP_REASON(FN, FN)
 
-#undef EM
-#undef EMe
-
-#define EM(a, b)	TRACE_DEFINE_ENUM(a);
-#define EMe(a, b)	TRACE_DEFINE_ENUM(a);
-
-TRACE_SKB_DROP_REASON
-
-#undef EM
-#undef EMe
-#define EM(a, b)	{ a, #b },
-#define EMe(a, b)	{ a, #b }
+#undef FN
+#undef FNe
+#define FN(reason)	{ SKB_DROP_REASON_##reason, #reason },
+#define FNe(reason)	{ SKB_DROP_REASON_##reason, #reason }
 
 /*
  * Tracepoint for free an sk_buff:
@@ -37,13 +24,14 @@ TRACE_SKB_DROP_REASON
 TRACE_EVENT(kfree_skb,
 
 	TP_PROTO(struct sk_buff *skb, void *location,
-		 enum skb_drop_reason reason),
+		 enum skb_drop_reason reason, struct sock *rx_sk),
 
-	TP_ARGS(skb, location, reason),
+	TP_ARGS(skb, location, reason, rx_sk),
 
 	TP_STRUCT__entry(
 		__field(void *,		skbaddr)
 		__field(void *,		location)
+		__field(void *,		rx_sk)
 		__field(unsigned short,	protocol)
 		__field(enum skb_drop_reason,	reason)
 	),
@@ -51,31 +39,38 @@ TRACE_EVENT(kfree_skb,
 	TP_fast_assign(
 		__entry->skbaddr = skb;
 		__entry->location = location;
+		__entry->rx_sk = rx_sk;
 		__entry->protocol = ntohs(skb->protocol);
 		__entry->reason = reason;
 	),
 
-	TP_printk("skbaddr=%p protocol=%u location=%p reason: %s",
-		  __entry->skbaddr, __entry->protocol, __entry->location,
+	TP_printk("skbaddr=%p rx_sk=%p protocol=%u location=%pS reason: %s",
+		  __entry->skbaddr, __entry->rx_sk, __entry->protocol,
+		  __entry->location,
 		  __print_symbolic(__entry->reason,
-				   TRACE_SKB_DROP_REASON))
+				   DEFINE_DROP_REASON(FN, FNe)))
 );
+
+#undef FN
+#undef FNe
 
 TRACE_EVENT(consume_skb,
 
-	TP_PROTO(struct sk_buff *skb),
+	TP_PROTO(struct sk_buff *skb, void *location),
 
-	TP_ARGS(skb),
+	TP_ARGS(skb, location),
 
 	TP_STRUCT__entry(
-		__field(	void *,	skbaddr	)
+		__field(	void *,	skbaddr)
+		__field(	void *,	location)
 	),
 
 	TP_fast_assign(
 		__entry->skbaddr = skb;
+		__entry->location = location;
 	),
 
-	TP_printk("skbaddr=%p", __entry->skbaddr)
+	TP_printk("skbaddr=%p location=%pS", __entry->skbaddr, __entry->location)
 );
 
 TRACE_EVENT(skb_copy_datagram_iovec,

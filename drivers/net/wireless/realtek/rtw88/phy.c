@@ -18,7 +18,10 @@ struct phy_cfg_pair {
 };
 
 union phy_table_tile {
-	struct rtw_phy_cond cond;
+	struct {
+		struct rtw_phy_cond cond;
+		struct rtw_phy_cond2 cond2;
+	} __packed;
 	struct phy_cfg_pair cfg;
 };
 
@@ -123,7 +126,7 @@ static void rtw_phy_cck_pd_init(struct rtw_dev *rtwdev)
 
 void rtw_phy_set_edcca_th(struct rtw_dev *rtwdev, u8 l2h, u8 h2l)
 {
-	struct rtw_hw_reg_offset *edcca_th = rtwdev->chip->edcca_th;
+	const struct rtw_hw_reg_offset *edcca_th = rtwdev->chip->edcca_th;
 
 	rtw_write32_mask(rtwdev,
 			 edcca_th[EDCCA_TH_L2H_IDX].hw_reg.addr,
@@ -138,7 +141,7 @@ EXPORT_SYMBOL(rtw_phy_set_edcca_th);
 
 void rtw_phy_adaptivity_set_mode(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 
 	/* turn off in debugfs for debug usage */
@@ -165,7 +168,7 @@ void rtw_phy_adaptivity_set_mode(struct rtw_dev *rtwdev)
 
 static void rtw_phy_adaptivity_init(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	rtw_phy_adaptivity_set_mode(rtwdev);
 	if (chip->ops->adaptivity_init)
@@ -180,7 +183,7 @@ static void rtw_phy_adaptivity(struct rtw_dev *rtwdev)
 
 static void rtw_phy_cfo_init(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	if (chip->ops->cfo_init)
 		chip->ops->cfo_init(rtwdev);
@@ -199,7 +202,7 @@ static void rtw_phy_tx_path_div_init(struct rtw_dev *rtwdev)
 
 void rtw_phy_init(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 	u32 addr, mask;
 
@@ -226,7 +229,7 @@ EXPORT_SYMBOL(rtw_phy_init);
 
 void rtw_phy_dig_write(struct rtw_dev *rtwdev, u8 igi)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_hal *hal = &rtwdev->hal;
 	u32 addr, mask;
 	u8 path;
@@ -245,7 +248,7 @@ void rtw_phy_dig_write(struct rtw_dev *rtwdev, u8 igi)
 
 static void rtw_phy_stat_false_alarm(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	chip->ops->false_alarm_statistics(rtwdev);
 }
@@ -300,7 +303,7 @@ static void rtw_phy_stat_rssi(struct rtw_dev *rtwdev)
 
 	data.rtwdev = rtwdev;
 	data.min_rssi = U8_MAX;
-	rtw_iterate_stas_atomic(rtwdev, rtw_phy_stat_rssi_iter, &data);
+	rtw_iterate_stas(rtwdev, rtw_phy_stat_rssi_iter, &data);
 
 	dm_info->pre_min_rssi = dm_info->min_rssi;
 	dm_info->min_rssi = data.min_rssi;
@@ -527,6 +530,13 @@ static void rtw_phy_dig(struct rtw_dev *rtwdev)
 	 */
 	rtw_phy_dig_recorder(dm_info, cur_igi, fa_cnt);
 
+	/* Mitigate beacon loss and connectivity issues, mainly (only?)
+	 * in the 5 GHz band
+	 */
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8812A && rtwdev->beacon_loss &&
+	    linked && dm_info->total_fa_cnt < DIG_PERF_FA_TH_EXTRA_HIGH)
+		cur_igi = DIG_CVRG_MIN;
+
 	if (cur_igi != pre_igi)
 		rtw_phy_dig_write(rtwdev, cur_igi);
 }
@@ -536,7 +546,7 @@ static void rtw_phy_ra_info_update_iter(void *data, struct ieee80211_sta *sta)
 	struct rtw_dev *rtwdev = data;
 	struct rtw_sta_info *si = (struct rtw_sta_info *)sta->drv_priv;
 
-	rtw_update_sta_info(rtwdev, si);
+	rtw_update_sta_info(rtwdev, si, false);
 }
 
 static void rtw_phy_ra_info_update(struct rtw_dev *rtwdev)
@@ -544,7 +554,7 @@ static void rtw_phy_ra_info_update(struct rtw_dev *rtwdev)
 	if (rtwdev->watch_dog_cnt & 0x3)
 		return;
 
-	rtw_iterate_stas_atomic(rtwdev, rtw_phy_ra_info_update_iter, rtwdev);
+	rtw_iterate_stas(rtwdev, rtw_phy_ra_info_update_iter, rtwdev);
 }
 
 static u32 rtw_phy_get_rrsr_mask(struct rtw_dev *rtwdev, u8 rate_idx)
@@ -597,13 +607,13 @@ static void rtw_phy_rrsr_update(struct rtw_dev *rtwdev)
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 
 	dm_info->rrsr_mask_min = RRSR_RATE_ORDER_MAX;
-	rtw_iterate_stas_atomic(rtwdev, rtw_phy_rrsr_mask_min_iter, rtwdev);
+	rtw_iterate_stas(rtwdev, rtw_phy_rrsr_mask_min_iter, rtwdev);
 	rtw_write32(rtwdev, REG_RRSR, dm_info->rrsr_val_init & dm_info->rrsr_mask_min);
 }
 
 static void rtw_phy_dpk_track(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	if (chip->ops->dpk_track)
 		chip->ops->dpk_track(rtwdev);
@@ -659,7 +669,7 @@ EXPORT_SYMBOL(rtw_phy_parsing_cfo);
 
 static void rtw_phy_cfo_track(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	if (chip->ops->cfo_track)
 		chip->ops->cfo_track(rtwdev);
@@ -720,8 +730,8 @@ static u8 rtw_phy_cck_pd_lv(struct rtw_dev *rtwdev)
 
 static void rtw_phy_cck_pd(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u32 cck_fa = dm_info->cck_fa_cnt;
 	u8 level;
 
@@ -816,23 +826,18 @@ static u8 rtw_phy_linear_2_db(u64 linear)
 	u8 j;
 	u32 dB;
 
-	if (linear >= db_invert_table[11][7])
-		return 96; /* maximum 96 dB */
-
 	for (i = 0; i < 12; i++) {
-		if (i <= 2 && (linear << FRAC_BITS) <= db_invert_table[i][7])
-			break;
-		else if (i > 2 && linear <= db_invert_table[i][7])
-			break;
+		for (j = 0; j < 8; j++) {
+			if (i <= 2 && (linear << FRAC_BITS) <= db_invert_table[i][j])
+				goto cnt;
+			else if (i > 2 && linear <= db_invert_table[i][j])
+				goto cnt;
+		}
 	}
 
-	for (j = 0; j < 8; j++) {
-		if (i <= 2 && (linear << FRAC_BITS) <= db_invert_table[i][j])
-			break;
-		else if (i > 2 && linear <= db_invert_table[i][j])
-			break;
-	}
+	return 96; /* maximum 96 dB */
 
+cnt:
 	if (j == 0 && i == 0)
 		goto end;
 
@@ -900,7 +905,7 @@ u32 rtw_phy_read_rf(struct rtw_dev *rtwdev, enum rtw_rf_path rf_path,
 		    u32 addr, u32 mask)
 {
 	struct rtw_hal *hal = &rtwdev->hal;
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	const u32 *base_addr = chip->rf_base_addr;
 	u32 val, direct_addr;
 
@@ -923,7 +928,7 @@ u32 rtw_phy_read_rf_sipi(struct rtw_dev *rtwdev, enum rtw_rf_path rf_path,
 			 u32 addr, u32 mask)
 {
 	struct rtw_hal *hal = &rtwdev->hal;
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	const struct rtw_rf_sipi_addr *rf_sipi_addr;
 	const struct rtw_rf_sipi_addr *rf_sipi_addr_a;
 	u32 val32;
@@ -972,8 +977,8 @@ bool rtw_phy_write_rf_reg_sipi(struct rtw_dev *rtwdev, enum rtw_rf_path rf_path,
 			       u32 addr, u32 mask, u32 data)
 {
 	struct rtw_hal *hal = &rtwdev->hal;
-	struct rtw_chip_info *chip = rtwdev->chip;
-	u32 *sipi_addr = chip->rf_sipi_addr;
+	const struct rtw_chip_info *chip = rtwdev->chip;
+	const u32 *sipi_addr = chip->rf_sipi_addr;
 	u32 data_and_addr;
 	u32 old_data = 0;
 	u32 shift;
@@ -1012,7 +1017,7 @@ bool rtw_phy_write_rf_reg(struct rtw_dev *rtwdev, enum rtw_rf_path rf_path,
 			  u32 addr, u32 mask, u32 data)
 {
 	struct rtw_hal *hal = &rtwdev->hal;
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	const u32 *base_addr = chip->rf_base_addr;
 	u32 direct_addr;
 
@@ -1046,7 +1051,8 @@ void rtw_phy_setup_phy_cond(struct rtw_dev *rtwdev, u32 pkg)
 {
 	struct rtw_hal *hal = &rtwdev->hal;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_phy_cond cond = {0};
+	struct rtw_phy_cond cond = {};
+	struct rtw_phy_cond2 cond2 = {};
 
 	cond.cut = hal->cut_version ? hal->cut_version : 15;
 	cond.pkg = pkg ? pkg : 15;
@@ -1066,15 +1072,34 @@ void rtw_phy_setup_phy_cond(struct rtw_dev *rtwdev, u32 pkg)
 		break;
 	}
 
-	hal->phy_cond = cond;
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8812A ||
+	    rtwdev->chip->id == RTW_CHIP_TYPE_8821A) {
+		cond.rfe = 0;
+		cond.rfe |= efuse->ext_lna_2g;
+		cond.rfe |= efuse->ext_pa_2g  << 1;
+		cond.rfe |= efuse->ext_lna_5g << 2;
+		cond.rfe |= efuse->ext_pa_5g  << 3;
+		cond.rfe |= efuse->btcoex     << 4;
 
-	rtw_dbg(rtwdev, RTW_DBG_PHY, "phy cond=0x%08x\n", *((u32 *)&hal->phy_cond));
+		cond2.type_alna = efuse->alna_type;
+		cond2.type_glna = efuse->glna_type;
+		cond2.type_apa = efuse->apa_type;
+		cond2.type_gpa = efuse->gpa_type;
+	}
+
+	hal->phy_cond = cond;
+	hal->phy_cond2 = cond2;
+
+	rtw_dbg(rtwdev, RTW_DBG_PHY, "phy cond=0x%08x cond2=0x%08x\n",
+		*((u32 *)&hal->phy_cond), *((u32 *)&hal->phy_cond2));
 }
 
-static bool check_positive(struct rtw_dev *rtwdev, struct rtw_phy_cond cond)
+static bool check_positive(struct rtw_dev *rtwdev, struct rtw_phy_cond cond,
+			   struct rtw_phy_cond2 cond2)
 {
 	struct rtw_hal *hal = &rtwdev->hal;
 	struct rtw_phy_cond drv_cond = hal->phy_cond;
+	struct rtw_phy_cond2 drv_cond2 = hal->phy_cond2;
 
 	if (cond.cut && cond.cut != drv_cond.cut)
 		return false;
@@ -1085,8 +1110,29 @@ static bool check_positive(struct rtw_dev *rtwdev, struct rtw_phy_cond cond)
 	if (cond.intf && cond.intf != drv_cond.intf)
 		return false;
 
-	if (cond.rfe != drv_cond.rfe)
-		return false;
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8812A ||
+	    rtwdev->chip->id == RTW_CHIP_TYPE_8821A) {
+		if (!(cond.rfe & 0x0f))
+			return true;
+
+		if ((cond.rfe & drv_cond.rfe) != cond.rfe)
+			return false;
+
+		if ((cond.rfe & BIT(0)) && cond2.type_glna != drv_cond2.type_glna)
+			return false;
+
+		if ((cond.rfe & BIT(1)) && cond2.type_gpa != drv_cond2.type_gpa)
+			return false;
+
+		if ((cond.rfe & BIT(2)) && cond2.type_alna != drv_cond2.type_alna)
+			return false;
+
+		if ((cond.rfe & BIT(3)) && cond2.type_apa != drv_cond2.type_apa)
+			return false;
+	} else {
+		if (cond.rfe != drv_cond.rfe)
+			return false;
+	}
 
 	return true;
 }
@@ -1095,7 +1141,8 @@ void rtw_parse_tbl_phy_cond(struct rtw_dev *rtwdev, const struct rtw_table *tbl)
 {
 	const union phy_table_tile *p = tbl->data;
 	const union phy_table_tile *end = p + tbl->size / 2;
-	struct rtw_phy_cond pos_cond = {0};
+	struct rtw_phy_cond pos_cond = {};
+	struct rtw_phy_cond2 pos_cond2 = {};
 	bool is_matched = true, is_skipped = false;
 
 	BUILD_BUG_ON(sizeof(union phy_table_tile) != sizeof(struct phy_cfg_pair));
@@ -1114,11 +1161,12 @@ void rtw_parse_tbl_phy_cond(struct rtw_dev *rtwdev, const struct rtw_table *tbl)
 			case BRANCH_ELIF:
 			default:
 				pos_cond = p->cond;
+				pos_cond2 = p->cond2;
 				break;
 			}
 		} else if (p->cond.neg) {
 			if (!is_skipped) {
-				if (check_positive(rtwdev, pos_cond)) {
+				if (check_positive(rtwdev, pos_cond, pos_cond2)) {
 					is_matched = true;
 					is_skipped = true;
 				} else {
@@ -1475,10 +1523,8 @@ static void rtw_phy_store_tx_power_by_rate(struct rtw_dev *rtwdev,
 		rate = rates[i];
 		if (band == PHY_BAND_2G)
 			hal->tx_pwr_by_rate_offset_2g[rfpath][rate] = offset;
-		else if (band == PHY_BAND_5G)
-			hal->tx_pwr_by_rate_offset_5g[rfpath][rate] = offset;
 		else
-			continue;
+			hal->tx_pwr_by_rate_offset_5g[rfpath][rate] = offset;
 	}
 }
 
@@ -1747,7 +1793,7 @@ EXPORT_SYMBOL(rtw_phy_cfg_rf);
 
 static void rtw_load_rfk_table(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_dpk_info *dpk_info = &rtwdev->dm_info.dpk_info;
 
 	if (!chip->rfk_init_tbl)
@@ -1766,12 +1812,15 @@ static void rtw_load_rfk_table(struct rtw_dev *rtwdev)
 
 void rtw_phy_load_tables(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_rfe_def *rfe_def = rtw_get_rfe_def(rtwdev);
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	u8 rf_path;
 
 	rtw_load_table(rtwdev, chip->mac_tbl);
 	rtw_load_table(rtwdev, chip->bb_tbl);
 	rtw_load_table(rtwdev, chip->agc_tbl);
+	if (rfe_def->agc_btg_tbl)
+		rtw_load_table(rtwdev, rfe_def->agc_btg_tbl);
 	rtw_load_rfk_table(rtwdev);
 
 	for (rf_path = 0; rf_path < rtwdev->hal.rf_path_num; rf_path++) {
@@ -1875,7 +1924,7 @@ static u8 rtw_get_channel_group(u8 channel, u8 rate)
 
 static s8 rtw_phy_get_dis_dpd_by_rate_diff(struct rtw_dev *rtwdev, u16 rate)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	s8 dpd_diff = 0;
 
 	if (!chip->en_dis_dpd)
@@ -1909,7 +1958,7 @@ static u8 rtw_phy_get_2g_tx_power_index(struct rtw_dev *rtwdev,
 					enum rtw_bandwidth bandwidth,
 					u8 rate, u8 group)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	u8 tx_power;
 	bool mcs_rate;
 	bool above_2ss;
@@ -1956,7 +2005,7 @@ static u8 rtw_phy_get_5g_tx_power_index(struct rtw_dev *rtwdev,
 					enum rtw_bandwidth bandwidth,
 					u8 rate, u8 group)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	u8 tx_power;
 	u8 upper, lower;
 	bool mcs_rate;
@@ -2127,8 +2176,8 @@ void rtw_get_tx_power_params(struct rtw_dev *rtwdev, u8 path, u8 rate, u8 bw,
 
 	*limit = rtw_phy_get_tx_power_limit(rtwdev, band, bw, path,
 					    rate, ch, regd);
-	*remnant = (rate <= DESC_RATE11M ? dm_info->txagc_remnant_cck :
-		    dm_info->txagc_remnant_ofdm);
+	*remnant = rate <= DESC_RATE11M ? dm_info->txagc_remnant_cck :
+					  dm_info->txagc_remnant_ofdm[path];
 	*sar = rtw_phy_get_tx_power_sar(rtwdev, hal->sar_band, path, rate);
 }
 
@@ -2209,7 +2258,7 @@ static void rtw_phy_set_tx_power_level_by_path(struct rtw_dev *rtwdev,
 
 void rtw_phy_set_tx_power_level(struct rtw_dev *rtwdev, u8 channel)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_hal *hal = &rtwdev->hal;
 	u8 path;
 
@@ -2342,7 +2391,8 @@ void rtw_phy_init_tx_power(struct rtw_dev *rtwdev)
 void rtw_phy_config_swing_table(struct rtw_dev *rtwdev,
 				struct rtw_swing_table *swing_table)
 {
-	const struct rtw_pwr_track_tbl *tbl = rtwdev->chip->pwr_track_tbl;
+	const struct rtw_rfe_def *rfe_def = rtw_get_rfe_def(rtwdev);
+	const struct rtw_pwr_track_tbl *tbl = rfe_def->pwr_track_tbl;
 	u8 channel = rtwdev->hal.current_channel;
 
 	if (IS_CH_2G_BAND(channel)) {
@@ -2484,7 +2534,7 @@ static void rtw_phy_set_tx_path_by_reg(struct rtw_dev *rtwdev,
 {
 	struct rtw_path_div *path_div = &rtwdev->dm_path_div;
 	enum rtw_bb_path tx_path_sel_cck = tx_path_sel_1ss;
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	if (tx_path_sel_1ss == path_div->current_tx_path)
 		return;
@@ -2539,7 +2589,7 @@ static void rtw_phy_tx_path_diversity_2ss(struct rtw_dev *rtwdev)
 
 void rtw_phy_tx_path_diversity(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	if (!chip->path_div_supported)
 		return;

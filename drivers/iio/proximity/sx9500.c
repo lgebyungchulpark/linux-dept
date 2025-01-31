@@ -209,7 +209,7 @@ static int sx9500_inc_users(struct sx9500_data *data, int *counter,
 		/* Bit is already active, nothing to do. */
 		return 0;
 
-	return regmap_update_bits(data->regmap, reg, bitmask, bitmask);
+	return regmap_set_bits(data->regmap, reg, bitmask);
 }
 
 static int sx9500_dec_users(struct sx9500_data *data, int *counter,
@@ -220,7 +220,7 @@ static int sx9500_dec_users(struct sx9500_data *data, int *counter,
 		/* There are more users, do not deactivate. */
 		return 0;
 
-	return regmap_update_bits(data->regmap, reg, bitmask, 0);
+	return regmap_clear_bits(data->regmap, reg, bitmask);
 }
 
 static int sx9500_inc_chan_users(struct sx9500_data *data, int chan)
@@ -540,7 +540,7 @@ static int sx9500_write_event_config(struct iio_dev *indio_dev,
 				     const struct iio_chan_spec *chan,
 				     enum iio_event_type type,
 				     enum iio_event_direction dir,
-				     int state)
+				     bool state)
 {
 	struct sx9500_data *data = iio_priv(indio_dev);
 	int ret;
@@ -551,7 +551,7 @@ static int sx9500_write_event_config(struct iio_dev *indio_dev,
 
 	mutex_lock(&data->mutex);
 
-	if (state == 1) {
+	if (state) {
 		ret = sx9500_inc_chan_users(data, chan->channel);
 		if (ret < 0)
 			goto out_unlock;
@@ -571,7 +571,7 @@ static int sx9500_write_event_config(struct iio_dev *indio_dev,
 	goto out_unlock;
 
 out_undo_chan:
-	if (state == 1)
+	if (state)
 		sx9500_dec_chan_users(data, chan->channel);
 	else
 		sx9500_inc_chan_users(data, chan->channel);
@@ -654,8 +654,7 @@ static irqreturn_t sx9500_trigger_handler(int irq, void *private)
 
 	mutex_lock(&data->mutex);
 
-	for_each_set_bit(bit, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, bit) {
 		ret = sx9500_read_prox_data(data, &indio_dev->channels[bit],
 					    &val);
 		if (ret < 0)
@@ -795,8 +794,8 @@ static int sx9500_init_compensation(struct iio_dev *indio_dev)
 	int i, ret;
 	unsigned int val;
 
-	ret = regmap_update_bits(data->regmap, SX9500_REG_PROX_CTRL0,
-				 SX9500_CHAN_MASK, SX9500_CHAN_MASK);
+	ret = regmap_set_bits(data->regmap, SX9500_REG_PROX_CTRL0,
+			      SX9500_CHAN_MASK);
 	if (ret < 0)
 		return ret;
 
@@ -815,8 +814,8 @@ static int sx9500_init_compensation(struct iio_dev *indio_dev)
 	}
 
 out:
-	regmap_update_bits(data->regmap, SX9500_REG_PROX_CTRL0,
-			   SX9500_CHAN_MASK, 0);
+	regmap_clear_bits(data->regmap, SX9500_REG_PROX_CTRL0,
+			  SX9500_CHAN_MASK);
 	return ret;
 }
 
@@ -901,8 +900,7 @@ static void sx9500_gpio_probe(struct i2c_client *client,
 	}
 }
 
-static int sx9500_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int sx9500_probe(struct i2c_client *client)
 {
 	int ret;
 	struct iio_dev *indio_dev;
@@ -979,7 +977,7 @@ out_trigger_unregister:
 	return ret;
 }
 
-static int sx9500_remove(struct i2c_client *client)
+static void sx9500_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct sx9500_data *data = iio_priv(indio_dev);
@@ -989,11 +987,8 @@ static int sx9500_remove(struct i2c_client *client)
 	if (client->irq > 0)
 		iio_trigger_unregister(data->trig);
 	kfree(data->buffer);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int sx9500_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
@@ -1030,11 +1025,8 @@ static int sx9500_resume(struct device *dev)
 
 	return ret;
 }
-#endif /* CONFIG_PM_SLEEP */
 
-static const struct dev_pm_ops sx9500_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(sx9500_suspend, sx9500_resume)
-};
+static DEFINE_SIMPLE_DEV_PM_OPS(sx9500_pm_ops, sx9500_suspend, sx9500_resume);
 
 static const struct acpi_device_id sx9500_acpi_match[] = {
 	{"SSX9500", 0},
@@ -1050,17 +1042,17 @@ static const struct of_device_id sx9500_of_match[] = {
 MODULE_DEVICE_TABLE(of, sx9500_of_match);
 
 static const struct i2c_device_id sx9500_id[] = {
-	{"sx9500", 0},
-	{ },
+	{ "sx9500" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, sx9500_id);
 
 static struct i2c_driver sx9500_driver = {
 	.driver = {
 		.name	= SX9500_DRIVER_NAME,
-		.acpi_match_table = ACPI_PTR(sx9500_acpi_match),
-		.of_match_table = of_match_ptr(sx9500_of_match),
-		.pm = &sx9500_pm_ops,
+		.acpi_match_table = sx9500_acpi_match,
+		.of_match_table = sx9500_of_match,
+		.pm = pm_sleep_ptr(&sx9500_pm_ops),
 	},
 	.probe		= sx9500_probe,
 	.remove		= sx9500_remove,

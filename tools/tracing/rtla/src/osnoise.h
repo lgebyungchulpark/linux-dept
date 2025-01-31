@@ -23,6 +23,10 @@ struct osnoise_context {
 	long long		orig_timerlat_period_us;
 	long long		timerlat_period_us;
 
+	/* 0 as init value */
+	long long		orig_tracing_thresh;
+	long long		tracing_thresh;
+
 	/* -1 as init value because 0 is disabled */
 	long long		orig_stop_us;
 	long long		stop_us;
@@ -34,6 +38,14 @@ struct osnoise_context {
 	/* -1 as init value because 0 is disabled */
 	long long		orig_print_stack;
 	long long		print_stack;
+
+	/* -1 as init value because 0 is off */
+	int			orig_opt_irq_disable;
+	int			opt_irq_disable;
+
+	/* -1 as init value because 0 is off */
+	int			orig_opt_workload;
+	int			opt_workload;
 };
 
 /*
@@ -67,9 +79,16 @@ int osnoise_set_timerlat_period_us(struct osnoise_context *context,
 				   long long timerlat_period_us);
 void osnoise_restore_timerlat_period_us(struct osnoise_context *context);
 
+int osnoise_set_tracing_thresh(struct osnoise_context *context,
+			       long long tracing_thresh);
+void osnoise_restore_tracing_thresh(struct osnoise_context *context);
+
 void osnoise_restore_print_stack(struct osnoise_context *context);
 int osnoise_set_print_stack(struct osnoise_context *context,
 			    long long print_stack);
+
+int osnoise_set_irq_disable(struct osnoise_context *context, bool onoff);
+int osnoise_set_workload(struct osnoise_context *context, bool onoff);
 
 /*
  * osnoise_tool -  osnoise based tool definition.
@@ -85,7 +104,10 @@ struct osnoise_tool {
 void osnoise_destroy_tool(struct osnoise_tool *top);
 struct osnoise_tool *osnoise_init_tool(char *tool_name);
 struct osnoise_tool *osnoise_init_trace_tool(char *tracer);
+void osnoise_report_missed_events(struct osnoise_tool *tool);
+bool osnoise_trace_is_off(struct osnoise_tool *tool, struct osnoise_tool *record);
 
 int osnoise_hist_main(int argc, char *argv[]);
 int osnoise_top_main(int argc, char **argv);
 int osnoise_main(int argc, char **argv);
+int hwnoise_main(int argc, char **argv);

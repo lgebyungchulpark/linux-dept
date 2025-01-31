@@ -97,13 +97,17 @@ enum wcn36xx_ampdu_state {
 
 #define RF_UNKNOWN	0x0000
 #define RF_IRIS_WCN3620	0x3620
+#define RF_IRIS_WCN3660	0x3660
 #define RF_IRIS_WCN3680	0x3680
 
-static inline void buff_to_be(u32 *buf, size_t len)
+static inline void buff_to_be(void *buf, size_t len)
 {
+	__be32 *to = buf;
+	u32 *from = buf;
 	int i;
+
 	for (i = 0; i < len; i++)
-		buf[i] = cpu_to_be32(buf[i]);
+		to[i] = cpu_to_be32(from[i]);
 }
 
 struct nv_data {
@@ -163,7 +167,7 @@ struct wcn36xx_vif {
  * @dpu_desc_index: DPU descriptor index is returned from HW after config_sta
  * call and is used in TX BD.
  * @bss_sta_index: STA index is returned from HW after config_bss call and is
- * used in both SMD channel and TX BD. See table bellow when it is used.
+ * used in both SMD channel and TX BD. See table below when it is used.
  * @bss_dpu_desc_index: DPU descriptor index is returned from HW after
  * config_bss call and is used in TX BD.
  * ______________________________________________
@@ -194,7 +198,14 @@ struct wcn36xx_sta {
 	enum wcn36xx_ampdu_state ampdu_state[16];
 	int non_agg_frame_ct;
 };
+
 struct wcn36xx_dxe_ch;
+
+struct wcn36xx_chan_survey {
+	s8	rssi;
+	u8	snr;
+};
+
 struct wcn36xx {
 	struct ieee80211_hw	*hw;
 	struct device		*dev;
@@ -209,6 +220,7 @@ struct wcn36xx {
 	u8			fw_major;
 	u32			fw_feat_caps[WCN36XX_HAL_CAPS_SIZE];
 	bool			is_pronto;
+	bool			is_pronto_v3;
 
 	/* extra byte for the NULL termination */
 	u8			crm_version[WCN36XX_HAL_VERSION_LENGTH + 1];
@@ -281,6 +293,12 @@ struct wcn36xx {
 	/* Debug file system entry */
 	struct wcn36xx_dfs_entry    dfs;
 #endif /* CONFIG_WCN36XX_DEBUGFS */
+
+	struct ieee80211_supported_band *band;
+	struct ieee80211_channel *channel;
+
+	spinlock_t survey_lock;		/* protects chan_survey */
+	struct wcn36xx_chan_survey	*chan_survey;
 };
 
 static inline bool wcn36xx_is_fw_version(struct wcn36xx *wcn,

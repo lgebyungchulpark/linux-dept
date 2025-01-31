@@ -233,19 +233,55 @@ please make a proposal on the linux-media mailing list.
 
       - ``V4L2_PIX_FMT_MT21C``
       - 'MT21'
-      - Compressed two-planar YVU420 format used by Mediatek MT8173.
-	The compression is lossless.
-	It is an opaque intermediate format and the MDP hardware must be
+      - Compressed two-planar YVU420 format used by Mediatek MT8173, MT8192,
+        MT8195 and more. The compression is lossless. This format have
+	similitude with ``V4L2_PIX_FMT_MM21`` in term of alignment and tiling.
+	It remains an opaque intermediate format and the MDP hardware must be
 	used to convert ``V4L2_PIX_FMT_MT21C`` to ``V4L2_PIX_FMT_NV12M``,
 	``V4L2_PIX_FMT_YUV420M`` or ``V4L2_PIX_FMT_YVU420``.
-    * .. _V4L2-PIX-FMT-MM21:
+    * .. _V4L2-PIX-FMT-QC08C:
 
-      - ``V4L2_PIX_FMT_MM21``
-      - 'MM21'
-      - Non-compressed, tiled two-planar format used by Mediatek MT8183.
-	This is an opaque intermediate format and the MDP3 hardware can be
-	used to convert it to other formats.
+      - ``V4L2_PIX_FMT_QC08C``
+      - 'QC08C'
+      - Compressed Macro-tile 8-Bit YUV420 format used by Qualcomm platforms.
+        It is an opaque intermediate format. The used compression is lossless
+        and it is used by various multimedia hardware blocks like GPU, display
+        controllers, ISP and video accelerators.
+        It contains four planes for progressive video and eight planes for
+        interlaced video.
+    * .. _V4L2-PIX-FMT-QC10C:
 
+      - ``V4L2_PIX_FMT_QC10C``
+      - 'QC10C'
+      - Compressed Macro-tile 10-Bit YUV420 format used by Qualcomm platforms.
+        It is an opaque intermediate format. The used compression is lossless
+        and it is used by various multimedia hardware blocks like GPU, display
+        controllers, ISP and video accelerators.
+        It contains four planes for progressive video.
+    * .. _V4L2-PIX-FMT-AJPG:
+
+      - ``V4L2_PIX_FMT_AJPG``
+      - 'AJPG'
+      - ASPEED JPEG format used by the aspeed-video driver on Aspeed platforms,
+        which is generally adapted for remote KVM.
+        On each frame compression, I will compare the new frame with previous
+        one to decide which macroblock's data is changed, and only the changed
+        macroblocks will be compressed.
+
+        The implementation is based on AST2600 A3 datasheet, revision 0.9, which
+        is not publicly available. Or you can reference Video stream data format
+        – ASPEED mode compression of SDK_User_Guide which available on
+        `github <https://github.com/AspeedTech-BMC/openbmc/releases/>`__.
+
+        Decoder's implementation can be found here,
+        `aspeed_codec <https://github.com/AspeedTech-BMC/aspeed_codec/>`__
+    * .. _V4L2-PIX-FMT-HEXTILE:
+
+      - ``V4L2_PIX_FMT_HEXTILE``
+      - 'HXTL'
+      - Compressed format used by Nuvoton NPCM video driver. This format is
+        defined in Remote Framebuffer Protocol (RFC 6143, chapter 7.7.4 Hextile
+        Encoding).
 .. raw:: latex
 
     \normalsize

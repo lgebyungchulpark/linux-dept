@@ -13,7 +13,7 @@
 #ifndef __DMA_BUF_H__
 #define __DMA_BUF_H__
 
-#include <linux/dma-buf-map.h>
+#include <linux/iosys-map.h>
 #include <linux/file.h>
 #include <linux/err.h>
 #include <linux/scatterlist.h>
@@ -283,8 +283,8 @@ struct dma_buf_ops {
 	 */
 	int (*mmap)(struct dma_buf *, struct vm_area_struct *vma);
 
-	int (*vmap)(struct dma_buf *dmabuf, struct dma_buf_map *map);
-	void (*vunmap)(struct dma_buf *dmabuf, struct dma_buf_map *map);
+	int (*vmap)(struct dma_buf *dmabuf, struct iosys_map *map);
+	void (*vunmap)(struct dma_buf *dmabuf, struct iosys_map *map);
 };
 
 /**
@@ -327,15 +327,6 @@ struct dma_buf {
 	const struct dma_buf_ops *ops;
 
 	/**
-	 * @lock:
-	 *
-	 * Used internally to serialize list manipulation, attach/detach and
-	 * vmap/unmap. Note that in many cases this is superseeded by
-	 * dma_resv_lock() on @resv.
-	 */
-	struct mutex lock;
-
-	/**
 	 * @vmapping_counter:
 	 *
 	 * Used internally to refcnt the vmaps returned by dma_buf_vmap().
@@ -347,25 +338,28 @@ struct dma_buf {
 	 * @vmap_ptr:
 	 * The current vmap ptr if @vmapping_counter > 0. Protected by @lock.
 	 */
-	struct dma_buf_map vmap_ptr;
+	struct iosys_map vmap_ptr;
 
 	/**
 	 * @exp_name:
 	 *
-	 * Name of the exporter; useful for debugging. See the
-	 * DMA_BUF_SET_NAME IOCTL.
+	 * Name of the exporter; useful for debugging. Must not be NULL
 	 */
 	const char *exp_name;
 
 	/**
 	 * @name:
 	 *
-	 * Userspace-provided name; useful for accounting and debugging,
-	 * protected by dma_resv_lock() on @resv and @name_lock for read access.
+	 * Userspace-provided name. Default value is NULL. If not NULL,
+	 * length cannot be longer than DMA_BUF_NAME_LEN, including NIL
+	 * char. Useful for accounting and debugging. Read/Write accesses
+	 * are protected by @name_lock
+	 *
+	 * See the IOCTLs DMA_BUF_SET_NAME or DMA_BUF_SET_NAME_A/B
 	 */
 	const char *name;
 
-	/** @name_lock: Spinlock to protect name acces for read access. */
+	/** @name_lock: Spinlock to protect name access for read access. */
 	spinlock_t name_lock;
 
 	/**
@@ -376,8 +370,10 @@ struct dma_buf {
 	 */
 	struct module *owner;
 
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	/** @list_node: node for dma_buf accounting and debugging. */
 	struct list_head list_node;
+#endif
 
 	/** @priv: exporter specific private data for this buffer object. */
 	void *priv;
@@ -393,27 +389,30 @@ struct dma_buf {
 	 * e.g. exposed in `Implicit Fence Poll Support`_ must follow the
 	 * below rules.
 	 *
-	 * - Drivers must add a shared fence through dma_resv_add_shared_fence()
-	 *   for anything the userspace API considers a read access. This highly
-	 *   depends upon the API and window system.
+	 * - Drivers must add a read fence through dma_resv_add_fence() with the
+	 *   DMA_RESV_USAGE_READ flag for anything the userspace API considers a
+	 *   read access. This highly depends upon the API and window system.
 	 *
-	 * - Similarly drivers must set the exclusive fence through
-	 *   dma_resv_add_excl_fence() for anything the userspace API considers
-	 *   write access.
+	 * - Similarly drivers must add a write fence through
+	 *   dma_resv_add_fence() with the DMA_RESV_USAGE_WRITE flag for
+	 *   anything the userspace API considers write access.
 	 *
-	 * - Drivers may just always set the exclusive fence, since that only
-	 *   causes unecessarily synchronization, but no correctness issues.
+	 * - Drivers may just always add a write fence, since that only
+	 *   causes unnecessary synchronization, but no correctness issues.
 	 *
 	 * - Some drivers only expose a synchronous userspace API with no
 	 *   pipelining across drivers. These do not set any fences for their
 	 *   access. An example here is v4l.
+	 *
+	 * - Driver should use dma_resv_usage_rw() when retrieving fences as
+	 *   dependency for implicit synchronization.
 	 *
 	 * DYNAMIC IMPORTER RULES:
 	 *
 	 * Dynamic importers, see dma_buf_attachment_is_dynamic(), have
 	 * additional constraints on how they set up fences:
 	 *
-	 * - Dynamic importers must obey the exclusive fence and wait for it to
+	 * - Dynamic importers must obey the write fences and wait for them to
 	 *   signal before allowing access to the buffer's underlying storage
 	 *   through the device.
 	 *
@@ -423,10 +422,9 @@ struct dma_buf {
 	 *
 	 * IMPORTANT:
 	 *
-	 * All drivers must obey the struct dma_resv rules, specifically the
-	 * rules for updating fences, see &dma_resv.fence_excl and
-	 * &dma_resv.fence. If these dependency rules are broken access tracking
-	 * can be lost resulting in use after free issues.
+	 * All drivers and memory management related functions must obey the
+	 * struct dma_resv rules, specifically the rules for updating and
+	 * obeying fences. See enum dma_resv_usage for further descriptions.
 	 */
 	struct dma_resv *resv;
 
@@ -625,9 +623,17 @@ int dma_buf_begin_cpu_access(struct dma_buf *dma_buf,
 			     enum dma_data_direction dir);
 int dma_buf_end_cpu_access(struct dma_buf *dma_buf,
 			   enum dma_data_direction dir);
+struct sg_table *
+dma_buf_map_attachment_unlocked(struct dma_buf_attachment *attach,
+				enum dma_data_direction direction);
+void dma_buf_unmap_attachment_unlocked(struct dma_buf_attachment *attach,
+				       struct sg_table *sg_table,
+				       enum dma_data_direction direction);
 
 int dma_buf_mmap(struct dma_buf *, struct vm_area_struct *,
 		 unsigned long);
-int dma_buf_vmap(struct dma_buf *dmabuf, struct dma_buf_map *map);
-void dma_buf_vunmap(struct dma_buf *dmabuf, struct dma_buf_map *map);
+int dma_buf_vmap(struct dma_buf *dmabuf, struct iosys_map *map);
+void dma_buf_vunmap(struct dma_buf *dmabuf, struct iosys_map *map);
+int dma_buf_vmap_unlocked(struct dma_buf *dmabuf, struct iosys_map *map);
+void dma_buf_vunmap_unlocked(struct dma_buf *dmabuf, struct iosys_map *map);
 #endif /* __DMA_BUF_H__ */

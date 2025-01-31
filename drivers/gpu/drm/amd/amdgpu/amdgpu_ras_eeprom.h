@@ -26,13 +26,34 @@
 
 #include <linux/i2c.h>
 
+#define RAS_TABLE_VER_V1           0x00010000
+#define RAS_TABLE_VER_V2_1         0x00021000
+
 struct amdgpu_device;
+
+enum amdgpu_ras_gpu_health_status {
+	GPU_HEALTH_USABLE = 0,
+	GPU_RETIRED__ECC_REACH_THRESHOLD = 2,
+};
 
 enum amdgpu_ras_eeprom_err_type {
 	AMDGPU_RAS_EEPROM_ERR_NA,
 	AMDGPU_RAS_EEPROM_ERR_RECOVERABLE,
 	AMDGPU_RAS_EEPROM_ERR_NON_RECOVERABLE,
 	AMDGPU_RAS_EEPROM_ERR_COUNT,
+};
+
+/*
+ * one UMC MCA address could map to multiply physical address (PA),
+ * such as 1:16, we use eeprom_table_record.address to store MCA
+ * address and use eeprom_table_record.retired_page to save PA.
+ *
+ * AMDGPU_RAS_EEPROM_REC_PA: one record store one PA
+ * AMDGPU_RAS_EEPROM_REC_MCA: one record store one MCA address
+ */
+enum amdgpu_ras_eeprom_rec_type {
+	AMDGPU_RAS_EEPROM_REC_PA,
+	AMDGPU_RAS_EEPROM_REC_MCA,
 };
 
 struct amdgpu_ras_eeprom_table_header {
@@ -43,8 +64,17 @@ struct amdgpu_ras_eeprom_table_header {
 	uint32_t checksum;
 } __packed;
 
+struct amdgpu_ras_eeprom_table_ras_info {
+	u8  rma_status;
+	u8  health_percent;
+	u16 ecc_page_threshold;
+	u32 padding[64 - 1];
+} __packed;
+
 struct amdgpu_ras_eeprom_control {
 	struct amdgpu_ras_eeprom_table_header tbl_hdr;
+
+	struct amdgpu_ras_eeprom_table_ras_info tbl_rai;
 
 	/* Base I2C EEPPROM 19-bit memory address,
 	 * where the table is located. For more information,
@@ -58,11 +88,17 @@ struct amdgpu_ras_eeprom_control {
 	 * right after the header.
 	 */
 	u32 ras_header_offset;
+	u32 ras_info_offset;
 	u32 ras_record_offset;
 
 	/* Number of records in the table.
 	 */
 	u32 ras_num_recs;
+
+	/* the bad page number is ras_num_recs or
+	 * ras_num_recs * umc.retire_unit
+	 */
+	u32 ras_num_bad_pages;
 
 	/* First record index to read, 0-based.
 	 * Range is [0, num_recs-1]. This is
@@ -80,6 +116,11 @@ struct amdgpu_ras_eeprom_control {
 	/* Protect table access via this mutex.
 	 */
 	struct mutex ras_tbl_mutex;
+
+	/* Record channel info which occurred bad pages
+	 */
+	u32 bad_channel_bitmap;
+	enum amdgpu_ras_eeprom_rec_type rec_type;
 };
 
 /*
@@ -107,8 +148,7 @@ struct eeprom_table_record {
 	unsigned char mcumc_id;
 } __packed;
 
-int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control,
-			   bool *exceed_err_limit);
+int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control);
 
 int amdgpu_ras_eeprom_reset_table(struct amdgpu_ras_eeprom_control *control);
 
@@ -120,9 +160,11 @@ int amdgpu_ras_eeprom_read(struct amdgpu_ras_eeprom_control *control,
 int amdgpu_ras_eeprom_append(struct amdgpu_ras_eeprom_control *control,
 			     struct eeprom_table_record *records, const u32 num);
 
-uint32_t amdgpu_ras_eeprom_max_record_count(void);
+uint32_t amdgpu_ras_eeprom_max_record_count(struct amdgpu_ras_eeprom_control *control);
 
 void amdgpu_ras_debugfs_set_ret_size(struct amdgpu_ras_eeprom_control *control);
+
+int amdgpu_ras_eeprom_check(struct amdgpu_ras_eeprom_control *control);
 
 extern const struct file_operations amdgpu_ras_debugfs_eeprom_size_ops;
 extern const struct file_operations amdgpu_ras_debugfs_eeprom_table_ops;

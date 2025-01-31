@@ -23,7 +23,6 @@
 #include <asm/r4kcache.h>
 #include <asm/traps.h>
 #include <asm/mmu_context.h>
-#include <asm/war.h>
 
 #include <asm/octeon/octeon.h>
 
@@ -84,8 +83,13 @@ static void octeon_flush_icache_all_cores(struct vm_area_struct *vma)
 	else
 		mask = *cpu_online_mask;
 	cpumask_clear_cpu(cpu, &mask);
+#ifdef CONFIG_CAVIUM_OCTEON_SOC
 	for_each_cpu(cpu, &mask)
 		octeon_send_ipi_single(cpu, SMP_ICACHE_FLUSH);
+#else
+	smp_call_function_many(&mask, (smp_call_func_t)octeon_local_flush_icache,
+			       NULL, 1);
+#endif
 
 	preempt_enable();
 #endif

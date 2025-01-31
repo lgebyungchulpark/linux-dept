@@ -5,19 +5,16 @@
  */
 
 #include <dt-bindings/interconnect/qcom,sdm660.h>
-#include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect-provider.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
 #include "icc-rpm.h"
-#include "smd-rpm.h"
 
 enum {
 	SDM660_MASTER_IPA = 1,
@@ -127,15 +124,11 @@ enum {
 	SDM660_SNOC,
 };
 
-static const char * const bus_mm_clocks[] = {
-	"bus",
-	"bus_a",
+static const char * const mm_intf_clocks[] = {
 	"iface",
 };
 
-static const char * const bus_a2noc_clocks[] = {
-	"bus",
-	"bus_a",
+static const char * const a2noc_intf_clocks[] = {
 	"ipa",
 	"ufs_axi",
 	"aggre2_ufs_axi",
@@ -609,6 +602,7 @@ static struct qcom_icc_node mas_mdp_p0 = {
 	.name = "mas_mdp_p0",
 	.id = SDM660_MASTER_MDP_P0,
 	.buswidth = 16,
+	.ib_coeff = 50,
 	.mas_rpm_id = 8,
 	.slv_rpm_id = -1,
 	.qos.ap_owned = true,
@@ -628,6 +622,7 @@ static struct qcom_icc_node mas_mdp_p1 = {
 	.name = "mas_mdp_p1",
 	.id = SDM660_MASTER_MDP_P1,
 	.buswidth = 16,
+	.ib_coeff = 50,
 	.mas_rpm_id = 61,
 	.slv_rpm_id = -1,
 	.qos.ap_owned = true,
@@ -1490,7 +1485,7 @@ static struct qcom_icc_node slv_srvc_snoc = {
 	.slv_rpm_id = 29,
 };
 
-static struct qcom_icc_node *sdm660_a2noc_nodes[] = {
+static struct qcom_icc_node * const sdm660_a2noc_nodes[] = {
 	[MASTER_IPA] = &mas_ipa,
 	[MASTER_CNOC_A2NOC] = &mas_cnoc_a2noc,
 	[MASTER_SDCC_1] = &mas_sdcc_1,
@@ -1512,16 +1507,17 @@ static const struct regmap_config sdm660_a2noc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc sdm660_a2noc = {
+static const struct qcom_icc_desc sdm660_a2noc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = sdm660_a2noc_nodes,
 	.num_nodes = ARRAY_SIZE(sdm660_a2noc_nodes),
-	.clocks = bus_a2noc_clocks,
-	.num_clocks = ARRAY_SIZE(bus_a2noc_clocks),
+	.bus_clk_desc = &aggre2_clk,
+	.intf_clocks = a2noc_intf_clocks,
+	.num_intf_clocks = ARRAY_SIZE(a2noc_intf_clocks),
 	.regmap_cfg = &sdm660_a2noc_regmap_config,
 };
 
-static struct qcom_icc_node *sdm660_bimc_nodes[] = {
+static struct qcom_icc_node * const sdm660_bimc_nodes[] = {
 	[MASTER_GNOC_BIMC] = &mas_gnoc_bimc,
 	[MASTER_OXILI] = &mas_oxili,
 	[MASTER_MNOC_BIMC] = &mas_mnoc_bimc,
@@ -1540,14 +1536,16 @@ static const struct regmap_config sdm660_bimc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc sdm660_bimc = {
+static const struct qcom_icc_desc sdm660_bimc = {
 	.type = QCOM_ICC_BIMC,
 	.nodes = sdm660_bimc_nodes,
 	.num_nodes = ARRAY_SIZE(sdm660_bimc_nodes),
+	.bus_clk_desc = &bimc_clk,
 	.regmap_cfg = &sdm660_bimc_regmap_config,
+	.ab_coeff = 153,
 };
 
-static struct qcom_icc_node *sdm660_cnoc_nodes[] = {
+static struct qcom_icc_node * const sdm660_cnoc_nodes[] = {
 	[MASTER_SNOC_CNOC] = &mas_snoc_cnoc,
 	[MASTER_QDSS_DAP] = &mas_qdss_dap,
 	[SLAVE_CNOC_A2NOC] = &slv_cnoc_a2noc,
@@ -1594,14 +1592,15 @@ static const struct regmap_config sdm660_cnoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc sdm660_cnoc = {
+static const struct qcom_icc_desc sdm660_cnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = sdm660_cnoc_nodes,
 	.num_nodes = ARRAY_SIZE(sdm660_cnoc_nodes),
+	.bus_clk_desc = &bus_2_clk,
 	.regmap_cfg = &sdm660_cnoc_regmap_config,
 };
 
-static struct qcom_icc_node *sdm660_gnoc_nodes[] = {
+static struct qcom_icc_node * const sdm660_gnoc_nodes[] = {
 	[MASTER_APSS_PROC] = &mas_apss_proc,
 	[SLAVE_GNOC_BIMC] = &slv_gnoc_bimc,
 	[SLAVE_GNOC_SNOC] = &slv_gnoc_snoc,
@@ -1615,14 +1614,14 @@ static const struct regmap_config sdm660_gnoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc sdm660_gnoc = {
+static const struct qcom_icc_desc sdm660_gnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = sdm660_gnoc_nodes,
 	.num_nodes = ARRAY_SIZE(sdm660_gnoc_nodes),
 	.regmap_cfg = &sdm660_gnoc_regmap_config,
 };
 
-static struct qcom_icc_node *sdm660_mnoc_nodes[] = {
+static struct qcom_icc_node * const sdm660_mnoc_nodes[] = {
 	[MASTER_CPP] = &mas_cpp,
 	[MASTER_JPEG] = &mas_jpeg,
 	[MASTER_MDP_P0] = &mas_mdp_p0,
@@ -1655,16 +1654,18 @@ static const struct regmap_config sdm660_mnoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc sdm660_mnoc = {
+static const struct qcom_icc_desc sdm660_mnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = sdm660_mnoc_nodes,
 	.num_nodes = ARRAY_SIZE(sdm660_mnoc_nodes),
-	.clocks = bus_mm_clocks,
-	.num_clocks = ARRAY_SIZE(bus_mm_clocks),
+	.bus_clk_desc = &mmaxi_0_clk,
+	.intf_clocks = mm_intf_clocks,
+	.num_intf_clocks = ARRAY_SIZE(mm_intf_clocks),
 	.regmap_cfg = &sdm660_mnoc_regmap_config,
+	.ab_coeff = 153,
 };
 
-static struct qcom_icc_node *sdm660_snoc_nodes[] = {
+static struct qcom_icc_node * const sdm660_snoc_nodes[] = {
 	[MASTER_QDSS_ETR] = &mas_qdss_etr,
 	[MASTER_QDSS_BAM] = &mas_qdss_bam,
 	[MASTER_SNOC_CFG] = &mas_snoc_cfg,
@@ -1692,10 +1693,11 @@ static const struct regmap_config sdm660_snoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc sdm660_snoc = {
+static const struct qcom_icc_desc sdm660_snoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = sdm660_snoc_nodes,
 	.num_nodes = ARRAY_SIZE(sdm660_snoc_nodes),
+	.bus_clk_desc = &bus_1_clk,
 	.regmap_cfg = &sdm660_snoc_regmap_config,
 };
 

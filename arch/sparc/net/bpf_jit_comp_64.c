@@ -1599,10 +1599,14 @@ skip_init_ctx:
 	if (bpf_jit_enable > 1)
 		bpf_jit_dump(prog->len, image_size, pass, ctx.image);
 
-	bpf_flush_icache(header, (u8 *)header + (header->pages * PAGE_SIZE));
+	bpf_flush_icache(header, (u8 *)header + header->size);
 
 	if (!prog->is_func || extra_pass) {
-		bpf_jit_binary_lock_ro(header);
+		if (bpf_jit_binary_lock_ro(header)) {
+			bpf_jit_binary_free(header);
+			prog = orig_prog;
+			goto out_off;
+		}
 	} else {
 		jit_data->ctx = ctx;
 		jit_data->image = image_ptr;

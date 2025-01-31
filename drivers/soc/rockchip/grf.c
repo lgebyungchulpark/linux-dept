@@ -7,7 +7,7 @@
 
 #include <linux/err.h>
 #include <linux/mfd/syscon.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
@@ -41,9 +41,11 @@ static const struct rockchip_grf_info rk3036_grf __initconst = {
 };
 
 #define RK3128_GRF_SOC_CON0		0x140
+#define RK3128_GRF_SOC_CON1		0x144
 
 static const struct rockchip_grf_value rk3128_defaults[] __initconst = {
 	{ "jtag switching", RK3128_GRF_SOC_CON0, HIWORD_UPDATE(0, 1, 8) },
+	{ "vpu main clock", RK3128_GRF_SOC_CON1, HIWORD_UPDATE(0, 1, 10) },
 };
 
 static const struct rockchip_grf_info rk3128_grf __initconst = {
@@ -108,6 +110,53 @@ static const struct rockchip_grf_info rk3399_grf __initconst = {
 	.num_values = ARRAY_SIZE(rk3399_defaults),
 };
 
+#define RK3566_GRF_USB3OTG0_CON1	0x0104
+
+static const struct rockchip_grf_value rk3566_defaults[] __initconst = {
+	{ "usb3otg port switch", RK3566_GRF_USB3OTG0_CON1, HIWORD_UPDATE(0, 1, 12) },
+	{ "usb3otg clock switch", RK3566_GRF_USB3OTG0_CON1, HIWORD_UPDATE(1, 1, 7) },
+	{ "usb3otg disable usb3", RK3566_GRF_USB3OTG0_CON1, HIWORD_UPDATE(1, 1, 0) },
+};
+
+static const struct rockchip_grf_info rk3566_pipegrf __initconst = {
+	.values = rk3566_defaults,
+	.num_values = ARRAY_SIZE(rk3566_defaults),
+};
+
+#define RK3576_SYSGRF_SOC_CON1		0x0004
+
+static const struct rockchip_grf_value rk3576_defaults_sys_grf[] __initconst = {
+	{ "i3c0 weakpull", RK3576_SYSGRF_SOC_CON1, HIWORD_UPDATE(3, 3, 6) },
+	{ "i3c1 weakpull", RK3576_SYSGRF_SOC_CON1, HIWORD_UPDATE(3, 3, 8) },
+};
+
+static const struct rockchip_grf_info rk3576_sysgrf __initconst = {
+	.values = rk3576_defaults_sys_grf,
+	.num_values = ARRAY_SIZE(rk3576_defaults_sys_grf),
+};
+
+#define RK3576_IOCGRF_MISC_CON		0x04F0
+
+static const struct rockchip_grf_value rk3576_defaults_ioc_grf[] __initconst = {
+	{ "jtag switching", RK3576_IOCGRF_MISC_CON, HIWORD_UPDATE(0, 1, 1) },
+};
+
+static const struct rockchip_grf_info rk3576_iocgrf __initconst = {
+	.values = rk3576_defaults_ioc_grf,
+	.num_values = ARRAY_SIZE(rk3576_defaults_ioc_grf),
+};
+
+#define RK3588_GRF_SOC_CON6		0x0318
+
+static const struct rockchip_grf_value rk3588_defaults[] __initconst = {
+	{ "jtag switching", RK3588_GRF_SOC_CON6, HIWORD_UPDATE(0, 1, 14) },
+};
+
+static const struct rockchip_grf_info rk3588_sysgrf __initconst = {
+	.values = rk3588_defaults,
+	.num_values = ARRAY_SIZE(rk3588_defaults),
+};
+
 static const struct of_device_id rockchip_grf_dt_match[] __initconst = {
 	{
 		.compatible = "rockchip,rk3036-grf",
@@ -130,6 +179,18 @@ static const struct of_device_id rockchip_grf_dt_match[] __initconst = {
 	}, {
 		.compatible = "rockchip,rk3399-grf",
 		.data = (void *)&rk3399_grf,
+	}, {
+		.compatible = "rockchip,rk3566-pipe-grf",
+		.data = (void *)&rk3566_pipegrf,
+	}, {
+		.compatible = "rockchip,rk3576-sys-grf",
+		.data = (void *)&rk3576_sysgrf,
+	}, {
+		.compatible = "rockchip,rk3576-ioc-grf",
+		.data = (void *)&rk3576_iocgrf,
+	}, {
+		.compatible = "rockchip,rk3588-sys-grf",
+		.data = (void *)&rk3588_sysgrf,
 	},
 	{ /* sentinel */ },
 };
@@ -148,12 +209,14 @@ static int __init rockchip_grf_init(void)
 		return -ENODEV;
 	if (!match || !match->data) {
 		pr_err("%s: missing grf data\n", __func__);
+		of_node_put(np);
 		return -EINVAL;
 	}
 
 	grf_info = match->data;
 
 	grf = syscon_node_to_regmap(np);
+	of_node_put(np);
 	if (IS_ERR(grf)) {
 		pr_err("%s: could not get grf syscon\n", __func__);
 		return PTR_ERR(grf);

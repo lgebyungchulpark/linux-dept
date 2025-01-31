@@ -8,6 +8,8 @@
 
 #include <linux/sched.h>
 #include <linux/magic.h>
+#include <linux/refcount.h>
+#include <linux/kasan.h>
 
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 
@@ -16,14 +18,14 @@
  * try_get_task_stack() instead.  task_stack_page will return a pointer
  * that could get freed out from under you.
  */
-static inline void *task_stack_page(const struct task_struct *task)
+static __always_inline void *task_stack_page(const struct task_struct *task)
 {
 	return task->stack;
 }
 
 #define setup_thread_stack(new,old)	do { } while(0)
 
-static inline unsigned long *end_of_stack(const struct task_struct *task)
+static __always_inline unsigned long *end_of_stack(const struct task_struct *task)
 {
 #ifdef CONFIG_STACK_GROWSUP
 	return (unsigned long *)((unsigned long)task->stack + THREAD_SIZE) - 1;
@@ -32,7 +34,7 @@ static inline unsigned long *end_of_stack(const struct task_struct *task)
 #endif
 }
 
-#elif !defined(__HAVE_THREAD_FUNCTIONS)
+#else
 
 #define task_stack_page(task)	((void *)(task)->stack)
 
@@ -79,6 +81,8 @@ static inline void *try_get_task_stack(struct task_struct *tsk)
 static inline void put_task_stack(struct task_struct *tsk) {}
 #endif
 
+void exit_task_stack_account(struct task_struct *tsk);
+
 #define task_stack_end_corrupted(task) \
 		(*(end_of_stack(task)) != STACK_END_MAGIC)
 
@@ -86,29 +90,18 @@ static inline int object_is_on_stack(const void *obj)
 {
 	void *stack = task_stack_page(current);
 
+	obj = kasan_reset_tag(obj);
 	return (obj >= stack) && (obj < (stack + THREAD_SIZE));
 }
 
 extern void thread_stack_cache_init(void);
 
 #ifdef CONFIG_DEBUG_STACK_USAGE
+unsigned long stack_not_used(struct task_struct *p);
+#else
 static inline unsigned long stack_not_used(struct task_struct *p)
 {
-	unsigned long *n = end_of_stack(p);
-
-	do { 	/* Skip over canary */
-# ifdef CONFIG_STACK_GROWSUP
-		n--;
-# else
-		n++;
-# endif
-	} while (!*n);
-
-# ifdef CONFIG_STACK_GROWSUP
-	return (unsigned long)end_of_stack(p) - (unsigned long)n;
-# else
-	return (unsigned long)n - (unsigned long)end_of_stack(p);
-# endif
+	return 0;
 }
 #endif
 extern void set_task_stack_end_magic(struct task_struct *tsk);

@@ -16,6 +16,7 @@
 #include <linux/cpu.h>
 #include <linux/notifier.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/pfn.h>
 #include <linux/cpuset.h>
 #include <linux/node.h>
@@ -26,7 +27,6 @@
 #include <linux/slab.h>
 #include <asm/cputhreads.h>
 #include <asm/sparsemem.h>
-#include <asm/prom.h>
 #include <asm/smp.h>
 #include <asm/topology.h>
 #include <asm/firmware.h>
@@ -34,6 +34,7 @@
 #include <asm/hvcall.h>
 #include <asm/setup.h>
 #include <asm/vdso.h>
+#include <asm/vphn.h>
 #include <asm/drmem.h>
 
 static int numa_enabled = 1;
@@ -42,11 +43,9 @@ static char *cmdline __initdata;
 
 int numa_cpu_lookup_table[NR_CPUS];
 cpumask_var_t node_to_cpumask_map[MAX_NUMNODES];
-struct pglist_data *node_data[MAX_NUMNODES];
 
 EXPORT_SYMBOL(numa_cpu_lookup_table);
 EXPORT_SYMBOL(node_to_cpumask_map);
-EXPORT_SYMBOL(node_data);
 
 static int primary_domain_index;
 static int n_mem_addr_cells, n_mem_size_cells;
@@ -367,6 +366,7 @@ void update_numa_distance(struct device_node *node)
 	WARN(numa_distance_table[nid][nid] == -1,
 	     "NUMA distance details for node %d not provided\n", nid);
 }
+EXPORT_SYMBOL_GPL(update_numa_distance);
 
 /*
  * ibm,numa-lookup-index-table= {N, domainid1, domainid2, ..... domainidN}
@@ -894,7 +894,7 @@ static int __init numa_setup_drmem_lmb(struct drmem_lmb *lmb,
 
 static int __init parse_numa_properties(void)
 {
-	struct device_node *memory;
+	struct device_node *memory, *pci;
 	int default_nid = 0;
 	unsigned long i;
 	const __be32 *associativity;
@@ -956,7 +956,9 @@ static int __init parse_numa_properties(void)
 			of_node_put(cpu);
 		}
 
-		node_set_online(nid);
+		/* node_set_online() is an UB if 'nid' is negative */
+		if (likely(nid >= 0))
+			node_set_online(nid);
 	}
 
 	get_n_mem_cells(&n_mem_addr_cells, &n_mem_size_cells);
@@ -1004,6 +1006,18 @@ new_range:
 
 		if (--ranges)
 			goto new_range;
+	}
+
+	for_each_node_by_name(pci, "pci") {
+		int nid = NUMA_NO_NODE;
+
+		associativity = of_get_associativity(pci);
+		if (associativity) {
+			nid = associativity_to_nid(associativity);
+			initialize_form1_numa_distance(associativity);
+		}
+		if (likely(nid >= 0) && !node_online(nid))
+			node_set_online(nid);
 	}
 
 	/*
@@ -1079,27 +1093,9 @@ void __init dump_numa_cpu_topology(void)
 static void __init setup_node_data(int nid, u64 start_pfn, u64 end_pfn)
 {
 	u64 spanned_pages = end_pfn - start_pfn;
-	const size_t nd_size = roundup(sizeof(pg_data_t), SMP_CACHE_BYTES);
-	u64 nd_pa;
-	void *nd;
-	int tnid;
 
-	nd_pa = memblock_phys_alloc_try_nid(nd_size, SMP_CACHE_BYTES, nid);
-	if (!nd_pa)
-		panic("Cannot allocate %zu bytes for node %d data\n",
-		      nd_size, nid);
+	alloc_node_data(nid);
 
-	nd = __va(nd_pa);
-
-	/* report and initialize */
-	pr_info("  NODE_DATA [mem %#010Lx-%#010Lx]\n",
-		nd_pa, nd_pa + nd_size - 1);
-	tnid = early_pfn_to_nid(nd_pa >> PAGE_SHIFT);
-	if (tnid != nid)
-		pr_info("    NODE_DATA(%d) on node %d\n", nid, tnid);
-
-	node_data[nid] = nd;
-	memset(NODE_DATA(nid), 0, sizeof(pg_data_t));
 	NODE_DATA(nid)->node_id = nid;
 	NODE_DATA(nid)->node_start_pfn = start_pfn;
 	NODE_DATA(nid)->node_spanned_pages = spanned_pages;
@@ -1107,7 +1103,7 @@ static void __init setup_node_data(int nid, u64 start_pfn, u64 end_pfn)
 
 static void __init find_possible_nodes(void)
 {
-	struct device_node *rtas;
+	struct device_node *rtas, *root;
 	const __be32 *domains = NULL;
 	int prop_length, max_nodes;
 	u32 i;
@@ -1128,10 +1124,12 @@ static void __init find_possible_nodes(void)
 	 * If the LPAR is migratable, new nodes might be activated after a LPM,
 	 * so we should consider the max number in that case.
 	 */
-	if (!of_get_property(of_root, "ibm,migratable-partition", NULL))
+	root = of_find_node_by_path("/");
+	if (!of_get_property(root, "ibm,migratable-partition", NULL))
 		domains = of_get_property(rtas,
 					  "ibm,current-associativity-domains",
 					  &prop_length);
+	of_node_put(root);
 	if (!domains) {
 		domains = of_get_property(rtas, "ibm,max-associativity-domains",
 					&prop_length);
@@ -1158,6 +1156,9 @@ out:
 void __init mem_topology_setup(void)
 {
 	int cpu;
+
+	max_low_pfn = max_pfn = memblock_end_of_DRAM() >> PAGE_SHIFT;
+	min_low_pfn = MEMORY_START >> PAGE_SHIFT;
 
 	/*
 	 * Linux/mm assumes node 0 to be online at boot. However this is not
@@ -1202,9 +1203,6 @@ void __init mem_topology_setup(void)
 void __init initmem_init(void)
 {
 	int nid;
-
-	max_low_pfn = memblock_end_of_DRAM() >> PAGE_SHIFT;
-	max_pfn = max_low_pfn;
 
 	memblock_dump_all();
 
@@ -1287,23 +1285,15 @@ static int hot_add_node_scn_to_nid(unsigned long scn_addr)
 	int nid = NUMA_NO_NODE;
 
 	for_each_node_by_type(memory, "memory") {
-		unsigned long start, size;
-		int ranges;
-		const __be32 *memcell_buf;
-		unsigned int len;
+		int i = 0;
 
-		memcell_buf = of_get_property(memory, "reg", &len);
-		if (!memcell_buf || len <= 0)
-			continue;
+		while (1) {
+			struct resource res;
 
-		/* ranges in cell */
-		ranges = (len >> 2) / (n_mem_addr_cells + n_mem_size_cells);
+			if (of_address_to_resource(memory, i++, &res))
+				break;
 
-		while (ranges--) {
-			start = read_n_cells(n_mem_addr_cells, &memcell_buf);
-			size = read_n_cells(n_mem_size_cells, &memcell_buf);
-
-			if ((scn_addr < start) || (scn_addr >= (start + size)))
+			if ((scn_addr < res.start) || (scn_addr > res.end))
 				continue;
 
 			nid = of_node_to_nid_single(memory);
@@ -1421,43 +1411,26 @@ out:
 	return rc;
 }
 
-int find_and_online_cpu_nid(int cpu)
+void find_and_update_cpu_nid(int cpu)
 {
 	__be32 associativity[VPHN_ASSOC_BUFSIZE] = {0};
 	int new_nid;
 
 	/* Use associativity from first thread for all siblings */
 	if (vphn_get_associativity(cpu, associativity))
-		return cpu_to_node(cpu);
+		return;
 
+	/* Do not have previous associativity, so find it now. */
 	new_nid = associativity_to_nid(associativity);
+
 	if (new_nid < 0 || !node_possible(new_nid))
 		new_nid = first_online_node;
+	else
+		// Associate node <-> cpu, so cpu_up() calls
+		// try_online_node() on the right node.
+		set_cpu_numa_node(cpu, new_nid);
 
-	if (NODE_DATA(new_nid) == NULL) {
-#ifdef CONFIG_MEMORY_HOTPLUG
-		/*
-		 * Need to ensure that NODE_DATA is initialized for a node from
-		 * available memory (see memblock_alloc_try_nid). If unable to
-		 * init the node, then default to nearest node that has memory
-		 * installed. Skip onlining a node if the subsystems are not
-		 * yet initialized.
-		 */
-		if (!topology_inited || try_online_node(new_nid))
-			new_nid = first_online_node;
-#else
-		/*
-		 * Default to using the nearest node that has memory installed.
-		 * Otherwise, it would be necessary to patch the kernel MM code
-		 * to deal with more memoryless-node error conditions.
-		 */
-		new_nid = first_online_node;
-#endif
-	}
-
-	pr_debug("%s:%d cpu %d nid %d\n", __FUNCTION__, __LINE__,
-		cpu, new_nid);
-	return new_nid;
+	pr_debug("%s:%d cpu %d nid %d\n", __func__, __LINE__, cpu, new_nid);
 }
 
 int cpu_to_coregroup_id(int cpu)

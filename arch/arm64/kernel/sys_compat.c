@@ -9,7 +9,6 @@
 
 #include <linux/compat.h>
 #include <linux/cpufeature.h>
-#include <linux/personality.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 #include <linux/slab.h>
@@ -32,7 +31,7 @@ __do_compat_cache_op(unsigned long start, unsigned long end)
 		if (fatal_signal_pending(current))
 			return 0;
 
-		if (cpus_have_const_cap(ARM64_WORKAROUND_1542419)) {
+		if (cpus_have_final_cap(ARM64_WORKAROUND_1542419)) {
 			/*
 			 * The workaround requires an inner-shareable tlbi.
 			 * We pick the reserved-ASID to minimise the impact.
@@ -114,6 +113,6 @@ long compat_arm_syscall(struct pt_regs *regs, int scno)
 	addr = instruction_pointer(regs) - (compat_thumb_mode(regs) ? 2 : 4);
 
 	arm64_notify_die("Oops - bad compat syscall(2)", regs,
-			 SIGILL, ILL_ILLTRP, addr, scno);
+			 SIGILL, ILL_ILLTRP, addr, 0);
 	return 0;
 }

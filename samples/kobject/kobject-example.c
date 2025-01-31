@@ -28,7 +28,7 @@ static int bar;
 static ssize_t foo_show(struct kobject *kobj, struct kobj_attribute *attr,
 			char *buf)
 {
-	return sprintf(buf, "%d\n", foo);
+	return sysfs_emit(buf, "%d\n", foo);
 }
 
 static ssize_t foo_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -60,7 +60,7 @@ static ssize_t b_show(struct kobject *kobj, struct kobj_attribute *attr,
 		var = baz;
 	else
 		var = bar;
-	return sprintf(buf, "%d\n", var);
+	return sysfs_emit(buf, "%d\n", var);
 }
 
 static ssize_t b_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -140,5 +140,6 @@ static void __exit example_exit(void)
 
 module_init(example_init);
 module_exit(example_exit);
+MODULE_DESCRIPTION("Sample kobject implementation");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Greg Kroah-Hartman <greg@kroah.com>");

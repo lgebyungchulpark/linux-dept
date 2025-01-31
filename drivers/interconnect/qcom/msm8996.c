@@ -5,32 +5,32 @@
  * Copyright (c) 2021 Yassine Oudjana <y.oudjana@protonmail.com>
  */
 
-#include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect-provider.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/interconnect/qcom,msm8996.h>
 
 #include "icc-rpm.h"
-#include "smd-rpm.h"
 #include "msm8996.h"
 
-static const char * const bus_mm_clocks[] = {
-	"bus",
-	"bus_a",
+static const char * const mm_intf_clocks[] = {
 	"iface"
 };
 
-static const char * const bus_a0noc_clocks[] = {
+static const char * const a0noc_intf_clocks[] = {
 	"aggre0_snoc_axi",
 	"aggre0_cnoc_ahb",
 	"aggre0_noc_mpu_cfg"
+};
+
+static const char * const a2noc_intf_clocks[] = {
+	"aggre2_ufs_axi",
+	"ufs_axi"
 };
 
 static const u16 mas_a0noc_common_links[] = {
@@ -448,6 +448,7 @@ static struct qcom_icc_node mas_mdp_p0 = {
 	.name = "mas_mdp_p0",
 	.id = MSM8996_MASTER_MDP_PORT0,
 	.buswidth = 32,
+	.ib_coeff = 25,
 	.mas_rpm_id = 8,
 	.slv_rpm_id = -1,
 	.qos.ap_owned = true,
@@ -463,6 +464,7 @@ static struct qcom_icc_node mas_mdp_p1 = {
 	.name = "mas_mdp_p1",
 	.id = MSM8996_MASTER_MDP_PORT1,
 	.buswidth = 32,
+	.ib_coeff = 25,
 	.mas_rpm_id = 61,
 	.slv_rpm_id = -1,
 	.qos.ap_owned = true,
@@ -1796,7 +1798,7 @@ static struct qcom_icc_node slv_srvc_snoc = {
 	.qos.qos_mode = NOC_QOS_MODE_INVALID
 };
 
-static struct qcom_icc_node *a0noc_nodes[] = {
+static struct qcom_icc_node * const a0noc_nodes[] = {
 	[MASTER_PCIE_0] = &mas_pcie_0,
 	[MASTER_PCIE_1] = &mas_pcie_1,
 	[MASTER_PCIE_2] = &mas_pcie_2
@@ -1806,7 +1808,7 @@ static const struct regmap_config msm8996_a0noc_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
 	.val_bits	= 32,
-	.max_register	= 0x9000,
+	.max_register	= 0x6000,
 	.fast_io	= true
 };
 
@@ -1814,13 +1816,12 @@ static const struct qcom_icc_desc msm8996_a0noc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = a0noc_nodes,
 	.num_nodes = ARRAY_SIZE(a0noc_nodes),
-	.clocks = bus_a0noc_clocks,
-	.num_clocks = ARRAY_SIZE(bus_a0noc_clocks),
-	.has_bus_pd = true,
+	.intf_clocks = a0noc_intf_clocks,
+	.num_intf_clocks = ARRAY_SIZE(a0noc_intf_clocks),
 	.regmap_cfg = &msm8996_a0noc_regmap_config
 };
 
-static struct qcom_icc_node *a1noc_nodes[] = {
+static struct qcom_icc_node * const a1noc_nodes[] = {
 	[MASTER_CNOC_A1NOC] = &mas_cnoc_a1noc,
 	[MASTER_CRYPTO_CORE0] = &mas_crypto_c0,
 	[MASTER_PNOC_A1NOC] = &mas_pnoc_a1noc
@@ -1830,7 +1831,7 @@ static const struct regmap_config msm8996_a1noc_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
 	.val_bits	= 32,
-	.max_register	= 0x7000,
+	.max_register	= 0x5000,
 	.fast_io	= true
 };
 
@@ -1838,10 +1839,11 @@ static const struct qcom_icc_desc msm8996_a1noc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = a1noc_nodes,
 	.num_nodes = ARRAY_SIZE(a1noc_nodes),
+	.bus_clk_desc = &aggre1_branch_clk,
 	.regmap_cfg = &msm8996_a1noc_regmap_config
 };
 
-static struct qcom_icc_node *a2noc_nodes[] = {
+static struct qcom_icc_node * const a2noc_nodes[] = {
 	[MASTER_USB3] = &mas_usb3,
 	[MASTER_IPA] = &mas_ipa,
 	[MASTER_UFS] = &mas_ufs
@@ -1851,7 +1853,7 @@ static const struct regmap_config msm8996_a2noc_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
 	.val_bits	= 32,
-	.max_register	= 0xa000,
+	.max_register	= 0x7000,
 	.fast_io	= true
 };
 
@@ -1859,10 +1861,13 @@ static const struct qcom_icc_desc msm8996_a2noc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = a2noc_nodes,
 	.num_nodes = ARRAY_SIZE(a2noc_nodes),
+	.bus_clk_desc = &aggre2_branch_clk,
+	.intf_clocks = a2noc_intf_clocks,
+	.num_intf_clocks = ARRAY_SIZE(a2noc_intf_clocks),
 	.regmap_cfg = &msm8996_a2noc_regmap_config
 };
 
-static struct qcom_icc_node *bimc_nodes[] = {
+static struct qcom_icc_node * const bimc_nodes[] = {
 	[MASTER_AMPSS_M0] = &mas_apps_proc,
 	[MASTER_GRAPHICS_3D] = &mas_oxili,
 	[MASTER_MNOC_BIMC] = &mas_mnoc_bimc,
@@ -1877,7 +1882,7 @@ static const struct regmap_config msm8996_bimc_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
 	.val_bits	= 32,
-	.max_register	= 0x62000,
+	.max_register	= 0x5a000,
 	.fast_io	= true
 };
 
@@ -1885,10 +1890,12 @@ static const struct qcom_icc_desc msm8996_bimc = {
 	.type = QCOM_ICC_BIMC,
 	.nodes = bimc_nodes,
 	.num_nodes = ARRAY_SIZE(bimc_nodes),
-	.regmap_cfg = &msm8996_bimc_regmap_config
+	.bus_clk_desc = &bimc_clk,
+	.regmap_cfg = &msm8996_bimc_regmap_config,
+	.ab_coeff = 154,
 };
 
-static struct qcom_icc_node *cnoc_nodes[] = {
+static struct qcom_icc_node * const cnoc_nodes[] = {
 	[MASTER_SNOC_CNOC] = &mas_snoc_cnoc,
 	[MASTER_QDSS_DAP] = &mas_qdss_dap,
 	[SLAVE_CNOC_A1NOC] = &slv_cnoc_a1noc,
@@ -1943,10 +1950,11 @@ static const struct qcom_icc_desc msm8996_cnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = cnoc_nodes,
 	.num_nodes = ARRAY_SIZE(cnoc_nodes),
+	.bus_clk_desc = &bus_2_clk,
 	.regmap_cfg = &msm8996_cnoc_regmap_config
 };
 
-static struct qcom_icc_node *mnoc_nodes[] = {
+static struct qcom_icc_node * const mnoc_nodes[] = {
 	[MASTER_CNOC_MNOC_CFG] = &mas_cnoc_mnoc_cfg,
 	[MASTER_CPP] = &mas_cpp,
 	[MASTER_JPEG] = &mas_jpeg,
@@ -1988,7 +1996,7 @@ static const struct regmap_config msm8996_mnoc_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
 	.val_bits	= 32,
-	.max_register	= 0x20000,
+	.max_register	= 0x1c000,
 	.fast_io	= true
 };
 
@@ -1996,12 +2004,14 @@ static const struct qcom_icc_desc msm8996_mnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = mnoc_nodes,
 	.num_nodes = ARRAY_SIZE(mnoc_nodes),
-	.clocks = bus_mm_clocks,
-	.num_clocks = ARRAY_SIZE(bus_mm_clocks),
-	.regmap_cfg = &msm8996_mnoc_regmap_config
+	.bus_clk_desc = &mmaxi_0_clk,
+	.intf_clocks = mm_intf_clocks,
+	.num_intf_clocks = ARRAY_SIZE(mm_intf_clocks),
+	.regmap_cfg = &msm8996_mnoc_regmap_config,
+	.ab_coeff = 154,
 };
 
-static struct qcom_icc_node *pnoc_nodes[] = {
+static struct qcom_icc_node * const pnoc_nodes[] = {
 	[MASTER_SNOC_PNOC] = &mas_snoc_pnoc,
 	[MASTER_SDCC_1] = &mas_sdcc_1,
 	[MASTER_SDCC_2] = &mas_sdcc_2,
@@ -2034,10 +2044,11 @@ static const struct qcom_icc_desc msm8996_pnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = pnoc_nodes,
 	.num_nodes = ARRAY_SIZE(pnoc_nodes),
+	.bus_clk_desc = &bus_0_clk,
 	.regmap_cfg = &msm8996_pnoc_regmap_config
 };
 
-static struct qcom_icc_node *snoc_nodes[] = {
+static struct qcom_icc_node * const snoc_nodes[] = {
 	[MASTER_HMSS] = &mas_hmss,
 	[MASTER_QDSS_BAM] = &mas_qdss_bam,
 	[MASTER_SNOC_CFG] = &mas_snoc_cfg,
@@ -2078,6 +2089,7 @@ static const struct qcom_icc_desc msm8996_snoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = snoc_nodes,
 	.num_nodes = ARRAY_SIZE(snoc_nodes),
+	.bus_clk_desc = &bus_1_clk,
 	.regmap_cfg = &msm8996_snoc_regmap_config
 };
 
@@ -2103,7 +2115,17 @@ static struct platform_driver qnoc_driver = {
 		.sync_state = icc_sync_state,
 	}
 };
-module_platform_driver(qnoc_driver);
+static int __init qnoc_driver_init(void)
+{
+	return platform_driver_register(&qnoc_driver);
+}
+core_initcall(qnoc_driver_init);
+
+static void __exit qnoc_driver_exit(void)
+{
+	platform_driver_unregister(&qnoc_driver);
+}
+module_exit(qnoc_driver_exit);
 
 MODULE_AUTHOR("Yassine Oudjana <y.oudjana@protonmail.com>");
 MODULE_DESCRIPTION("Qualcomm MSM8996 NoC driver");

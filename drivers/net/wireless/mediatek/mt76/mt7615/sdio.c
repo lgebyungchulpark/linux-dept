@@ -56,7 +56,10 @@ static int mt7663s_parse_intr(struct mt76_dev *dev, struct mt76s_intr *intr)
 	struct mt7663s_intr *irq_data = sdio->intr_data;
 	int i, err;
 
+	sdio_claim_host(sdio->func);
 	err = sdio_readsb(sdio->func, irq_data, MCR_WHISR, sizeof(*irq_data));
+	sdio_release_host(sdio->func);
+
 	if (err)
 		return err;
 
@@ -80,10 +83,11 @@ static int mt7663s_probe(struct sdio_func *func,
 		.tx_complete_skb = mt7663_usb_sdio_tx_complete_skb,
 		.tx_status_data = mt7663_usb_sdio_tx_status_data,
 		.rx_skb = mt7615_queue_rx_skb,
-		.sta_ps = mt7615_sta_ps,
+		.rx_check = mt7615_rx_check,
 		.sta_add = mt7615_mac_sta_add,
 		.sta_remove = mt7615_mac_sta_remove,
 		.update_survey = mt7615_update_channel,
+		.set_channel = mt7615_set_channel,
 	};
 	static const struct mt76_bus_ops mt7663s_ops = {
 		.rr = mt76s_rr,
@@ -98,7 +102,7 @@ static int mt7663s_probe(struct sdio_func *func,
 	struct ieee80211_ops *ops;
 	struct mt7615_dev *dev;
 	struct mt76_dev *mdev;
-	int i, ret;
+	int ret;
 
 	ops = devm_kmemdup(&func->dev, &mt7615_ops, sizeof(mt7615_ops),
 			   GFP_KERNEL);
@@ -135,16 +139,6 @@ static int mt7663s_probe(struct sdio_func *func,
 	if (!mdev->sdio.intr_data) {
 		ret = -ENOMEM;
 		goto error;
-	}
-
-	for (i = 0; i < ARRAY_SIZE(mdev->sdio.xmit_buf); i++) {
-		mdev->sdio.xmit_buf[i] = devm_kmalloc(mdev->dev,
-						      MT76S_XMIT_BUF_SZ,
-						      GFP_KERNEL);
-		if (!mdev->sdio.xmit_buf[i]) {
-			ret = -ENOMEM;
-			goto error;
-		}
 	}
 
 	ret = mt76s_alloc_rx_queue(mdev, MT_RXQ_MAIN);
@@ -187,7 +181,6 @@ static void mt7663s_remove(struct sdio_func *func)
 	mt76_free_device(&dev->mt76);
 }
 
-#ifdef CONFIG_PM
 static int mt7663s_suspend(struct device *dev)
 {
 	struct sdio_func *func = dev_to_sdio_func(dev);
@@ -198,7 +191,7 @@ static int mt7663s_suspend(struct device *dev)
 	    mt7615_firmware_offload(mdev)) {
 		int err;
 
-		err = mt76_connac_mcu_set_hif_suspend(&mdev->mt76, true);
+		err = mt76_connac_mcu_set_hif_suspend(&mdev->mt76, true, true);
 		if (err < 0)
 			return err;
 	}
@@ -212,8 +205,8 @@ static int mt7663s_suspend(struct device *dev)
 	mt76_worker_disable(&mdev->mt76.sdio.txrx_worker);
 	mt76_worker_disable(&mdev->mt76.sdio.status_worker);
 	mt76_worker_disable(&mdev->mt76.sdio.net_worker);
+	mt76_worker_disable(&mdev->mt76.sdio.stat_worker);
 
-	cancel_work_sync(&mdev->mt76.sdio.stat_work);
 	clear_bit(MT76_READING_STATS, &mdev->mphy.state);
 
 	mt76_tx_status_check(&mdev->mt76, true);
@@ -237,16 +230,10 @@ static int mt7663s_resume(struct device *dev)
 
 	if (!test_bit(MT76_STATE_SUSPEND, &mdev->mphy.state) &&
 	    mt7615_firmware_offload(mdev))
-		err = mt76_connac_mcu_set_hif_suspend(&mdev->mt76, false);
+		err = mt76_connac_mcu_set_hif_suspend(&mdev->mt76, false, true);
 
 	return err;
 }
-
-static const struct dev_pm_ops mt7663s_pm_ops = {
-	.suspend = mt7663s_suspend,
-	.resume = mt7663s_resume,
-};
-#endif
 
 MODULE_DEVICE_TABLE(sdio, mt7663s_table);
 MODULE_FIRMWARE(MT7663_OFFLOAD_FIRMWARE_N9);
@@ -254,19 +241,18 @@ MODULE_FIRMWARE(MT7663_OFFLOAD_ROM_PATCH);
 MODULE_FIRMWARE(MT7663_FIRMWARE_N9);
 MODULE_FIRMWARE(MT7663_ROM_PATCH);
 
+static DEFINE_SIMPLE_DEV_PM_OPS(mt7663s_pm_ops, mt7663s_suspend, mt7663s_resume);
+
 static struct sdio_driver mt7663s_driver = {
 	.name		= KBUILD_MODNAME,
 	.probe		= mt7663s_probe,
 	.remove		= mt7663s_remove,
 	.id_table	= mt7663s_table,
-#ifdef CONFIG_PM
-	.drv = {
-		.pm = &mt7663s_pm_ops,
-	}
-#endif
+	.drv.pm		= pm_sleep_ptr(&mt7663s_pm_ops),
 };
 module_sdio_driver(mt7663s_driver);
 
 MODULE_AUTHOR("Sean Wang <sean.wang@mediatek.com>");
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo@kernel.org>");
+MODULE_DESCRIPTION("MediaTek MT7663S (SDIO) wireless driver");
 MODULE_LICENSE("Dual BSD/GPL");

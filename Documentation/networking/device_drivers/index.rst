@@ -8,7 +8,6 @@ Contents:
 .. toctree::
    :maxdepth: 2
 
-   appletalk/index
    atm/index
    cable/index
    can/index
@@ -16,8 +15,6 @@ Contents:
    ethernet/index
    fddi/index
    hamradio/index
-   qlogic/index
-   wan/index
    wifi/index
    wwan/index
 

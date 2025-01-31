@@ -38,6 +38,7 @@ properties:
 patternProperties:
   "^.*@[0-3],[a-f0-9]+$":
     type: object
+    additionalProperties: true
     description:
       The actual device nodes should be added as subnodes to the SROMc node.
       These subnodes, in addition to regular device specification, should
@@ -65,9 +66,8 @@ patternProperties:
 
       samsung,srom-timing:
         $ref: /schemas/types.yaml#/definitions/uint32-array
-        items:
-          minItems: 6
-          maxItems: 6
+        minItems: 6
+        maxItems: 6
         description: |
           Array of 6 integers, specifying bank timings in the following order:
           Tacp, Tcah, Tcoh, Tacc, Tcos, Tacs.

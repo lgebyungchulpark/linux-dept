@@ -59,6 +59,14 @@ enum syscall_work_bit {
 
 #include <asm/thread_info.h>
 
+#ifndef TIF_NEED_RESCHED_LAZY
+#ifdef CONFIG_ARCH_HAS_PREEMPT_LAZY
+#error Inconsistent PREEMPT_LAZY
+#endif
+#define TIF_NEED_RESCHED_LAZY TIF_NEED_RESCHED
+#define _TIF_NEED_RESCHED_LAZY _TIF_NEED_RESCHED
+#endif
+
 #ifdef __KERNEL__
 
 #ifndef arch_set_restart_data
@@ -177,7 +185,28 @@ static __always_inline unsigned long read_ti_thread_flags(struct thread_info *ti
 	clear_ti_thread_flag(task_thread_info(t), TIF_##fl)
 #endif /* !CONFIG_GENERIC_ENTRY */
 
-#define tif_need_resched() test_thread_flag(TIF_NEED_RESCHED)
+#ifdef _ASM_GENERIC_BITOPS_INSTRUMENTED_NON_ATOMIC_H
+
+static __always_inline bool tif_test_bit(int bit)
+{
+	return arch_test_bit(bit,
+			     (unsigned long *)(&current_thread_info()->flags));
+}
+
+#else
+
+static __always_inline bool tif_test_bit(int bit)
+{
+	return test_bit(bit,
+			(unsigned long *)(&current_thread_info()->flags));
+}
+
+#endif /* _ASM_GENERIC_BITOPS_INSTRUMENTED_NON_ATOMIC_H */
+
+static __always_inline bool tif_need_resched(void)
+{
+	return tif_test_bit(TIF_NEED_RESCHED);
+}
 
 #ifndef CONFIG_HAVE_ARCH_WITHIN_STACK_FRAMES
 static inline int arch_within_stack_frames(const void * const stack,
@@ -209,9 +238,12 @@ __bad_copy_from(void);
 extern void __compiletime_error("copy destination size is too small")
 __bad_copy_to(void);
 
+void __copy_overflow(int size, unsigned long count);
+
 static inline void copy_overflow(int size, unsigned long count)
 {
-	WARN(1, "Buffer overflow detected (%d < %lu)!\n", size, count);
+	if (IS_ENABLED(CONFIG_BUG))
+		__copy_overflow(size, count);
 }
 
 static __always_inline __must_check bool
@@ -236,6 +268,11 @@ check_copy_size(const void *addr, size_t bytes, bool is_source)
 #ifndef arch_setup_new_exec
 static inline void arch_setup_new_exec(void) { }
 #endif
+
+void arch_task_cache_init(void); /* for CONFIG_SH */
+void arch_release_task_struct(struct task_struct *tsk);
+int arch_dup_task_struct(struct task_struct *dst,
+				struct task_struct *src);
 
 #endif	/* __KERNEL__ */
 

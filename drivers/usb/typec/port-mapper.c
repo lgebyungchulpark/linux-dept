@@ -8,17 +8,22 @@
 
 #include <linux/acpi.h>
 #include <linux/component.h>
+#include <linux/usb.h>
 
 #include "class.h"
 
 static int typec_aggregate_bind(struct device *dev)
 {
-	return component_bind_all(dev, NULL);
+	struct typec_port *port = to_typec_port(dev);
+
+	return component_bind_all(dev, &port->con);
 }
 
 static void typec_aggregate_unbind(struct device *dev)
 {
-	component_unbind_all(dev, NULL);
+	struct typec_port *port = to_typec_port(dev);
+
+	component_unbind_all(dev, &port->con);
 }
 
 static const struct component_master_ops typec_aggregate_ops = {
@@ -56,7 +61,12 @@ int typec_link_ports(struct typec_port *con)
 {
 	struct each_port_arg arg = { .port = con, .match = NULL };
 
-	bus_for_each_dev(&acpi_bus_type, NULL, &arg, typec_port_match);
+	if (!has_acpi_companion(&con->dev))
+		return 0;
+
+	acpi_bus_for_each_dev(typec_port_match, &arg);
+	if (!arg.match)
+		return 0;
 
 	/*
 	 * REVISIT: Now each connector can have only a single component master.
@@ -74,5 +84,6 @@ int typec_link_ports(struct typec_port *con)
 
 void typec_unlink_ports(struct typec_port *con)
 {
-	component_master_del(&con->dev, &typec_aggregate_ops);
+	if (has_acpi_companion(&con->dev))
+		component_master_del(&con->dev, &typec_aggregate_ops);
 }

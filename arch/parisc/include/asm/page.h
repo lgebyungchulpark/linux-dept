@@ -4,18 +4,9 @@
 
 #include <linux/const.h>
 
-#if defined(CONFIG_PARISC_PAGE_SIZE_4KB)
-# define PAGE_SHIFT	12
-#elif defined(CONFIG_PARISC_PAGE_SIZE_16KB)
-# define PAGE_SHIFT	14
-#elif defined(CONFIG_PARISC_PAGE_SIZE_64KB)
-# define PAGE_SHIFT	16
-#else
-# error "unknown default kernel page size"
-#endif
-#define PAGE_SIZE	(_AC(1,UL) << PAGE_SHIFT)
-#define PAGE_MASK	(~(PAGE_SIZE-1))
+#include <vdso/page.h>
 
+#define HAVE_ARCH_HUGETLB_UNMAPPED_AREA
 
 #ifndef __ASSEMBLY__
 
@@ -26,12 +17,14 @@
 #define copy_page(to, from)	copy_page_asm((void *)(to), (void *)(from))
 
 struct page;
+struct vm_area_struct;
 
 void clear_page_asm(void *page);
 void copy_page_asm(void *to, void *from);
 #define clear_user_page(vto, vaddr, page) clear_page_asm(vto)
-void copy_user_page(void *vto, void *vfrom, unsigned long vaddr,
-			struct page *pg);
+void copy_user_highpage(struct page *to, struct page *from, unsigned long vaddr,
+		struct vm_area_struct *vma);
+#define __HAVE_ARCH_COPY_USER_HIGHPAGE
 
 /*
  * These are used to make use of C type-checking..
@@ -153,10 +146,6 @@ extern int npmem_ranges;
 #define __pa(x)			((unsigned long)(x)-PAGE_OFFSET)
 #define __va(x)			((void *)((unsigned long)(x)+PAGE_OFFSET))
 
-#ifndef CONFIG_SPARSEMEM
-#define pfn_valid(pfn)		((pfn) < max_mapnr)
-#endif
-
 #ifdef CONFIG_HUGETLB_PAGE
 #define HPAGE_SHIFT		PMD_SHIFT /* fixed for transparent huge pages */
 #define HPAGE_SIZE      	((1UL) << HPAGE_SHIFT)
@@ -177,7 +166,6 @@ extern int npmem_ranges;
 
 #define virt_addr_valid(kaddr)	pfn_valid(__pa(kaddr) >> PAGE_SHIFT)
 
-#define page_to_phys(page)	(page_to_pfn(page) << PAGE_SHIFT)
 #define virt_to_page(kaddr)     pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
 
 #include <asm-generic/memory_model.h>

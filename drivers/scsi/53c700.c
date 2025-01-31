@@ -158,9 +158,10 @@ STATIC int NCR_700_abort(struct scsi_cmnd * SCpnt);
 STATIC int NCR_700_host_reset(struct scsi_cmnd * SCpnt);
 STATIC void NCR_700_chip_setup(struct Scsi_Host *host);
 STATIC void NCR_700_chip_reset(struct Scsi_Host *host);
-STATIC int NCR_700_slave_alloc(struct scsi_device *SDpnt);
-STATIC int NCR_700_slave_configure(struct scsi_device *SDpnt);
-STATIC void NCR_700_slave_destroy(struct scsi_device *SDpnt);
+STATIC int NCR_700_sdev_init(struct scsi_device *SDpnt);
+STATIC int NCR_700_sdev_configure(struct scsi_device *SDpnt,
+				  struct queue_limits *lim);
+STATIC void NCR_700_sdev_destroy(struct scsi_device *SDpnt);
 static int NCR_700_change_queue_depth(struct scsi_device *SDpnt, int depth);
 
 STATIC const struct attribute_group *NCR_700_dev_groups[];
@@ -330,9 +331,9 @@ NCR_700_detect(struct scsi_host_template *tpnt,
 	tpnt->can_queue = NCR_700_COMMAND_SLOTS_PER_HOST;
 	tpnt->sg_tablesize = NCR_700_SG_SEGMENTS;
 	tpnt->cmd_per_lun = NCR_700_CMD_PER_LUN;
-	tpnt->slave_configure = NCR_700_slave_configure;
-	tpnt->slave_destroy = NCR_700_slave_destroy;
-	tpnt->slave_alloc = NCR_700_slave_alloc;
+	tpnt->sdev_configure = NCR_700_sdev_configure;
+	tpnt->sdev_destroy = NCR_700_sdev_destroy;
+	tpnt->sdev_init = NCR_700_sdev_init;
 	tpnt->change_queue_depth = NCR_700_change_queue_depth;
 
 	if(tpnt->name == NULL)
@@ -1507,7 +1508,6 @@ NCR_700_intr(int irq, void *dev_id)
 		struct scsi_cmnd *SCp = hostdata->cmd;
 
 		handled = 1;
-		SCp = hostdata->cmd;
 
 		if(istat & SCSI_INT_PENDING) {
 			udelay(10);
@@ -1599,7 +1599,7 @@ NCR_700_intr(int irq, void *dev_id)
 				printk("scsi%d (%d:%d) PHASE MISMATCH IN SEND MESSAGE %d remain, return %p[%04x], phase %s\n", host->host_no, pun, lun, count, (void *)temp, temp - hostdata->pScript, sbcl_to_string(NCR_700_readb(host, SBCL_REG)));
 #endif
 				resume_offset = hostdata->pScript + Ent_SendMessagePhaseMismatch;
-			} else if(dsp >= to32bit(&slot->pSG[0].ins) &&
+			} else if (slot && dsp >= to32bit(&slot->pSG[0].ins) &&
 				  dsp <= to32bit(&slot->pSG[NCR_700_SG_SEGMENTS].ins)) {
 				int data_transfer = NCR_700_readl(host, DBC_REG) & 0xffffff;
 				int SGcount = (dsp - to32bit(&slot->pSG[0].ins))/sizeof(struct NCR_700_SG_List);
@@ -1792,8 +1792,6 @@ static int NCR_700_queuecommand_lck(struct scsi_cmnd *SCp)
 	slot->cmnd = SCp;
 
 	SCp->host_scribble = (unsigned char *)slot;
-	SCp->SCp.ptr = NULL;
-	SCp->SCp.buffer = NULL;
 
 #ifdef NCR_700_DEBUG
 	printk("53c700: scsi%d, command ", SCp->device->host->host_no);
@@ -2020,7 +2018,7 @@ NCR_700_set_offset(struct scsi_target *STp, int offset)
 }
 
 STATIC int
-NCR_700_slave_alloc(struct scsi_device *SDp)
+NCR_700_sdev_init(struct scsi_device *SDp)
 {
 	SDp->hostdata = kzalloc(sizeof(struct NCR_700_Device_Parameters),
 				GFP_KERNEL);
@@ -2032,7 +2030,7 @@ NCR_700_slave_alloc(struct scsi_device *SDp)
 }
 
 STATIC int
-NCR_700_slave_configure(struct scsi_device *SDp)
+NCR_700_sdev_configure(struct scsi_device *SDp, struct queue_limits *lim)
 {
 	struct NCR_700_Host_Parameters *hostdata = 
 		(struct NCR_700_Host_Parameters *)SDp->host->hostdata[0];
@@ -2055,7 +2053,7 @@ NCR_700_slave_configure(struct scsi_device *SDp)
 }
 
 STATIC void
-NCR_700_slave_destroy(struct scsi_device *SDp)
+NCR_700_sdev_destroy(struct scsi_device *SDp)
 {
 	kfree(SDp->hostdata);
 	SDp->hostdata = NULL;
@@ -2074,7 +2072,7 @@ NCR_700_show_active_tags(struct device *dev, struct device_attribute *attr, char
 {
 	struct scsi_device *SDp = to_scsi_device(dev);
 
-	return snprintf(buf, 20, "%d\n", NCR_700_get_depth(SDp));
+	return sysfs_emit(buf, "%d\n", NCR_700_get_depth(SDp));
 }
 
 static struct device_attribute NCR_700_active_tags_attr = {

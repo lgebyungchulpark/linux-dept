@@ -126,6 +126,22 @@
 
 #define SO_RESERVE_MEM           0x0052
 
+#define SO_TXREHASH              0x0053
+
+#define SO_RCVMARK               0x0054
+
+#define SO_PASSPIDFD             0x0055
+#define SO_PEERPIDFD             0x0056
+
+#define SO_DEVMEM_LINEAR         0x0057
+#define SCM_DEVMEM_LINEAR        SO_DEVMEM_LINEAR
+#define SO_DEVMEM_DMABUF         0x0058
+#define SCM_DEVMEM_DMABUF        SO_DEVMEM_DMABUF
+#define SO_DEVMEM_DONTNEED       0x0059
+
+#define SCM_TS_OPT_ID            0x005a
+
+#define SO_RCVPRIORITY           0x005b
 
 #if !defined(__KERNEL__)
 

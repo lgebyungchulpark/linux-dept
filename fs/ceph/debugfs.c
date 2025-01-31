@@ -81,7 +81,7 @@ static int mdsc_show(struct seq_file *s, void *p)
 		if (req->r_inode) {
 			seq_printf(s, " #%llx", ceph_ino(req->r_inode));
 		} else if (req->r_dentry) {
-			path = ceph_mdsc_build_path(req->r_dentry, &pathlen,
+			path = ceph_mdsc_build_path(mdsc, req->r_dentry, &pathlen,
 						    &pathbase, 0);
 			if (IS_ERR(path))
 				path = NULL;
@@ -100,7 +100,7 @@ static int mdsc_show(struct seq_file *s, void *p)
 		}
 
 		if (req->r_old_dentry) {
-			path = ceph_mdsc_build_path(req->r_old_dentry, &pathlen,
+			path = ceph_mdsc_build_path(mdsc, req->r_old_dentry, &pathlen,
 						    &pathbase, 0);
 			if (IS_ERR(path))
 				path = NULL;
@@ -175,7 +175,7 @@ static int metrics_latency_show(struct seq_file *s, void *p)
 	struct ceph_fs_client *fsc = s->private;
 	struct ceph_client_metric *cm = &fsc->mdsc->metric;
 	struct ceph_metric *m;
-	s64 total, sum, avg, min, max, sq;
+	s64 total, avg, min, max, sq;
 	int i;
 
 	seq_printf(s, "item          total       avg_lat(us)     min_lat(us)     max_lat(us)     stdev(us)\n");
@@ -185,8 +185,7 @@ static int metrics_latency_show(struct seq_file *s, void *p)
 		m = &cm->metric[i];
 		spin_lock(&m->lock);
 		total = m->total;
-		sum = m->latency_sum;
-		avg = total > 0 ? DIV64_U64_ROUND_CLOSEST(sum, total) : 0;
+		avg = m->latency_avg;
 		min = m->latency_min;
 		max = m->latency_max;
 		sq = m->latency_sq_sum;
@@ -249,14 +248,20 @@ static int metrics_caps_show(struct seq_file *s, void *p)
 	return 0;
 }
 
-static int caps_show_cb(struct inode *inode, struct ceph_cap *cap, void *p)
+static int caps_show_cb(struct inode *inode, int mds, void *p)
 {
+	struct ceph_inode_info *ci = ceph_inode(inode);
 	struct seq_file *s = p;
+	struct ceph_cap *cap;
 
-	seq_printf(s, "0x%-17llx%-3d%-17s%-17s\n", ceph_ino(inode),
-		   cap->session->s_mds,
-		   ceph_cap_string(cap->issued),
-		   ceph_cap_string(cap->implemented));
+	spin_lock(&ci->i_ceph_lock);
+	cap = __get_cap_for_mds(ci, mds);
+	if (cap)
+		seq_printf(s, "0x%-17llx%-3d%-17s%-17s\n", ceph_ino(inode),
+			   cap->session->s_mds,
+			   ceph_cap_string(cap->issued),
+			   ceph_cap_string(cap->implemented));
+	spin_unlock(&ci->i_ceph_lock);
 	return 0;
 }
 
@@ -352,7 +357,7 @@ static int status_show(struct seq_file *s, void *p)
 
 	seq_printf(s, "instance: %s.%lld %s/%u\n", ENTITY_NAME(inst->name),
 		   ceph_pr_addr(client_addr), le32_to_cpu(client_addr->nonce));
-	seq_printf(s, "blocklisted: %s\n", fsc->blocklisted ? "true" : "false");
+	seq_printf(s, "blocklisted: %s\n", str_true_false(fsc->blocklisted));
 
 	return 0;
 }
@@ -393,7 +398,7 @@ DEFINE_SIMPLE_ATTRIBUTE(congestion_kb_fops, congestion_kb_get,
 
 void ceph_fs_debugfs_cleanup(struct ceph_fs_client *fsc)
 {
-	dout("ceph_fs_debugfs_cleanup\n");
+	doutc(fsc->client, "begin\n");
 	debugfs_remove(fsc->debugfs_bdi);
 	debugfs_remove(fsc->debugfs_congestion_kb);
 	debugfs_remove(fsc->debugfs_mdsmap);
@@ -402,13 +407,14 @@ void ceph_fs_debugfs_cleanup(struct ceph_fs_client *fsc)
 	debugfs_remove(fsc->debugfs_status);
 	debugfs_remove(fsc->debugfs_mdsc);
 	debugfs_remove_recursive(fsc->debugfs_metrics_dir);
+	doutc(fsc->client, "done\n");
 }
 
 void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 {
-	char name[100];
+	char name[NAME_MAX];
 
-	dout("ceph_fs_debugfs_init\n");
+	doutc(fsc->client, "begin\n");
 	fsc->debugfs_congestion_kb =
 		debugfs_create_file("writeback_congestion_kb",
 				    0600,
@@ -464,6 +470,7 @@ void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 			    &metrics_size_fops);
 	debugfs_create_file("caps", 0400, fsc->debugfs_metrics_dir, fsc,
 			    &metrics_caps_fops);
+	doutc(fsc->client, "done\n");
 }
 
 

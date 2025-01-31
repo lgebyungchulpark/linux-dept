@@ -35,6 +35,7 @@
 #include "../internal.h"
 #include "../nfs4session.h"
 #include "filelayout.h"
+#include "../nfs4trace.h"
 
 #define NFSDBG_FACILITY		NFSDBG_PNFS_LD
 
@@ -136,9 +137,7 @@ nfs4_fl_alloc_deviceid_node(struct nfs_server *server, struct pnfs_device *pdev,
 		goto out_err_free_stripe_indices;
 	}
 
-	dsaddr = kzalloc(sizeof(*dsaddr) +
-			(sizeof(struct nfs4_pnfs_ds *) * (num - 1)),
-			gfp_flags);
+	dsaddr = kzalloc(struct_size(dsaddr, ds_list, num), gfp_flags);
 	if (!dsaddr)
 		goto out_err_free_stripe_indices;
 
@@ -174,6 +173,7 @@ nfs4_fl_alloc_deviceid_node(struct nfs_server *server, struct pnfs_device *pdev,
 		dsaddr->ds_list[i] = nfs4_pnfs_ds_add(&dsaddrs, gfp_flags);
 		if (!dsaddr->ds_list[i])
 			goto out_err_drain_dsaddrs;
+		trace_fl_getdevinfo(server, &pdev->dev_id, dsaddr->ds_list[i]->ds_remotestr);
 
 		/* If DS was already in cache, free ds addrs */
 		while (!list_empty(&dsaddrs)) {

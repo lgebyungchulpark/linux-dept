@@ -10,6 +10,7 @@
 #define DSS_SUBSYS_NAME "DISPLAY"
 
 #include <linux/kernel.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/sysfs.h>
@@ -36,7 +37,7 @@ static ssize_t display_enabled_store(struct omap_dss_device *dssdev,
 	int r;
 	bool enable;
 
-	r = strtobool(buf, &enable);
+	r = kstrtobool(buf, &enable);
 	if (r)
 		return r;
 
@@ -73,7 +74,7 @@ static ssize_t display_tear_store(struct omap_dss_device *dssdev,
 	if (!dssdev->driver->enable_te || !dssdev->driver->get_te)
 		return -ENOENT;
 
-	r = strtobool(buf, &te);
+	r = kstrtobool(buf, &te);
 	if (r)
 		return r;
 
@@ -183,7 +184,7 @@ static ssize_t display_mirror_store(struct omap_dss_device *dssdev,
 	if (!dssdev->driver->set_mirror || !dssdev->driver->get_mirror)
 		return -ENOENT;
 
-	r = strtobool(buf, &mirror);
+	r = kstrtobool(buf, &mirror);
 	if (r)
 		return r;
 
@@ -265,6 +266,7 @@ static struct attribute *display_sysfs_attrs[] = {
 	&display_attr_wss.attr,
 	NULL
 };
+ATTRIBUTE_GROUPS(display_sysfs);
 
 static ssize_t display_attr_show(struct kobject *kobj, struct attribute *attr,
 		char *buf)
@@ -303,7 +305,7 @@ static const struct sysfs_ops display_sysfs_ops = {
 
 static struct kobj_type display_ktype = {
 	.sysfs_ops = &display_sysfs_ops,
-	.default_attrs = display_sysfs_attrs,
+	.default_groups = display_sysfs_groups,
 };
 
 int display_init_sysfs(struct platform_device *pdev)

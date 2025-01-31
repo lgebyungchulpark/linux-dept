@@ -313,6 +313,17 @@ arp_ip_target
 	maximum number of targets that can be specified is 16.  The
 	default value is no IP addresses.
 
+ns_ip6_target
+
+	Specifies the IPv6 addresses to use as IPv6 monitoring peers when
+	arp_interval is > 0.  These are the targets of the NS request
+	sent to determine the health of the link to the targets.
+	Specify these values in ffff:ffff::ffff:ffff format.  Multiple IPv6
+	addresses must be separated by a comma.  At least one IPv6
+	address must be given for NS/NA monitoring to function.  The
+	maximum number of targets that can be specified is 16.  The
+	default value is no IPv6 addresses.
+
 arp_validate
 
 	Specifies whether or not ARP probes and replies should be
@@ -432,6 +443,18 @@ arp_missed_max
 	arp_missed_max + 1 times before being marked down).
 
 	The default value is 2, and the allowable range is 1 - 255.
+
+coupled_control
+
+    Specifies whether the LACP state machine's MUX in the 802.3ad mode
+    should have separate Collecting and Distributing states.
+
+    This is by implementing the independent control state machine per
+    IEEE 802.1AX-2008 5.4.15 in addition to the existing coupled control
+    state machine.
+
+    The default value is 1. This setting does not separate the Collecting
+    and Distributing states, maintaining the bond in coupled control.
 
 downdelay
 
@@ -555,7 +578,8 @@ miimon
 	link monitoring.  A value of 100 is a good starting point.
 	The use_carrier option, below, affects how the link state is
 	determined.  See the High Availability section for additional
-	information.  The default value is 0.
+	information.  The default value is 100 if arp_interval is not
+	set.
 
 min_links
 
@@ -764,10 +788,22 @@ peer_notif_delay
 	Specify the delay, in milliseconds, between each peer
 	notification (gratuitous ARP and unsolicited IPv6 Neighbor
 	Advertisement) when they are issued after a failover event.
-	This delay should be a multiple of the link monitor interval
-	(arp_interval or miimon, whichever is active). The default
-	value is 0 which means to match the value of the link monitor
-	interval.
+	This delay should be a multiple of the MII link monitor interval
+	(miimon).
+
+	The valid range is 0 - 300000. The default value is 0, which means
+	to match the value of the MII link monitor interval.
+
+prio
+	Slave priority. A higher number means higher priority.
+	The primary slave has the highest priority. This option also
+	follows the primary_reselect rules.
+
+	This option could only be configured via netlink, and is only valid
+	for active-backup(1), balance-tlb (5) and balance-alb (6) mode.
+	The valid value range is a signed 32 bit integer.
+
+	The default value is 0.
 
 primary
 
@@ -824,7 +860,7 @@ primary_reselect
 tlb_dynamic_lb
 
 	Specifies if dynamic shuffling of flows is enabled in tlb
-	mode. The value has no effect on any other modes.
+	or alb mode. The value has no effect on any other modes.
 
 	The default behavior of tlb mode is to shuffle active flows across
 	slaves based on the load in that interval. This gives nice lb
@@ -883,7 +919,7 @@ xmit_hash_policy
 		Uses XOR of hardware MAC addresses and packet type ID
 		field to generate the hash. The formula is
 
-		hash = source MAC XOR destination MAC XOR packet type ID
+		hash = source MAC[5] XOR destination MAC[5] XOR packet type ID
 		slave number = hash modulo slave count
 
 		This algorithm will place all traffic to a particular
@@ -899,7 +935,7 @@ xmit_hash_policy
 		Uses XOR of hardware MAC addresses and IP addresses to
 		generate the hash.  The formula is
 
-		hash = source MAC XOR destination MAC XOR packet type ID
+		hash = source MAC[5] XOR destination MAC[5] XOR packet type ID
 		hash = hash XOR source IP XOR destination IP
 		hash = hash XOR (hash RSHIFT 16)
 		hash = hash XOR (hash RSHIFT 8)
@@ -934,6 +970,7 @@ xmit_hash_policy
 		hash = hash XOR source IP XOR destination IP
 		hash = hash XOR (hash RSHIFT 16)
 		hash = hash XOR (hash RSHIFT 8)
+		hash = hash RSHIFT 1
 		And then hash is reduced modulo slave count.
 
 		If the protocol is IPv6 then the source and destination
@@ -1611,7 +1648,7 @@ your init script::
 -----------------------------------------
 
 This section applies to distros which use /etc/network/interfaces file
-to describe network interface configuration, most notably Debian and it's
+to describe network interface configuration, most notably Debian and its
 derivatives.
 
 The ifup and ifdown commands on Debian don't support bonding out of
@@ -1926,7 +1963,7 @@ obtain its hardware address from the first slave, which might not
 match the hardware address of the VLAN interfaces (which was
 ultimately copied from an earlier slave).
 
-There are two methods to insure that the VLAN device operates
+There are two methods to ensure that the VLAN device operates
 with the correct hardware address if all slaves are removed from a
 bond interface:
 
@@ -1959,15 +1996,6 @@ queries to one or more designated peer systems on the network, and
 uses the response as an indication that the link is operating.  This
 gives some assurance that traffic is actually flowing to and from one
 or more peers on the local network.
-
-The ARP monitor relies on the device driver itself to verify
-that traffic is flowing.  In particular, the driver must keep up to
-date the last receive time, dev->last_rx.  Drivers that use NETIF_F_LLTX
-flag must also update netdev_queue->trans_start.  If they do not, then the
-ARP monitor will immediately fail any slaves using that driver, and
-those slaves will stay down.  If networking monitoring (tcpdump, etc)
-shows the ARP requests and replies on the network, then it may be that
-your device driver is not updating last_rx and trans_start.
 
 7.2 Configuring Multiple ARP Targets
 ------------------------------------
@@ -2050,7 +2078,7 @@ as an unsolicited ARP reply (because ARP matches replies on an
 interface basis), and is discarded.  The MII monitor is not affected
 by the state of the routing table.
 
-The solution here is simply to insure that slaves do not have
+The solution here is simply to ensure that slaves do not have
 routes of their own, and if for some reason they must, those routes do
 not supersede routes of their master.  This should generally be the
 case, but unusual configurations or errant manual or automatic static
@@ -2267,7 +2295,7 @@ active-backup:
 	the switches have an ISL and play together well.  If the
 	network configuration is such that one switch is specifically
 	a backup switch (e.g., has lower capacity, higher cost, etc),
-	then the primary option can be used to insure that the
+	then the primary option can be used to ensure that the
 	preferred link is always used when it is available.
 
 broadcast:
@@ -2294,7 +2322,7 @@ monitor can provide a higher level of reliability in detecting end to
 end connectivity failures (which may be caused by the failure of any
 individual component to pass traffic for any reason).  Additionally,
 the ARP monitor should be configured with multiple targets (at least
-one for each switch in the network).  This will insure that,
+one for each switch in the network).  This will ensure that,
 regardless of which switch is active, the ARP monitor has a suitable
 target to query.
 
@@ -2887,6 +2915,17 @@ To restore your slaves' MAC addresses, you need to detach them
 from the bond (``ifenslave -d bond0 eth0``). The bonding driver will
 then restore the MAC addresses that the slaves had before they were
 enslaved.
+
+9.  What bonding modes support native XDP?
+------------------------------------------
+
+  * balance-rr (0)
+  * active-backup (1)
+  * balance-xor (2)
+  * 802.3ad (4)
+
+Note that the vlan+srcmac hash policy does not support native XDP.
+For other bonding modes, the XDP program must be loaded with generic mode.
 
 16. Resources and Links
 =======================

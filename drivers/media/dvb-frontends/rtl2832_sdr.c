@@ -245,7 +245,7 @@ static void rtl2832_sdr_urb_complete(struct urb *urb)
 		if (unlikely(fbuf == NULL)) {
 			dev->vb_full++;
 			dev_notice_ratelimited(&pdev->dev,
-					       "videobuf is full, %d packets dropped\n",
+					       "video buffer is full, %d packets dropped\n",
 					       dev->vb_full);
 			goto skip;
 		}
@@ -439,12 +439,13 @@ static int rtl2832_sdr_queue_setup(struct vb2_queue *vq,
 {
 	struct rtl2832_sdr_dev *dev = vb2_get_drv_priv(vq);
 	struct platform_device *pdev = dev->pdev;
+	unsigned int q_num_bufs = vb2_get_num_buffers(vq);
 
 	dev_dbg(&pdev->dev, "nbuffers=%d\n", *nbuffers);
 
 	/* Need at least 8 buffers */
-	if (vq->num_buffers + *nbuffers < 8)
-		*nbuffers = 8 - vq->num_buffers;
+	if (q_num_bufs + *nbuffers < 8)
+		*nbuffers = 8 - q_num_bufs;
 	*nplanes = 1;
 	sizes[0] = PAGE_ALIGN(dev->buffersize);
 	dev_dbg(&pdev->dev, "nbuffers=%d sizes[0]=%d\n", *nbuffers, sizes[0]);
@@ -946,8 +947,6 @@ static const struct vb2_ops rtl2832_sdr_vb2_ops = {
 	.buf_queue              = rtl2832_sdr_buf_queue,
 	.start_streaming        = rtl2832_sdr_start_streaming,
 	.stop_streaming         = rtl2832_sdr_stop_streaming,
-	.wait_prepare           = vb2_ops_wait_prepare,
-	.wait_finish            = vb2_ops_wait_finish,
 };
 
 static int rtl2832_sdr_g_tuner(struct file *file, void *priv,
@@ -1463,7 +1462,7 @@ err:
 	return ret;
 }
 
-static int rtl2832_sdr_remove(struct platform_device *pdev)
+static void rtl2832_sdr_remove(struct platform_device *pdev)
 {
 	struct rtl2832_sdr_dev *dev = platform_get_drvdata(pdev);
 
@@ -1479,8 +1478,6 @@ static int rtl2832_sdr_remove(struct platform_device *pdev)
 	mutex_unlock(&dev->vb_queue_lock);
 	v4l2_device_put(&dev->v4l2_dev);
 	module_put(pdev->dev.parent->driver->owner);
-
-	return 0;
 }
 
 static struct platform_driver rtl2832_sdr_driver = {

@@ -49,10 +49,10 @@
 		vin-supply = <&vph_pwr>;
 	};
 
-	gpio_keys {
+	gpio-keys {
 		compatible = "gpio-keys";
 
-		vol_up {
+		key-vol-up {
 			label = "Volume Up";
 			gpios = <&pm8150_gpios 6 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEUP>;
@@ -61,7 +61,7 @@
 };
 
 &apps_rsc {
-	pm8150-rpmh-regulators {
+	regulators-0 {
 		compatible = "qcom,pm8150-rpmh-regulators";
 		qcom,pmic-id = "a";
 
@@ -216,7 +216,7 @@
 		};
 	};
 
-	pm8150l-rpmh-regulators {
+	regulators-1 {
 		compatible = "qcom,pm8150l-rpmh-regulators";
 		qcom,pmic-id = "c";
 
@@ -329,7 +329,7 @@
 		};
 	};
 
-	pm8009-rpmh-regulators {
+	regulators-2 {
 		compatible = "qcom,pm8009-rpmh-regulators";
 		qcom,pmic-id = "f";
 
@@ -376,8 +376,8 @@
 		pinctrl-0 = <&da7280_intr_default>;
 
 		dlg,actuator-type = "LRA";
-		dlg,dlg,const-op-mode = <1>;
-		dlg,dlg,periodic-op-mode = <1>;
+		dlg,const-op-mode = <1>;
+		dlg,periodic-op-mode = <1>;
 		dlg,nom-microvolt = <2000000>;
 		dlg,abs-max-microvolt = <2000000>;
 		dlg,imax-microamp = <129000>;
@@ -431,17 +431,12 @@
 };
 
 &pon {
-	pwrkey {
-		status = "okay";
-	};
+	mode-bootloader = <0x2>;
+	mode-recovery = <0x1>;
+};
 
-	resin {
-		compatible = "qcom,pm8941-resin";
-		interrupts = <0x0 0x8 0x1 IRQ_TYPE_EDGE_BOTH>;
-		debounce = <15625>;
-		bias-pull-up;
-		linux,code = <KEY_VOLUMEDOWN>;
-	};
+&pon_pwrkey {
+	status = "okay";
 };
 
 &qupv3_id_0 {
@@ -476,14 +471,19 @@
 	firmware-name = "qcom/sm8150/microsoft/slpi.mdt";
 };
 
+&pon_resin {
+	status = "okay";
+
+	linux,code = <KEY_VOLUMEDOWN>;
+};
+
 &tlmm {
 	gpio-reserved-ranges = <126 4>;
 
-	da7280_intr_default: da7280-intr-default {
+	da7280_intr_default: da7280-intr-default-state {
 		pins = "gpio42";
 		function = "gpio";
 		bias-pull-up;
-		input-enable;
 	};
 };
 

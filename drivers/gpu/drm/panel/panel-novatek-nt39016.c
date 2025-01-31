@@ -12,7 +12,6 @@
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
@@ -292,7 +291,7 @@ static int nt39016_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int nt39016_remove(struct spi_device *spi)
+static void nt39016_remove(struct spi_device *spi)
 {
 	struct nt39016 *panel = spi_get_drvdata(spi);
 
@@ -300,8 +299,6 @@ static int nt39016_remove(struct spi_device *spi)
 
 	nt39016_disable(&panel->drm_panel);
 	nt39016_unprepare(&panel->drm_panel);
-
-	return 0;
 }
 
 static const struct drm_display_mode kd035g6_display_modes[] = {
@@ -359,4 +356,5 @@ module_spi_driver(nt39016_driver);
 
 MODULE_AUTHOR("Maarten ter Huurne <maarten@treewalker.org>");
 MODULE_AUTHOR("Paul Cercueil <paul@crapouillou.net>");
+MODULE_DESCRIPTION("Novatek NT39016 TFT LCD panel driver");
 MODULE_LICENSE("GPL v2");

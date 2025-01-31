@@ -60,13 +60,17 @@ static struct notifier_block tts_notifier = {
 	.priority	= 0,
 };
 
+#ifndef acpi_skip_set_wakeup_address
+#define acpi_skip_set_wakeup_address() false
+#endif
+
 static int acpi_sleep_prepare(u32 acpi_state)
 {
 #ifdef CONFIG_ACPI_SLEEP
 	unsigned long acpi_wakeup_address;
 
 	/* do we have a wakeup address for S2 and S3? */
-	if (acpi_state == ACPI_STATE_S3) {
+	if (acpi_state == ACPI_STATE_S3 && !acpi_skip_set_wakeup_address()) {
 		acpi_wakeup_address = acpi_get_wakeup_address();
 		if (!acpi_wakeup_address)
 			return -EFAULT;
@@ -348,6 +352,20 @@ static const struct dmi_system_id acpisleep_dmi_table[] __initconst = {
 		},
 	},
 	/*
+	 * The ASUS ROG M16 from 2023 has many events which wake it from s2idle
+	 * resulting in excessive battery drain and risk of laptop overheating,
+	 * these events can be caused by the MMC or  y AniMe display if installed.
+	 * The match is valid for all of the GU604V<x> range.
+	 */
+	{
+	.callback = init_default_s3,
+	.ident = "ASUS ROG Zephyrus M16 (2023)",
+	.matches = {
+		DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+		DMI_MATCH(DMI_PRODUCT_NAME, "ROG Zephyrus M16 GU604V"),
+		},
+	},
+	/*
 	 * https://bugzilla.kernel.org/show_bug.cgi?id=189431
 	 * Lenovo G50-45 is a platform later than 2012, but needs nvs memory
 	 * saving during S3.
@@ -358,6 +376,14 @@ static const struct dmi_system_id acpisleep_dmi_table[] __initconst = {
 	.matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
 		DMI_MATCH(DMI_PRODUCT_NAME, "80E3"),
+		},
+	},
+	{
+	.callback = init_nvs_save_s3,
+	.ident = "Lenovo G40-45",
+	.matches = {
+		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
+		DMI_MATCH(DMI_PRODUCT_NAME, "80E1"),
 		},
 	},
 	/*
@@ -490,6 +516,7 @@ static void acpi_pm_finish(void)
 
 /**
  * acpi_pm_start - Start system PM transition.
+ * @acpi_state: The target ACPI power state to transition to.
  */
 static void acpi_pm_start(u32 acpi_state)
 {
@@ -528,8 +555,9 @@ static u32 acpi_suspend_states[] = {
 };
 
 /**
- *	acpi_suspend_begin - Set the target system sleep state to the state
- *		associated with given @pm_state, if supported.
+ * acpi_suspend_begin - Set the target system sleep state to the state
+ *	associated with given @pm_state, if supported.
+ * @pm_state: The target system power management state.
  */
 static int acpi_suspend_begin(suspend_state_t pm_state)
 {
@@ -612,11 +640,19 @@ static int acpi_suspend_enter(suspend_state_t pm_state)
 	}
 
 	/*
-	 * Disable and clear GPE status before interrupt is enabled. Some GPEs
-	 * (like wakeup GPE) haven't handler, this can avoid such GPE misfire.
-	 * acpi_leave_sleep_state will reenable specific GPEs later
+	 * Disable all GPE and clear their status bits before interrupts are
+	 * enabled. Some GPEs (like wakeup GPEs) have no handlers and this can
+	 * prevent them from producing spurious interrups.
+	 *
+	 * acpi_leave_sleep_state() will reenable specific GPEs later.
+	 *
+	 * Because this code runs on one CPU with disabled interrupts (all of
+	 * the other CPUs are offline at this time), it need not acquire any
+	 * sleeping locks which may trigger an implicit preemption point even
+	 * if there is no contention, so avoid doing that by using a low-level
+	 * library routine here.
 	 */
-	acpi_disable_all_gpes();
+	acpi_hw_disable_all_gpes();
 	/* Allow EC transactions to happen. */
 	acpi_ec_unblock_transactions();
 
@@ -651,10 +687,11 @@ static const struct platform_suspend_ops acpi_suspend_ops = {
 };
 
 /**
- *	acpi_suspend_begin_old - Set the target system sleep state to the
- *		state associated with given @pm_state, if supported, and
- *		execute the _PTS control method.  This function is used if the
- *		pre-ACPI 2.0 suspend ordering has been requested.
+ * acpi_suspend_begin_old - Set the target system sleep state to the
+ *	state associated with given @pm_state, if supported, and
+ *	execute the _PTS control method.  This function is used if the
+ *	pre-ACPI 2.0 suspend ordering has been requested.
+ * @pm_state: The target suspend state for the system.
  */
 static int acpi_suspend_begin_old(suspend_state_t pm_state)
 {
@@ -690,7 +727,13 @@ int acpi_s2idle_begin(void)
 int acpi_s2idle_prepare(void)
 {
 	if (acpi_sci_irq_valid()) {
-		enable_irq_wake(acpi_sci_irq);
+		int error;
+
+		error = enable_irq_wake(acpi_sci_irq);
+		if (error)
+			pr_warn("Warning: Failed to enable wakeup from IRQ %d: %d\n",
+				acpi_sci_irq, error);
+
 		acpi_ec_set_gpe_wake_mask(ACPI_GPE_ENABLE);
 	}
 
@@ -736,21 +779,15 @@ bool acpi_s2idle_wake(void)
 			return true;
 		}
 
-		/* Check non-EC GPE wakeups and dispatch the EC GPE. */
+		/*
+		 * Check non-EC GPE wakeups and if there are none, cancel the
+		 * SCI-related wakeup and dispatch the EC GPE.
+		 */
 		if (acpi_ec_dispatch_gpe()) {
 			pm_pr_dbg("ACPI non-EC GPE wakeup\n");
 			return true;
 		}
 
-		/*
-		 * Cancel the SCI wakeup and process all pending events in case
-		 * there are any wakeup ones in there.
-		 *
-		 * Note that if any non-EC GPEs are active at this point, the
-		 * SCI will retrigger after the rearming below, so no events
-		 * should be missed by canceling the wakeup here.
-		 */
-		pm_system_cancel_wakeup();
 		acpi_os_wait_events_complete();
 
 		/*
@@ -764,6 +801,9 @@ bool acpi_s2idle_wake(void)
 			return true;
 		}
 
+		pm_pr_dbg("Rearming ACPI SCI for wakeup\n");
+
+		pm_wakeup_clear(acpi_sci_irq);
 		rearm_wake_irq(acpi_sci_irq);
 	}
 
@@ -807,10 +847,13 @@ static const struct platform_s2idle_ops acpi_s2idle_ops = {
 
 void __weak acpi_s2idle_setup(void)
 {
+	if (acpi_gbl_FADT.flags & ACPI_FADT_LOW_POWER_S0)
+		pr_info("Efficient low-power S0 idle declared\n");
+
 	s2idle_set_ops(&acpi_s2idle_ops);
 }
 
-static void acpi_sleep_suspend_setup(void)
+static void __init acpi_sleep_suspend_setup(void)
 {
 	bool suspend_ops_needed = false;
 	int i;
@@ -874,12 +917,7 @@ static inline void acpi_sleep_syscore_init(void) {}
 #ifdef CONFIG_HIBERNATION
 static unsigned long s4_hardware_signature;
 static struct acpi_table_facs *facs;
-static int sigcheck = -1; /* Default behaviour is just to warn */
-
-void __init acpi_check_s4_hw_signature(int check)
-{
-	sigcheck = check;
-}
+int acpi_check_s4_hw_signature = -1; /* Default behaviour is just to warn */
 
 static int acpi_hibernation_begin(pm_message_t stage)
 {
@@ -946,10 +984,11 @@ static const struct platform_hibernation_ops acpi_hibernation_ops = {
 };
 
 /**
- *	acpi_hibernation_begin_old - Set the target system sleep state to
- *		ACPI_STATE_S4 and execute the _PTS control method.  This
- *		function is used if the pre-ACPI 2.0 suspend ordering has been
- *		requested.
+ * acpi_hibernation_begin_old - Set the target system sleep state to
+ *	ACPI_STATE_S4 and execute the _PTS control method.  This
+ *	function is used if the pre-ACPI 2.0 suspend ordering has been
+ *	requested.
+ * @stage: The power management event message.
  */
 static int acpi_hibernation_begin_old(pm_message_t stage)
 {
@@ -1004,7 +1043,7 @@ static void acpi_sleep_hibernate_setup(void)
 	hibernation_set_ops(old_suspend_ordering ?
 			&acpi_hibernation_ops_old : &acpi_hibernation_ops);
 	sleep_states[ACPI_STATE_S4] = 1;
-	if (!sigcheck)
+	if (!acpi_check_s4_hw_signature)
 		return;
 
 	acpi_get_table(ACPI_SIG_FACS, 1, (struct acpi_table_header **)&facs);
@@ -1016,7 +1055,7 @@ static void acpi_sleep_hibernate_setup(void)
 		 */
 		s4_hardware_signature = facs->hardware_signature;
 
-		if (sigcheck > 0) {
+		if (acpi_check_s4_hw_signature > 0) {
 			/*
 			 * If we're actually obeying the ACPI specification
 			 * then the signature is written out as part of the
@@ -1031,20 +1070,22 @@ static void acpi_sleep_hibernate_setup(void)
 static inline void acpi_sleep_hibernate_setup(void) {}
 #endif /* !CONFIG_HIBERNATION */
 
-static void acpi_power_off_prepare(void)
+static int acpi_power_off_prepare(struct sys_off_data *data)
 {
 	/* Prepare to power off the system */
 	acpi_sleep_prepare(ACPI_STATE_S5);
 	acpi_disable_all_gpes();
 	acpi_os_wait_events_complete();
+	return NOTIFY_DONE;
 }
 
-static void acpi_power_off(void)
+static int acpi_power_off(struct sys_off_data *data)
 {
 	/* acpi_sleep_prepare(ACPI_STATE_S5) should have already been called */
 	pr_debug("%s called\n", __func__);
 	local_irq_disable();
 	acpi_enter_sleep_state(ACPI_STATE_S5);
+	return NOTIFY_DONE;
 }
 
 int __init acpi_sleep_init(void)
@@ -1063,8 +1104,22 @@ int __init acpi_sleep_init(void)
 
 	if (acpi_sleep_state_supported(ACPI_STATE_S5)) {
 		sleep_states[ACPI_STATE_S5] = 1;
-		pm_power_off_prepare = acpi_power_off_prepare;
-		pm_power_off = acpi_power_off;
+
+		register_sys_off_handler(SYS_OFF_MODE_POWER_OFF_PREPARE,
+					 SYS_OFF_PRIO_FIRMWARE,
+					 acpi_power_off_prepare, NULL);
+
+		register_sys_off_handler(SYS_OFF_MODE_POWER_OFF,
+					 SYS_OFF_PRIO_FIRMWARE,
+					 acpi_power_off, NULL);
+
+		/*
+		 * Windows uses S5 for reboot, so some BIOSes depend on it to
+		 * perform proper reboot.
+		 */
+		register_sys_off_handler(SYS_OFF_MODE_RESTART_PREPARE,
+					 SYS_OFF_PRIO_FIRMWARE,
+					 acpi_power_off_prepare, NULL);
 	} else {
 		acpi_no_s5 = true;
 	}

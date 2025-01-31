@@ -4,10 +4,12 @@
  * Copyright © 2016 Intel Corporation
  */
 
-#include "display/intel_frontbuffer.h"
+#include <drm/drm_cache.h>
 
+#include "i915_config.h"
 #include "i915_drv.h"
 #include "i915_gem_clflush.h"
+#include "i915_gem_object_frontbuffer.h"
 #include "i915_sw_fence_work.h"
 #include "i915_trace.h"
 
@@ -106,14 +108,16 @@ bool i915_gem_clflush_object(struct drm_i915_gem_object *obj,
 	trace_i915_gem_object_clflush(obj);
 
 	clflush = NULL;
-	if (!(flags & I915_CLFLUSH_SYNC))
+	if (!(flags & I915_CLFLUSH_SYNC) &&
+	    dma_resv_reserve_fences(obj->base.resv, 1) == 0)
 		clflush = clflush_work_create(obj);
 	if (clflush) {
 		i915_sw_fence_await_reservation(&clflush->base.chain,
-						obj->base.resv, NULL, true,
+						obj->base.resv, true,
 						i915_fence_timeout(i915),
 						I915_FENCE_GFP);
-		dma_resv_add_excl_fence(obj->base.resv, &clflush->base.dma);
+		dma_resv_add_fence(obj->base.resv, &clflush->base.dma,
+				   DMA_RESV_USAGE_KERNEL);
 		dma_fence_work_commit(&clflush->base);
 		/*
 		 * We must have successfully populated the pages(since we are

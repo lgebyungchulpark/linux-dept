@@ -16,6 +16,21 @@
 #include <asm/types.h>
 #include "fbcon.h"
 
+static void tile_bmove(struct vc_data *vc, struct fb_info *info, int sy,
+		       int sx, int dy, int dx, int height, int width)
+{
+	struct fb_tilearea area;
+
+	area.sx = sx;
+	area.sy = sy;
+	area.dx = dx;
+	area.dy = dy;
+	area.height = height;
+	area.width = width;
+
+	info->tileops->fb_tilecopy(info, &area);
+}
+
 static void tile_clear(struct vc_data *vc, struct fb_info *info, int sy,
 		       int sx, int height, int width)
 {
@@ -64,7 +79,7 @@ static void tile_clear_margins(struct vc_data *vc, struct fb_info *info,
 	return;
 }
 
-static void tile_cursor(struct vc_data *vc, struct fb_info *info, int mode,
+static void tile_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
 			int fg, int bg)
 {
 	struct fb_tilecursor cursor;
@@ -72,7 +87,7 @@ static void tile_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 
 	cursor.sx = vc->state.x;
 	cursor.sy = vc->state.y;
-	cursor.mode = (mode == CM_ERASE || use_sw) ? 0 : 1;
+	cursor.mode = enable && !use_sw;
 	cursor.fg = fg;
 	cursor.bg = bg;
 
@@ -118,6 +133,7 @@ void fbcon_set_tileops(struct vc_data *vc, struct fb_info *info)
 	struct fb_tilemap map;
 	struct fbcon_ops *ops = info->fbcon_par;
 
+	ops->bmove = tile_bmove;
 	ops->clear = tile_clear;
 	ops->putcs = tile_putcs;
 	ops->clear_margins = tile_clear_margins;

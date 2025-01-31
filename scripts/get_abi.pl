@@ -92,12 +92,14 @@ sub parse_abi {
 	my $mode = (stat($file))[2];
 	return if ($mode & S_IFDIR);
 	return if ($file =~ m,/README,);
+	return if ($file =~ m,/\.,);
+	return if ($file =~ m,\.(rej|org|orig|bak)$,);
 
 	my $name = $file;
 	$name =~ s,.*/,,;
 
 	my $fn = $file;
-	$fn =~ s,Documentation/ABI/,,;
+	$fn =~ s,.*Documentation/ABI/,,;
 
 	my $nametag = "File $fn";
 	$data{$nametag}->{what} = "File $name";
@@ -326,7 +328,7 @@ sub output_rest {
 		my @filepath = split / /, $data{$what}->{filepath};
 
 		if ($enable_lineno) {
-			printf "#define LINENO %s%s#%s\n\n",
+			printf ".. LINENO %s%s#%s\n\n",
 			       $prefix, $file[0],
 			       $data{$what}->{line_no};
 		}
@@ -980,14 +982,14 @@ __END__
 
 =head1 NAME
 
-abi_book.pl - parse the Linux ABI files and produce a ReST book.
+get_abi.pl - parse the Linux ABI files and produce a ReST book.
 
 =head1 SYNOPSIS
 
-B<abi_book.pl> [--debug <level>] [--enable-lineno] [--man] [--help]
+B<get_abi.pl> [--debug <level>] [--enable-lineno] [--man] [--help]
 	       [--(no-)rst-source] [--dir=<dir>] [--show-hints]
 	       [--search-string <regex>]
-	       <COMAND> [<ARGUMENT>]
+	       <COMMAND> [<ARGUMENT>]
 
 Where B<COMMAND> can be:
 
@@ -1022,7 +1024,7 @@ logic (B<--no-rst-source>).
 
 =item B<--enable-lineno>
 
-Enable output of #define LINENO lines.
+Enable output of .. LINENO lines.
 
 =item B<--debug> I<debug level>
 

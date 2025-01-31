@@ -131,7 +131,7 @@ int afs_sillyrename(struct afs_vnode *dvnode, struct afs_vnode *vnode,
 			goto out;
 	} while (!d_is_negative(sdentry));
 
-	ihold(&vnode->vfs_inode);
+	ihold(&vnode->netfs.inode);
 
 	ret = afs_do_silly_rename(dvnode, vnode, dentry, sdentry, key);
 	switch (ret) {
@@ -148,7 +148,7 @@ int afs_sillyrename(struct afs_vnode *dvnode, struct afs_vnode *vnode,
 		d_drop(sdentry);
 	}
 
-	iput(&vnode->vfs_inode);
+	iput(&vnode->netfs.inode);
 	dput(sdentry);
 out:
 	_leave(" = %d", ret);
@@ -218,7 +218,7 @@ static int afs_do_silly_unlink(struct afs_vnode *dvnode, struct afs_vnode *vnode
 	/* If there was a conflict with a third party, check the status of the
 	 * unlinked vnode.
 	 */
-	if (op->error == 0 && (op->flags & AFS_OPERATION_DIR_CONFLICT)) {
+	if (op->cumul_error.error == 0 && (op->flags & AFS_OPERATION_DIR_CONFLICT)) {
 		op->file[1].update_ctime = false;
 		op->fetch_status.which = 1;
 		op->ops = &afs_fetch_status_operation;

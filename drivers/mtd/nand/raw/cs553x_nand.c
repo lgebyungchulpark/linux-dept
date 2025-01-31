@@ -26,7 +26,7 @@
 
 #define NR_CS553X_CONTROLLERS	4
 
-#define MSR_DIVIL_GLD_CAP	0x51400000	/* DIVIL capabilitiies */
+#define MSR_DIVIL_GLD_CAP	0x51400000	/* DIVIL capabilities */
 #define CAP_CS5535		0x2df000ULL
 #define CAP_CS5536		0x5df500ULL
 
@@ -104,17 +104,12 @@ static int cs553x_write_ctrl_byte(struct cs553x_nand_controller *cs553x,
 				  u32 ctl, u8 data)
 {
 	u8 status;
-	int ret;
 
 	writeb(ctl, cs553x->mmio + MM_NAND_CTL);
 	writeb(data, cs553x->mmio + MM_NAND_IO);
-	ret = readb_poll_timeout_atomic(cs553x->mmio + MM_NAND_STS, status,
+	return readb_poll_timeout_atomic(cs553x->mmio + MM_NAND_STS, status,
 					!(status & CS_NAND_CTLR_BUSY), 1,
 					100000);
-	if (ret)
-		return ret;
-
-	return 0;
 }
 
 static void cs553x_data_in(struct cs553x_nand_controller *cs553x, void *buf,
