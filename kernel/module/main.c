@@ -1303,12 +1303,14 @@ static void free_mod_mem(struct module *mod)
 
 		/* Free lock-classes; relies on the preceding sync_rcu(). */
 		lockdep_free_key_range(mod_mem->base, mod_mem->size);
+		dept_free_range(mod_mem->base, mod_mem->size);
 		if (mod_mem->size)
 			module_memory_free(mod, type);
 	}
 
 	/* MOD_DATA hosts mod, so free it at last */
 	lockdep_free_key_range(mod->mem[MOD_DATA].base, mod->mem[MOD_DATA].size);
+	dept_free_range(mod->mem[MOD_DATA].base, mod->mem[MOD_DATA].size);
 	module_memory_free(mod, MOD_DATA);
 }
 
@@ -3415,6 +3417,8 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	for_class_mod_mem_type(type, core_data) {
 		lockdep_free_key_range(mod->mem[type].base,
 				       mod->mem[type].size);
+		dept_free_range(mod->mem[type].base,
+				mod->mem[type].size);
 	}
 
 	module_deallocate(mod, info);
