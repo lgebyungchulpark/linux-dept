@@ -7,6 +7,7 @@
 #include <linux/ptrace.h>
 #include <linux/randomize_kstack.h>
 #include <linux/syscalls.h>
+#include <linux/dept.h>
 
 #include <asm/debug-monitors.h>
 #include <asm/exception.h>
@@ -95,6 +96,8 @@ static void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
 	 * So, don't touch regs->pstate & PSR_BTYPE_MASK here.
 	 * (Similarly for HVC and SMC elsewhere.)
 	 */
+
+	dept_update_cxt();
 
 	if (flags & _TIF_MTE_ASYNC_FAULT) {
 		/*
