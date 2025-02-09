@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 2007, 2011
- *    Author(s): Heiko Carstens <heiko.carstens@de.ibm.com>
  */
 
 #define KMSG_COMPONENT "cpu"
@@ -25,7 +24,9 @@
 #include <linux/mm.h>
 #include <linux/nodemask.h>
 #include <linux/node.h>
+#include <asm/hiperdispatch.h>
 #include <asm/sysinfo.h>
+#include <asm/asm.h>
 
 #define PTF_HORIZONTAL	(0UL)
 #define PTF_VERTICAL	(1UL)
@@ -48,6 +49,7 @@ static int topology_mode = TOPOLOGY_MODE_UNINITIALIZED;
 static void set_topology_timer(void);
 static void topology_work_fn(struct work_struct *work);
 static struct sysinfo_15_1_x *tl_info;
+static int cpu_management;
 
 static DECLARE_WORK(topology_work, topology_work_fn);
 
@@ -96,7 +98,7 @@ out:
 static void cpu_thread_map(cpumask_t *dst, unsigned int cpu)
 {
 	static cpumask_t mask;
-	int i;
+	unsigned int max_cpu;
 
 	cpumask_clear(&mask);
 	if (!cpumask_test_cpu(cpu, &cpu_setup_mask))
@@ -105,9 +107,10 @@ static void cpu_thread_map(cpumask_t *dst, unsigned int cpu)
 	if (topology_mode != TOPOLOGY_MODE_HW)
 		goto out;
 	cpu -= cpu % (smp_cpu_mtid + 1);
-	for (i = 0; i <= smp_cpu_mtid; i++) {
-		if (cpumask_test_cpu(cpu + i, &cpu_setup_mask))
-			cpumask_set_cpu(cpu + i, &mask);
+	max_cpu = min(cpu + smp_cpu_mtid, nr_cpu_ids - 1);
+	for (; cpu <= max_cpu; cpu++) {
+		if (cpumask_test_cpu(cpu, &cpu_setup_mask))
+			cpumask_set_cpu(cpu, &mask);
 	}
 out:
 	cpumask_copy(dst, &mask);
@@ -124,25 +127,27 @@ static void add_cpus_to_mask(struct topology_core *tl_core,
 	unsigned int core;
 
 	for_each_set_bit(core, &tl_core->mask, TOPOLOGY_CORE_BITS) {
-		unsigned int rcore;
-		int lcpu, i;
+		unsigned int max_cpu, rcore;
+		int cpu;
 
 		rcore = TOPOLOGY_CORE_BITS - 1 - core + tl_core->origin;
-		lcpu = smp_find_processor_id(rcore << smp_cpu_mt_shift);
-		if (lcpu < 0)
+		cpu = smp_find_processor_id(rcore << smp_cpu_mt_shift);
+		if (cpu < 0)
 			continue;
-		for (i = 0; i <= smp_cpu_mtid; i++) {
-			topo = &cpu_topology[lcpu + i];
+		max_cpu = min(cpu + smp_cpu_mtid, nr_cpu_ids - 1);
+		for (; cpu <= max_cpu; cpu++) {
+			topo = &cpu_topology[cpu];
 			topo->drawer_id = drawer->id;
 			topo->book_id = book->id;
 			topo->socket_id = socket->id;
 			topo->core_id = rcore;
-			topo->thread_id = lcpu + i;
+			topo->thread_id = cpu;
 			topo->dedicated = tl_core->d;
-			cpumask_set_cpu(lcpu + i, &drawer->mask);
-			cpumask_set_cpu(lcpu + i, &book->mask);
-			cpumask_set_cpu(lcpu + i, &socket->mask);
-			smp_cpu_set_polarization(lcpu + i, tl_core->pp);
+			cpumask_set_cpu(cpu, &drawer->mask);
+			cpumask_set_cpu(cpu, &book->mask);
+			cpumask_set_cpu(cpu, &socket->mask);
+			smp_cpu_set_polarization(cpu, tl_core->pp);
+			smp_cpu_set_capacity(cpu, CPU_CAPACITY_HIGH);
 		}
 	}
 }
@@ -220,15 +225,15 @@ static void topology_update_polarization_simple(void)
 
 static int ptf(unsigned long fc)
 {
-	int rc;
+	int cc;
 
 	asm volatile(
-		"	.insn	rre,0xb9a20000,%1,%1\n"
-		"	ipm	%0\n"
-		"	srl	%0,28\n"
-		: "=d" (rc)
-		: "d" (fc)  : "cc");
-	return rc;
+		"	.insn	rre,0xb9a20000,%[fc],%[fc]\n"
+		CC_IPM(cc)
+		: CC_OUT(cc, cc)
+		: [fc] "d" (fc)
+		: CC_CLOBBER);
+	return CC_TRANSFORM(cc);
 }
 
 int topology_set_cpu_management(int fc)
@@ -269,6 +274,7 @@ void update_cpu_masks(void)
 			topo->drawer_id = id;
 		}
 	}
+	hd_reset_state();
 	for_each_online_cpu(cpu) {
 		topo = &cpu_topology[cpu];
 		pkg_first = cpumask_first(&topo->core_mask);
@@ -277,8 +283,10 @@ void update_cpu_masks(void)
 			for_each_cpu(sibling, &topo->core_mask) {
 				topo_sibling = &cpu_topology[sibling];
 				smt_first = cpumask_first(&topo_sibling->thread_mask);
-				if (sibling == smt_first)
+				if (sibling == smt_first) {
 					topo_package->booted_cores++;
+					hd_add_core(sibling);
+				}
 			}
 		} else {
 			topo->booted_cores = topo_package->booted_cores;
@@ -302,8 +310,10 @@ static void __arch_update_dedicated_flag(void *arg)
 static int __arch_update_cpu_topology(void)
 {
 	struct sysinfo_15_1_x *info = tl_info;
-	int rc = 0;
+	int rc, hd_status;
 
+	hd_status = 0;
+	rc = 0;
 	mutex_lock(&smp_cpu_state_mutex);
 	if (MACHINE_HAS_TOPOLOGY) {
 		rc = 1;
@@ -313,22 +323,20 @@ static int __arch_update_cpu_topology(void)
 	update_cpu_masks();
 	if (!MACHINE_HAS_TOPOLOGY)
 		topology_update_polarization_simple();
+	if (cpu_management == 1)
+		hd_status = hd_enable_hiperdispatch();
 	mutex_unlock(&smp_cpu_state_mutex);
+	if (hd_status == 0)
+		hd_disable_hiperdispatch();
 	return rc;
 }
 
 int arch_update_cpu_topology(void)
 {
-	struct device *dev;
-	int cpu, rc;
+	int rc;
 
 	rc = __arch_update_cpu_topology();
 	on_each_cpu(__arch_update_dedicated_flag, NULL, 0);
-	for_each_online_cpu(cpu) {
-		dev = get_cpu_device(cpu);
-		if (dev)
-			kobject_uevent(&dev->kobj, KOBJ_CHANGE);
-	}
 	return rc;
 }
 
@@ -379,7 +387,24 @@ void topology_expect_change(void)
 	set_topology_timer();
 }
 
-static int cpu_management;
+static int set_polarization(int polarization)
+{
+	int rc = 0;
+
+	cpus_read_lock();
+	mutex_lock(&smp_cpu_state_mutex);
+	if (cpu_management == polarization)
+		goto out;
+	rc = topology_set_cpu_management(polarization);
+	if (rc)
+		goto out;
+	cpu_management = polarization;
+	topology_expect_change();
+out:
+	mutex_unlock(&smp_cpu_state_mutex);
+	cpus_read_unlock();
+	return rc;
+}
 
 static ssize_t dispatching_show(struct device *dev,
 				struct device_attribute *attr,
@@ -388,7 +413,7 @@ static ssize_t dispatching_show(struct device *dev,
 	ssize_t count;
 
 	mutex_lock(&smp_cpu_state_mutex);
-	count = sprintf(buf, "%d\n", cpu_management);
+	count = sysfs_emit(buf, "%d\n", cpu_management);
 	mutex_unlock(&smp_cpu_state_mutex);
 	return count;
 }
@@ -405,19 +430,7 @@ static ssize_t dispatching_store(struct device *dev,
 		return -EINVAL;
 	if (val != 0 && val != 1)
 		return -EINVAL;
-	rc = 0;
-	cpus_read_lock();
-	mutex_lock(&smp_cpu_state_mutex);
-	if (cpu_management == val)
-		goto out;
-	rc = topology_set_cpu_management(val);
-	if (rc)
-		goto out;
-	cpu_management = val;
-	topology_expect_change();
-out:
-	mutex_unlock(&smp_cpu_state_mutex);
-	cpus_read_unlock();
+	rc = set_polarization(val);
 	return rc ? rc : count;
 }
 static DEVICE_ATTR_RW(dispatching);
@@ -431,19 +444,19 @@ static ssize_t cpu_polarization_show(struct device *dev,
 	mutex_lock(&smp_cpu_state_mutex);
 	switch (smp_cpu_get_polarization(cpu)) {
 	case POLARIZATION_HRZ:
-		count = sprintf(buf, "horizontal\n");
+		count = sysfs_emit(buf, "horizontal\n");
 		break;
 	case POLARIZATION_VL:
-		count = sprintf(buf, "vertical:low\n");
+		count = sysfs_emit(buf, "vertical:low\n");
 		break;
 	case POLARIZATION_VM:
-		count = sprintf(buf, "vertical:medium\n");
+		count = sysfs_emit(buf, "vertical:medium\n");
 		break;
 	case POLARIZATION_VH:
-		count = sprintf(buf, "vertical:high\n");
+		count = sysfs_emit(buf, "vertical:high\n");
 		break;
 	default:
-		count = sprintf(buf, "unknown\n");
+		count = sysfs_emit(buf, "unknown\n");
 		break;
 	}
 	mutex_unlock(&smp_cpu_state_mutex);
@@ -467,7 +480,7 @@ static ssize_t cpu_dedicated_show(struct device *dev,
 	ssize_t count;
 
 	mutex_lock(&smp_cpu_state_mutex);
-	count = sprintf(buf, "%d\n", topology_cpu_dedicated(cpu));
+	count = sysfs_emit(buf, "%d\n", topology_cpu_dedicated(cpu));
 	mutex_unlock(&smp_cpu_state_mutex);
 	return count;
 }
@@ -521,7 +534,7 @@ static struct sched_domain_topology_level s390_topology[] = {
 	{ cpu_coregroup_mask, cpu_core_flags, SD_INIT_NAME(MC) },
 	{ cpu_book_mask, SD_INIT_NAME(BOOK) },
 	{ cpu_drawer_mask, SD_INIT_NAME(DRAWER) },
-	{ cpu_cpu_mask, SD_INIT_NAME(DIE) },
+	{ cpu_cpu_mask, SD_INIT_NAME(PKG) },
 	{ NULL, },
 };
 
@@ -599,7 +612,7 @@ static int __init topology_setup(char *str)
 }
 early_param("topology", topology_setup);
 
-static int topology_ctl_handler(struct ctl_table *ctl, int write,
+static int topology_ctl_handler(const struct ctl_table *ctl, int write,
 				void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int enabled = topology_is_enabled();
@@ -629,33 +642,58 @@ static int topology_ctl_handler(struct ctl_table *ctl, int write,
 	return rc;
 }
 
+static int polarization_ctl_handler(const struct ctl_table *ctl, int write,
+				    void *buffer, size_t *lenp, loff_t *ppos)
+{
+	int polarization;
+	int rc;
+	struct ctl_table ctl_entry = {
+		.procname	= ctl->procname,
+		.data		= &polarization,
+		.maxlen		= sizeof(int),
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	};
+
+	polarization = cpu_management;
+	rc = proc_douintvec_minmax(&ctl_entry, write, buffer, lenp, ppos);
+	if (rc < 0 || !write)
+		return rc;
+	return set_polarization(polarization);
+}
+
 static struct ctl_table topology_ctl_table[] = {
 	{
 		.procname	= "topology",
 		.mode		= 0644,
 		.proc_handler	= topology_ctl_handler,
 	},
-	{ },
-};
-
-static struct ctl_table topology_dir_table[] = {
 	{
-		.procname	= "s390",
-		.maxlen		= 0,
-		.mode		= 0555,
-		.child		= topology_ctl_table,
+		.procname	= "polarization",
+		.mode		= 0644,
+		.proc_handler	= polarization_ctl_handler,
 	},
-	{ },
 };
 
 static int __init topology_init(void)
 {
+	struct device *dev_root;
+	int rc = 0;
+
 	timer_setup(&topology_timer, topology_timer_fn, TIMER_DEFERRABLE);
 	if (MACHINE_HAS_TOPOLOGY)
 		set_topology_timer();
 	else
 		topology_update_polarization_simple();
-	register_sysctl_table(topology_dir_table);
-	return device_create_file(cpu_subsys.dev_root, &dev_attr_dispatching);
+	if (IS_ENABLED(CONFIG_SCHED_TOPOLOGY_VERTICAL))
+		set_polarization(1);
+	register_sysctl("s390", topology_ctl_table);
+
+	dev_root = bus_get_dev_root(&cpu_subsys);
+	if (dev_root) {
+		rc = device_create_file(dev_root, &dev_attr_dispatching);
+		put_device(dev_root);
+	}
+	return rc;
 }
 device_initcall(topology_init);

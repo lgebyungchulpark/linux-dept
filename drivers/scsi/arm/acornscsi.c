@@ -126,13 +126,17 @@
 
 #include <asm/ecard.h>
 
-#include "../scsi.h"
+#include <scsi/scsi.h>
+#include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_dbg.h>
+#include <scsi/scsi_device.h>
+#include <scsi/scsi_eh.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport_spi.h>
 #include "acornscsi.h"
 #include "msgqueue.h"
-#include "scsi.h"
+#include "arm_scsi.h"
 
 #include <scsi/scsicam.h>
 
@@ -725,7 +729,7 @@ intr_ret_t acornscsi_kick(AS_Host *host)
      */
     host->scsi.phase = PHASE_CONNECTING;
     host->SCpnt = SCpnt;
-    host->scsi.SCp = SCpnt->SCp;
+    host->scsi.SCp = *arm_scsi_pointer(SCpnt);
     host->dma.xfer_setup = 0;
     host->dma.xfer_required = 0;
     host->dma.xfer_done = 0;
@@ -1420,6 +1424,7 @@ unsigned char acornscsi_readmessagebyte(AS_Host *host)
 static
 void acornscsi_message(AS_Host *host)
 {
+    struct scsi_pointer *scsi_pointer;
     unsigned char message[16];
     unsigned int msgidx = 0, msglen = 1;
 
@@ -1489,8 +1494,9 @@ void acornscsi_message(AS_Host *host)
 	 *  the saved data pointer for the current I/O process.
 	 */
 	acornscsi_dma_cleanup(host);
-	host->SCpnt->SCp = host->scsi.SCp;
-	host->SCpnt->SCp.sent_command = 0;
+	scsi_pointer = arm_scsi_pointer(host->SCpnt);
+	*scsi_pointer = host->scsi.SCp;
+	scsi_pointer->sent_command = 0;
 	host->scsi.phase = PHASE_MSGIN;
 	break;
 
@@ -1505,7 +1511,7 @@ void acornscsi_message(AS_Host *host)
 	 *  the present command and status areas.'
 	 */
 	acornscsi_dma_cleanup(host);
-	host->scsi.SCp = host->SCpnt->SCp;
+	host->scsi.SCp = *arm_scsi_pointer(host->SCpnt);
 	host->scsi.phase = PHASE_MSGIN;
 	break;
 
@@ -1805,7 +1811,7 @@ int acornscsi_reconnect_finish(AS_Host *host)
 	/*
 	 * Restore data pointer from SAVED pointers.
 	 */
-	host->scsi.SCp = host->SCpnt->SCp;
+	host->scsi.SCp = *arm_scsi_pointer(host->SCpnt);
 #if (DEBUG & (DEBUG_QUEUES|DEBUG_DISCON))
 	printk(", data pointers: [%p, %X]",
 		host->scsi.SCp.ptr, host->scsi.SCp.this_residual);
@@ -2404,6 +2410,7 @@ acornscsi_intr(int irq, void *dev_id)
  */
 static int acornscsi_queuecmd_lck(struct scsi_cmnd *SCpnt)
 {
+    struct scsi_pointer *scsi_pointer = arm_scsi_pointer(SCpnt);
     void (*done)(struct scsi_cmnd *) = scsi_done;
     AS_Host *host = (AS_Host *)SCpnt->device->host->hostdata;
 
@@ -2419,9 +2426,9 @@ static int acornscsi_queuecmd_lck(struct scsi_cmnd *SCpnt)
 
     SCpnt->host_scribble = NULL;
     SCpnt->result = 0;
-    SCpnt->SCp.phase = (int)acornscsi_datadirection(SCpnt->cmnd[0]);
-    SCpnt->SCp.sent_command = 0;
-    SCpnt->SCp.scsi_xferred = 0;
+    scsi_pointer->phase = (int)acornscsi_datadirection(SCpnt->cmnd[0]);
+    scsi_pointer->sent_command = 0;
+    scsi_pointer->scsi_xferred = 0;
 
     init_SCp(SCpnt);
 
@@ -2443,7 +2450,7 @@ static int acornscsi_queuecmd_lck(struct scsi_cmnd *SCpnt)
     return 0;
 }
 
-DEF_SCSI_QCMD(acornscsi_queuecmd)
+static DEF_SCSI_QCMD(acornscsi_queuecmd)
 
 enum res_abort { res_not_running, res_success, res_success_clear, res_snooze };
 
@@ -2545,7 +2552,7 @@ static enum res_abort acornscsi_do_abort(AS_Host *host, struct scsi_cmnd *SCpnt)
  * Params   : SCpnt - command to abort
  * Returns  : one of SCSI_ABORT_ macros
  */
-int acornscsi_abort(struct scsi_cmnd *SCpnt)
+static int acornscsi_abort(struct scsi_cmnd *SCpnt)
 {
 	AS_Host *host = (AS_Host *) SCpnt->device->host->hostdata;
 	int result;
@@ -2627,7 +2634,7 @@ int acornscsi_abort(struct scsi_cmnd *SCpnt)
  * Params   : SCpnt  - command causing reset
  * Returns  : one of SCSI_RESET_ macros
  */
-int acornscsi_host_reset(struct scsi_cmnd *SCpnt)
+static int acornscsi_host_reset(struct scsi_cmnd *SCpnt)
 {
 	AS_Host *host = (AS_Host *)SCpnt->device->host->hostdata;
 	struct scsi_cmnd *SCptr;
@@ -2672,8 +2679,7 @@ int acornscsi_host_reset(struct scsi_cmnd *SCpnt)
  * Params  : host - host to give information on
  * Returns : a constant string
  */
-const
-char *acornscsi_info(struct Scsi_Host *host)
+static const char *acornscsi_info(struct Scsi_Host *host)
 {
     static char string[100], *p;
 
@@ -2773,7 +2779,7 @@ static int acornscsi_show_info(struct seq_file *m, struct Scsi_Host *instance)
     return 0;
 }
 
-static struct scsi_host_template acornscsi_template = {
+static const struct scsi_host_template acornscsi_template = {
 	.module			= THIS_MODULE,
 	.show_info		= acornscsi_show_info,
 	.name			= "AcornSCSI",
@@ -2787,6 +2793,7 @@ static struct scsi_host_template acornscsi_template = {
 	.cmd_per_lun		= 2,
 	.dma_boundary		= PAGE_SIZE - 1,
 	.proc_name		= "acornscsi",
+	.cmd_size		= sizeof(struct arm_cmd_priv),
 };
 
 static int acornscsi_probe(struct expansion_card *ec, const struct ecard_id *id)

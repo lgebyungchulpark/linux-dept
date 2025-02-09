@@ -3,14 +3,15 @@
  * Copyright (C) 2017 NVIDIA CORPORATION.  All rights reserved.
  */
 
+#include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/interconnect.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_plane_helper.h>
 
 #include "dc.h"
 #include "plane.h"
@@ -413,12 +414,56 @@ int tegra_plane_format(u32 fourcc, u32 *format, u32 *swap)
 		*swap = BYTE_SWAP_SWAP2;
 		break;
 
+	case DRM_FORMAT_YVYU:
+		if (!swap)
+			return -EINVAL;
+
+		*format = WIN_COLOR_DEPTH_YCbCr422;
+		*swap = BYTE_SWAP_SWAP4;
+		break;
+
+	case DRM_FORMAT_VYUY:
+		if (!swap)
+			return -EINVAL;
+
+		*format = WIN_COLOR_DEPTH_YCbCr422;
+		*swap = BYTE_SWAP_SWAP4HW;
+		break;
+
 	case DRM_FORMAT_YUV420:
 		*format = WIN_COLOR_DEPTH_YCbCr420P;
 		break;
 
 	case DRM_FORMAT_YUV422:
 		*format = WIN_COLOR_DEPTH_YCbCr422P;
+		break;
+
+	case DRM_FORMAT_YUV444:
+		*format = WIN_COLOR_DEPTH_YCbCr444P;
+		break;
+
+	case DRM_FORMAT_NV12:
+		*format = WIN_COLOR_DEPTH_YCbCr420SP;
+		break;
+
+	case DRM_FORMAT_NV21:
+		*format = WIN_COLOR_DEPTH_YCrCb420SP;
+		break;
+
+	case DRM_FORMAT_NV16:
+		*format = WIN_COLOR_DEPTH_YCbCr422SP;
+		break;
+
+	case DRM_FORMAT_NV61:
+		*format = WIN_COLOR_DEPTH_YCrCb422SP;
+		break;
+
+	case DRM_FORMAT_NV24:
+		*format = WIN_COLOR_DEPTH_YCbCr444SP;
+		break;
+
+	case DRM_FORMAT_NV42:
+		*format = WIN_COLOR_DEPTH_YCrCb444SP;
 		break;
 
 	default:
@@ -441,13 +486,13 @@ bool tegra_plane_format_is_indexed(unsigned int format)
 	return false;
 }
 
-bool tegra_plane_format_is_yuv(unsigned int format, bool *planar, unsigned int *bpc)
+bool tegra_plane_format_is_yuv(unsigned int format, unsigned int *planes, unsigned int *bpc)
 {
 	switch (format) {
 	case WIN_COLOR_DEPTH_YCbCr422:
 	case WIN_COLOR_DEPTH_YUV422:
-		if (planar)
-			*planar = false;
+		if (planes)
+			*planes = 1;
 
 		if (bpc)
 			*bpc = 8;
@@ -462,8 +507,23 @@ bool tegra_plane_format_is_yuv(unsigned int format, bool *planar, unsigned int *
 	case WIN_COLOR_DEPTH_YUV422R:
 	case WIN_COLOR_DEPTH_YCbCr422RA:
 	case WIN_COLOR_DEPTH_YUV422RA:
-		if (planar)
-			*planar = true;
+	case WIN_COLOR_DEPTH_YCbCr444P:
+		if (planes)
+			*planes = 3;
+
+		if (bpc)
+			*bpc = 8;
+
+		return true;
+
+	case WIN_COLOR_DEPTH_YCrCb420SP:
+	case WIN_COLOR_DEPTH_YCbCr420SP:
+	case WIN_COLOR_DEPTH_YCrCb422SP:
+	case WIN_COLOR_DEPTH_YCbCr422SP:
+	case WIN_COLOR_DEPTH_YCrCb444SP:
+	case WIN_COLOR_DEPTH_YCbCr444SP:
+		if (planes)
+			*planes = 2;
 
 		if (bpc)
 			*bpc = 8;
@@ -471,8 +531,8 @@ bool tegra_plane_format_is_yuv(unsigned int format, bool *planar, unsigned int *
 		return true;
 	}
 
-	if (planar)
-		*planar = false;
+	if (planes)
+		*planes = 1;
 
 	return false;
 }
@@ -717,21 +777,17 @@ int tegra_plane_interconnect_init(struct tegra_plane *plane)
 
 	plane->icc_mem = devm_of_icc_get(dev, icc_name);
 	err = PTR_ERR_OR_ZERO(plane->icc_mem);
-	if (err) {
-		dev_err_probe(dev, err, "failed to get %s interconnect\n",
-			      icc_name);
-		return err;
-	}
+	if (err)
+		return dev_err_probe(dev, err, "failed to get %s interconnect\n",
+				     icc_name);
 
 	/* plane B on T20/30 has a dedicated memory client for a 6-tap vertical filter */
 	if (plane->index == 1 && dc->soc->has_win_b_vfilter_mem_client) {
 		plane->icc_mem_vfilter = devm_of_icc_get(dev, "winb-vfilter");
 		err = PTR_ERR_OR_ZERO(plane->icc_mem_vfilter);
-		if (err) {
-			dev_err_probe(dev, err, "failed to get %s interconnect\n",
-				      "winb-vfilter");
-			return err;
-		}
+		if (err)
+			return dev_err_probe(dev, err, "failed to get %s interconnect\n",
+					     "winb-vfilter");
 	}
 
 	return 0;

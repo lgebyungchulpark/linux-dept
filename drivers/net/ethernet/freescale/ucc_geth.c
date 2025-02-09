@@ -28,11 +28,12 @@
 #include <linux/phy.h>
 #include <linux/phy_fixed.h>
 #include <linux/workqueue.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include <linux/uaccess.h>
 #include <asm/irq.h>
@@ -3590,22 +3591,23 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 	if ((ucc_num < 0) || (ucc_num > 7))
 		return -ENODEV;
 
-	ug_info = kmemdup(&ugeth_primary_info, sizeof(*ug_info), GFP_KERNEL);
-	if (ug_info == NULL)
+	ug_info = devm_kmemdup(&ofdev->dev, &ugeth_primary_info,
+			       sizeof(*ug_info), GFP_KERNEL);
+	if (!ug_info)
 		return -ENOMEM;
 
 	ug_info->uf_info.ucc_num = ucc_num;
 
 	err = ucc_geth_parse_clock(np, "rx", &ug_info->uf_info.rx_clock);
 	if (err)
-		goto err_free_info;
+		return err;
 	err = ucc_geth_parse_clock(np, "tx", &ug_info->uf_info.tx_clock);
 	if (err)
-		goto err_free_info;
+		return err;
 
 	err = of_address_to_resource(np, 0, &res);
 	if (err)
-		goto err_free_info;
+		return err;
 
 	ug_info->uf_info.regs = res.start;
 	ug_info->uf_info.irq = irq_of_parse_and_map(np, 0);
@@ -3618,7 +3620,7 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 		 */
 		err = of_phy_register_fixed_link(np);
 		if (err)
-			goto err_free_info;
+			return err;
 		ug_info->phy_node = of_node_get(np);
 	}
 
@@ -3686,9 +3688,8 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 			ug_info->uf_info.irq);
 
 	/* Create an ethernet device instance */
-	dev = alloc_etherdev(sizeof(*ugeth));
-
-	if (dev == NULL) {
+	dev = devm_alloc_etherdev(&ofdev->dev, sizeof(*ugeth));
+	if (!dev) {
 		err = -ENOMEM;
 		goto err_deregister_fixed_link;
 	}
@@ -3712,7 +3713,7 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 	dev->netdev_ops = &ucc_geth_netdev_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
 	INIT_WORK(&ugeth->timeout_work, ucc_geth_timeout_work);
-	netif_napi_add(dev, &ugeth->napi, ucc_geth_poll, 64);
+	netif_napi_add(dev, &ugeth->napi, ucc_geth_poll);
 	dev->mtu = 1500;
 	dev->max_mtu = 1518;
 
@@ -3723,15 +3724,17 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 	/* Carrier starts down, phylib will bring it up */
 	netif_carrier_off(dev);
 
-	err = register_netdev(dev);
+	err = devm_register_netdev(&ofdev->dev, dev);
 	if (err) {
 		if (netif_msg_probe(ugeth))
 			pr_err("%s: Cannot register net device, aborting\n",
 			       dev->name);
-		goto err_free_netdev;
+		goto err_deregister_fixed_link;
 	}
 
-	of_get_ethdev_address(np, dev);
+	err = of_get_ethdev_address(np, dev);
+	if (err == -EPROBE_DEFER)
+		goto err_deregister_fixed_link;
 
 	ugeth->ug_info = ug_info;
 	ugeth->dev = device;
@@ -3740,35 +3743,25 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 
 	return 0;
 
-err_free_netdev:
-	free_netdev(dev);
 err_deregister_fixed_link:
 	if (of_phy_is_fixed_link(np))
 		of_phy_deregister_fixed_link(np);
 	of_node_put(ug_info->tbi_node);
 	of_node_put(ug_info->phy_node);
-err_free_info:
-	kfree(ug_info);
-
 	return err;
 }
 
-static int ucc_geth_remove(struct platform_device* ofdev)
+static void ucc_geth_remove(struct platform_device* ofdev)
 {
 	struct net_device *dev = platform_get_drvdata(ofdev);
 	struct ucc_geth_private *ugeth = netdev_priv(dev);
 	struct device_node *np = ofdev->dev.of_node;
 
-	unregister_netdev(dev);
 	ucc_geth_memclean(ugeth);
 	if (of_phy_is_fixed_link(np))
 		of_phy_deregister_fixed_link(np);
 	of_node_put(ugeth->ug_info->tbi_node);
 	of_node_put(ugeth->ug_info->phy_node);
-	kfree(ugeth->ug_info);
-	free_netdev(dev);
-
-	return 0;
 }
 
 static const struct of_device_id ucc_geth_match[] = {

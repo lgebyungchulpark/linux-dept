@@ -25,7 +25,6 @@
 
 #include "hard-interface.h"
 #include "originator.h"
-#include "routing.h"
 #include "send.h"
 
 /**
@@ -351,18 +350,14 @@ bool batadv_frag_skb_fwd(struct sk_buff *skb,
 			 struct batadv_orig_node *orig_node_src)
 {
 	struct batadv_priv *bat_priv = netdev_priv(recv_if->soft_iface);
-	struct batadv_orig_node *orig_node_dst;
 	struct batadv_neigh_node *neigh_node = NULL;
 	struct batadv_frag_packet *packet;
 	u16 total_size;
 	bool ret = false;
 
 	packet = (struct batadv_frag_packet *)skb->data;
-	orig_node_dst = batadv_orig_hash_find(bat_priv, packet->dest);
-	if (!orig_node_dst)
-		goto out;
 
-	neigh_node = batadv_find_router(bat_priv, orig_node_dst, recv_if);
+	neigh_node = batadv_orig_to_router(bat_priv, packet->dest, recv_if);
 	if (!neigh_node)
 		goto out;
 
@@ -381,7 +376,6 @@ bool batadv_frag_skb_fwd(struct sk_buff *skb,
 	}
 
 out:
-	batadv_orig_node_put(orig_node_dst);
 	batadv_neigh_node_put(neigh_node);
 	return ret;
 }
@@ -472,6 +466,17 @@ int batadv_frag_send_packet(struct sk_buff *skb,
 	primary_if = batadv_primary_if_get_selected(bat_priv);
 	if (!primary_if) {
 		ret = -EINVAL;
+		goto free_skb;
+	}
+
+	/* GRO might have added fragments to the fragment list instead of
+	 * frags[]. But this is not handled by skb_split and must be
+	 * linearized to avoid incorrect length information after all
+	 * batman-adv fragments were created and submitted to the
+	 * hard-interface
+	 */
+	if (skb_has_frag_list(skb) && __skb_linearize(skb)) {
+		ret = -ENOMEM;
 		goto free_skb;
 	}
 

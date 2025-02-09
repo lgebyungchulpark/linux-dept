@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2005-2011 Atheros Communications Inc.
  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/etherdevice.h>
@@ -40,7 +41,6 @@ static void __ath10k_htt_tx_txq_recalc(struct ieee80211_hw *hw,
 	struct ath10k *ar = hw->priv;
 	struct ath10k_sta *arsta;
 	struct ath10k_vif *arvif = (void *)txq->vif->drv_priv;
-	unsigned long frame_cnt;
 	unsigned long byte_cnt;
 	int idx;
 	u32 bit;
@@ -67,7 +67,7 @@ static void __ath10k_htt_tx_txq_recalc(struct ieee80211_hw *hw,
 	bit = BIT(peer_id % 32);
 	idx = peer_id / 32;
 
-	ieee80211_txq_get_depth(txq, &frame_cnt, &byte_cnt);
+	ieee80211_txq_get_depth(txq, NULL, &byte_cnt);
 	count = ath10k_htt_tx_txq_calc_size(byte_cnt);
 
 	if (unlikely(peer_id >= ar->htt.tx_q_state.num_peers) ||
@@ -796,47 +796,22 @@ static int ath10k_htt_send_frag_desc_bank_cfg_64(struct ath10k_htt *htt)
 	return 0;
 }
 
-static void ath10k_htt_fill_rx_desc_offset_32(void *rx_ring)
+static void ath10k_htt_fill_rx_desc_offset_32(struct ath10k_hw_params *hw,
+					      struct htt_rx_ring_setup_ring32 *rx_ring)
 {
-	struct htt_rx_ring_setup_ring32 *ring =
-			(struct htt_rx_ring_setup_ring32 *)rx_ring;
-
-#define desc_offset(x) (offsetof(struct htt_rx_desc, x) / 4)
-	ring->mac80211_hdr_offset = __cpu_to_le16(desc_offset(rx_hdr_status));
-	ring->msdu_payload_offset = __cpu_to_le16(desc_offset(msdu_payload));
-	ring->ppdu_start_offset = __cpu_to_le16(desc_offset(ppdu_start));
-	ring->ppdu_end_offset = __cpu_to_le16(desc_offset(ppdu_end));
-	ring->mpdu_start_offset = __cpu_to_le16(desc_offset(mpdu_start));
-	ring->mpdu_end_offset = __cpu_to_le16(desc_offset(mpdu_end));
-	ring->msdu_start_offset = __cpu_to_le16(desc_offset(msdu_start));
-	ring->msdu_end_offset = __cpu_to_le16(desc_offset(msdu_end));
-	ring->rx_attention_offset = __cpu_to_le16(desc_offset(attention));
-	ring->frag_info_offset = __cpu_to_le16(desc_offset(frag_info));
-#undef desc_offset
+	ath10k_htt_rx_desc_get_offsets(hw, &rx_ring->offsets);
 }
 
-static void ath10k_htt_fill_rx_desc_offset_64(void *rx_ring)
+static void ath10k_htt_fill_rx_desc_offset_64(struct ath10k_hw_params *hw,
+					      struct htt_rx_ring_setup_ring64 *rx_ring)
 {
-	struct htt_rx_ring_setup_ring64 *ring =
-			(struct htt_rx_ring_setup_ring64 *)rx_ring;
-
-#define desc_offset(x) (offsetof(struct htt_rx_desc, x) / 4)
-	ring->mac80211_hdr_offset = __cpu_to_le16(desc_offset(rx_hdr_status));
-	ring->msdu_payload_offset = __cpu_to_le16(desc_offset(msdu_payload));
-	ring->ppdu_start_offset = __cpu_to_le16(desc_offset(ppdu_start));
-	ring->ppdu_end_offset = __cpu_to_le16(desc_offset(ppdu_end));
-	ring->mpdu_start_offset = __cpu_to_le16(desc_offset(mpdu_start));
-	ring->mpdu_end_offset = __cpu_to_le16(desc_offset(mpdu_end));
-	ring->msdu_start_offset = __cpu_to_le16(desc_offset(msdu_start));
-	ring->msdu_end_offset = __cpu_to_le16(desc_offset(msdu_end));
-	ring->rx_attention_offset = __cpu_to_le16(desc_offset(attention));
-	ring->frag_info_offset = __cpu_to_le16(desc_offset(frag_info));
-#undef desc_offset
+	ath10k_htt_rx_desc_get_offsets(hw, &rx_ring->offsets);
 }
 
 static int ath10k_htt_send_rx_ring_cfg_32(struct ath10k_htt *htt)
 {
 	struct ath10k *ar = htt->ar;
+	struct ath10k_hw_params *hw = &ar->hw_params;
 	struct sk_buff *skb;
 	struct htt_cmd *cmd;
 	struct htt_rx_ring_setup_ring32 *ring;
@@ -896,7 +871,7 @@ static int ath10k_htt_send_rx_ring_cfg_32(struct ath10k_htt *htt)
 	ring->flags = __cpu_to_le16(flags);
 	ring->fw_idx_init_val = __cpu_to_le16(fw_idx);
 
-	ath10k_htt_fill_rx_desc_offset_32(ring);
+	ath10k_htt_fill_rx_desc_offset_32(hw, ring);
 	ret = ath10k_htc_send(&htt->ar->htc, htt->eid, skb);
 	if (ret) {
 		dev_kfree_skb_any(skb);
@@ -909,6 +884,7 @@ static int ath10k_htt_send_rx_ring_cfg_32(struct ath10k_htt *htt)
 static int ath10k_htt_send_rx_ring_cfg_64(struct ath10k_htt *htt)
 {
 	struct ath10k *ar = htt->ar;
+	struct ath10k_hw_params *hw = &ar->hw_params;
 	struct sk_buff *skb;
 	struct htt_cmd *cmd;
 	struct htt_rx_ring_setup_ring64 *ring;
@@ -965,7 +941,7 @@ static int ath10k_htt_send_rx_ring_cfg_64(struct ath10k_htt *htt)
 	ring->flags = __cpu_to_le16(flags);
 	ring->fw_idx_init_val = __cpu_to_le16(fw_idx);
 
-	ath10k_htt_fill_rx_desc_offset_64(ring);
+	ath10k_htt_fill_rx_desc_offset_64(hw, ring);
 	ret = ath10k_htc_send(&htt->ar->htc, htt->eid, skb);
 	if (ret) {
 		dev_kfree_skb_any(skb);
@@ -1132,7 +1108,7 @@ int ath10k_htt_tx_fetch_resp(struct ath10k *ar,
 	int len = 0;
 	int ret;
 
-	/* Response IDs are echo-ed back only for host driver convienence
+	/* Response IDs are echo-ed back only for host driver convenience
 	 * purposes. They aren't used for anything in the driver yet so use 0.
 	 */
 
@@ -1295,7 +1271,6 @@ static int ath10k_htt_tx_hl(struct ath10k_htt *htt, enum ath10k_hw_txrx_mode txm
 	struct ath10k *ar = htt->ar;
 	int res, data_len;
 	struct htt_cmd_hdr *cmd_hdr;
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
 	struct htt_data_tx_desc *tx_desc;
 	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
 	struct sk_buff *tmp_skb;
@@ -1306,11 +1281,15 @@ static int ath10k_htt_tx_hl(struct ath10k_htt *htt, enum ath10k_hw_txrx_mode txm
 	u16 flags1 = 0;
 	u16 msdu_id = 0;
 
-	if ((ieee80211_is_action(hdr->frame_control) ||
-	     ieee80211_is_deauth(hdr->frame_control) ||
-	     ieee80211_is_disassoc(hdr->frame_control)) &&
-	     ieee80211_has_protected(hdr->frame_control)) {
-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+	if (!is_eth) {
+		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
+
+		if ((ieee80211_is_action(hdr->frame_control) ||
+		     ieee80211_is_deauth(hdr->frame_control) ||
+		     ieee80211_is_disassoc(hdr->frame_control)) &&
+		     ieee80211_has_protected(hdr->frame_control)) {
+			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+		}
 	}
 
 	data_len = msdu->len;
@@ -1407,7 +1386,6 @@ static int ath10k_htt_tx_32(struct ath10k_htt *htt,
 {
 	struct ath10k *ar = htt->ar;
 	struct device *dev = ar->dev;
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(msdu);
 	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
 	struct ath10k_hif_sg_item sg_items[2];
@@ -1439,15 +1417,19 @@ static int ath10k_htt_tx_32(struct ath10k_htt *htt,
 	txbuf_paddr = htt->txbuf.paddr +
 		      (sizeof(struct ath10k_htt_txbuf_32) * msdu_id);
 
-	if ((ieee80211_is_action(hdr->frame_control) ||
-	     ieee80211_is_deauth(hdr->frame_control) ||
-	     ieee80211_is_disassoc(hdr->frame_control)) &&
-	     ieee80211_has_protected(hdr->frame_control)) {
-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
-	} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
-		   txmode == ATH10K_HW_TXRX_RAW &&
-		   ieee80211_has_protected(hdr->frame_control)) {
-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+	if (!is_eth) {
+		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
+
+		if ((ieee80211_is_action(hdr->frame_control) ||
+		     ieee80211_is_deauth(hdr->frame_control) ||
+		     ieee80211_is_disassoc(hdr->frame_control)) &&
+		     ieee80211_has_protected(hdr->frame_control)) {
+			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+		} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
+			   txmode == ATH10K_HW_TXRX_RAW &&
+			   ieee80211_has_protected(hdr->frame_control)) {
+			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+		}
 	}
 
 	skb_cb->paddr = dma_map_single(dev, msdu->data, msdu->len,
@@ -1609,7 +1591,6 @@ static int ath10k_htt_tx_64(struct ath10k_htt *htt,
 {
 	struct ath10k *ar = htt->ar;
 	struct device *dev = ar->dev;
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(msdu);
 	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
 	struct ath10k_hif_sg_item sg_items[2];
@@ -1641,15 +1622,19 @@ static int ath10k_htt_tx_64(struct ath10k_htt *htt,
 	txbuf_paddr = htt->txbuf.paddr +
 		      (sizeof(struct ath10k_htt_txbuf_64) * msdu_id);
 
-	if ((ieee80211_is_action(hdr->frame_control) ||
-	     ieee80211_is_deauth(hdr->frame_control) ||
-	     ieee80211_is_disassoc(hdr->frame_control)) &&
-	     ieee80211_has_protected(hdr->frame_control)) {
-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
-	} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
-		   txmode == ATH10K_HW_TXRX_RAW &&
-		   ieee80211_has_protected(hdr->frame_control)) {
-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+	if (!is_eth) {
+		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
+
+		if ((ieee80211_is_action(hdr->frame_control) ||
+		     ieee80211_is_deauth(hdr->frame_control) ||
+		     ieee80211_is_disassoc(hdr->frame_control)) &&
+		     ieee80211_has_protected(hdr->frame_control)) {
+			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+		} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
+			   txmode == ATH10K_HW_TXRX_RAW &&
+			   ieee80211_has_protected(hdr->frame_control)) {
+			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+		}
 	}
 
 	skb_cb->paddr = dma_map_single(dev, msdu->data, msdu->len,

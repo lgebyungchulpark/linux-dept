@@ -7,6 +7,7 @@
 #include <linux/hwmon.h>
 #include <linux/power_supply.h>
 #include <linux/slab.h>
+#include "power_supply.h"
 
 struct power_supply_hwmon {
 	struct power_supply *psy;
@@ -43,6 +44,18 @@ static int power_supply_hwmon_curr_to_property(u32 attr)
 		return POWER_SUPPLY_PROP_CURRENT_MAX;
 	case hwmon_curr_input:
 		return POWER_SUPPLY_PROP_CURRENT_NOW;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int power_supply_hwmon_power_to_property(u32 attr)
+{
+	switch (attr) {
+	case hwmon_power_input:
+		return POWER_SUPPLY_PROP_POWER_NOW;
+	case hwmon_power_average:
+		return POWER_SUPPLY_PROP_POWER_AVG;
 	default:
 		return -EINVAL;
 	}
@@ -90,6 +103,8 @@ power_supply_hwmon_to_property(enum hwmon_sensor_types type,
 		return power_supply_hwmon_in_to_property(attr);
 	case hwmon_curr:
 		return power_supply_hwmon_curr_to_property(attr);
+	case hwmon_power:
+		return power_supply_hwmon_power_to_property(attr);
 	case hwmon_temp:
 		return power_supply_hwmon_temp_to_property(attr, channel);
 	default:
@@ -229,6 +244,11 @@ power_supply_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	case hwmon_in:
 		pspval.intval = DIV_ROUND_CLOSEST(pspval.intval, 1000);
 		break;
+	case hwmon_power:
+		/*
+		 * Power properties are already in microwatts.
+		 */
+		break;
 	/*
 	 * Temp needs to be converted from 1/10 C to milli-C
 	 */
@@ -293,13 +313,14 @@ static const struct hwmon_ops power_supply_hwmon_ops = {
 	.read_string	= power_supply_hwmon_read_string,
 };
 
-static const struct hwmon_channel_info *power_supply_hwmon_info[] = {
+static const struct hwmon_channel_info * const power_supply_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_LABEL     |
 			   HWMON_T_INPUT     |
 			   HWMON_T_MAX       |
 			   HWMON_T_MIN       |
-			   HWMON_T_MIN_ALARM,
+			   HWMON_T_MIN_ALARM |
+			   HWMON_T_MAX_ALARM,
 
 			   HWMON_T_LABEL     |
 			   HWMON_T_INPUT     |
@@ -310,6 +331,10 @@ static const struct hwmon_channel_info *power_supply_hwmon_info[] = {
 			   HWMON_C_AVERAGE |
 			   HWMON_C_MAX     |
 			   HWMON_C_INPUT),
+
+	HWMON_CHANNEL_INFO(power,
+			   HWMON_P_INPUT |
+			   HWMON_P_AVERAGE),
 
 	HWMON_CHANNEL_INFO(in,
 			   HWMON_I_AVERAGE |
@@ -323,11 +348,6 @@ static const struct hwmon_chip_info power_supply_hwmon_chip_info = {
 	.ops = &power_supply_hwmon_ops,
 	.info = power_supply_hwmon_info,
 };
-
-static void power_supply_hwmon_bitmap_free(void *data)
-{
-	bitmap_free(data);
-}
 
 int power_supply_add_hwmon_sysfs(struct power_supply *psy)
 {
@@ -349,17 +369,13 @@ int power_supply_add_hwmon_sysfs(struct power_supply *psy)
 	}
 
 	psyhw->psy = psy;
-	psyhw->props = bitmap_zalloc(POWER_SUPPLY_PROP_TIME_TO_FULL_AVG + 1,
-				     GFP_KERNEL);
+	psyhw->props = devm_bitmap_zalloc(dev,
+					  POWER_SUPPLY_PROP_TIME_TO_FULL_AVG + 1,
+					  GFP_KERNEL);
 	if (!psyhw->props) {
 		ret = -ENOMEM;
 		goto error;
 	}
-
-	ret = devm_add_action_or_reset(dev, power_supply_hwmon_bitmap_free,
-			      psyhw->props);
-	if (ret)
-		goto error;
 
 	for (i = 0; i < desc->num_properties; i++) {
 		const enum power_supply_property prop = desc->properties[i];
@@ -368,6 +384,8 @@ int power_supply_add_hwmon_sysfs(struct power_supply *psy)
 		case POWER_SUPPLY_PROP_CURRENT_AVG:
 		case POWER_SUPPLY_PROP_CURRENT_MAX:
 		case POWER_SUPPLY_PROP_CURRENT_NOW:
+		case POWER_SUPPLY_PROP_POWER_AVG:
+		case POWER_SUPPLY_PROP_POWER_NOW:
 		case POWER_SUPPLY_PROP_TEMP:
 		case POWER_SUPPLY_PROP_TEMP_MAX:
 		case POWER_SUPPLY_PROP_TEMP_MIN:

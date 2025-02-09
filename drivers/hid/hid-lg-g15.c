@@ -7,6 +7,7 @@
 
 #include <linux/device.h>
 #include <linux/hid.h>
+#include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/sched.h>
@@ -766,7 +767,7 @@ static int lg_g15_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 	/*
 	 * Some models have multiple interfaces, we want the interface with
-	 * with the f000.0000 application input report.
+	 * the f000.0000 application input report.
 	 */
 	rep_enum = &hdev->report_enum[HID_INPUT_REPORT];
 	list_for_each_entry(rep, &rep_enum->report_list, list) {
@@ -953,4 +954,5 @@ static struct hid_driver lg_g15_driver = {
 module_hid_driver(lg_g15_driver);
 
 MODULE_AUTHOR("Hans de Goede <hdegoede@redhat.com>");
+MODULE_DESCRIPTION("HID driver for gaming keys on Logitech gaming keyboards");
 MODULE_LICENSE("GPL");

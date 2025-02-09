@@ -196,6 +196,8 @@ int kdb_process_cpu(const struct task_struct *p)
 	return cpu;
 }
 
+extern void kdb_send_sig(struct task_struct *p, int sig);
+
 #ifdef CONFIG_KALLSYMS
 extern const char *kdb_walk_kallsyms(loff_t *pos);
 #else /* ! CONFIG_KALLSYMS */
@@ -222,5 +224,6 @@ enum {
 
 extern int kdbgetintenv(const char *, int *);
 extern int kdb_set(int, const char **);
+int kdb_lsmod(int argc, const char **argv);
 
 #endif	/* !_KDB_H */

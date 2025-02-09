@@ -79,7 +79,7 @@ int slim_alloc_txn_tid(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 EXPORT_SYMBOL_GPL(slim_alloc_txn_tid);
 
 /**
- * slim_free_txn_tid() - Freee tid of txn
+ * slim_free_txn_tid() - Free tid of txn
  *
  * @ctrl: Controller handle
  * @txn: transaction whose tid should be freed
@@ -101,7 +101,7 @@ EXPORT_SYMBOL_GPL(slim_free_txn_tid);
  * @txn: Transaction to be sent over SLIMbus
  *
  * Called by controller to transmit messaging transactions not dealing with
- * Interface/Value elements. (e.g. transmittting a message to assign logical
+ * Interface/Value elements. (e.g. transmitting a message to assign logical
  * address to a slave device
  *
  * Return: -ETIMEDOUT: If transmission of this message timed out
@@ -111,7 +111,8 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 	bool need_tid = false, clk_pause_msg = false;
-	int ret, timeout;
+	int ret;
+	unsigned long time_left;
 
 	/*
 	 * do not vote for runtime-PM if the transactions are part of clock
@@ -151,9 +152,9 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 	if (!ret && need_tid && !txn->msg->comp) {
 		unsigned long ms = txn->rl + HZ;
 
-		timeout = wait_for_completion_timeout(txn->comp,
-						      msecs_to_jiffies(ms));
-		if (!timeout) {
+		time_left = wait_for_completion_timeout(txn->comp,
+							msecs_to_jiffies(ms));
+		if (!time_left) {
 			ret = -ETIMEDOUT;
 			slim_free_txn_tid(ctrl, txn);
 		}

@@ -5,7 +5,7 @@
  * Copyright 2006-2010		Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright 2015-2017	Intel Deutschland GmbH
- * Copyright (C) 2018-2021 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -60,7 +60,7 @@ struct cfg80211_registered_device *cfg80211_rdev_by_wiphy_idx(int wiphy_idx)
 
 	ASSERT_RTNL();
 
-	list_for_each_entry(rdev, &cfg80211_rdev_list, list) {
+	for_each_rdev(rdev) {
 		if (rdev->wiphy_idx == wiphy_idx) {
 			result = rdev;
 			break;
@@ -116,7 +116,7 @@ static int cfg80211_dev_check_name(struct cfg80211_registered_device *rdev,
 	}
 
 	/* Ensure another device does not already have this name. */
-	list_for_each_entry(rdev2, &cfg80211_rdev_list, list)
+	for_each_rdev(rdev2)
 		if (strcmp(newname, wiphy_name(&rdev2->wiphy)) == 0)
 			return -EINVAL;
 
@@ -129,6 +129,7 @@ int cfg80211_dev_rename(struct cfg80211_registered_device *rdev,
 	int result;
 
 	ASSERT_RTNL();
+	lockdep_assert_wiphy(&rdev->wiphy);
 
 	/* Ignore nop renames */
 	if (strcmp(newname, wiphy_name(&rdev->wiphy)) == 0)
@@ -164,11 +165,11 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
 		if (!wdev->netdev)
 			continue;
-		wdev->netdev->features &= ~NETIF_F_NETNS_LOCAL;
+		wdev->netdev->netns_local = false;
 		err = dev_change_net_namespace(wdev->netdev, net, "wlan%d");
 		if (err)
 			break;
-		wdev->netdev->features |= NETIF_F_NETNS_LOCAL;
+		wdev->netdev->netns_local = true;
 	}
 
 	if (err) {
@@ -180,21 +181,23 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 						     list) {
 			if (!wdev->netdev)
 				continue;
-			wdev->netdev->features &= ~NETIF_F_NETNS_LOCAL;
+			wdev->netdev->netns_local = false;
 			err = dev_change_net_namespace(wdev->netdev, net,
 							"wlan%d");
 			WARN_ON(err);
-			wdev->netdev->features |= NETIF_F_NETNS_LOCAL;
+			wdev->netdev->netns_local = true;
 		}
 
 		return err;
 	}
 
+	wiphy_lock(&rdev->wiphy);
 	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
 		if (!wdev->netdev)
 			continue;
 		nl80211_notify_iface(rdev, wdev, NL80211_CMD_DEL_INTERFACE);
 	}
+
 	nl80211_notify_wiphy(rdev, NL80211_CMD_DEL_WIPHY);
 
 	wiphy_net_set(&rdev->wiphy, net);
@@ -203,11 +206,13 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 	WARN_ON(err);
 
 	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
+
 	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
 		if (!wdev->netdev)
 			continue;
 		nl80211_notify_iface(rdev, wdev, NL80211_CMD_NEW_INTERFACE);
 	}
+	wiphy_unlock(&rdev->wiphy);
 
 	return 0;
 }
@@ -216,7 +221,9 @@ static void cfg80211_rfkill_poll(struct rfkill *rfkill, void *data)
 {
 	struct cfg80211_registered_device *rdev = data;
 
+	wiphy_lock(&rdev->wiphy);
 	rdev_rfkill_poll(rdev);
+	wiphy_unlock(&rdev->wiphy);
 }
 
 void cfg80211_stop_p2p_device(struct cfg80211_registered_device *rdev,
@@ -332,29 +339,20 @@ static void cfg80211_event_work(struct work_struct *work)
 void cfg80211_destroy_ifaces(struct cfg80211_registered_device *rdev)
 {
 	struct wireless_dev *wdev, *tmp;
-	bool found = false;
 
 	ASSERT_RTNL();
 
-	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
+	list_for_each_entry_safe(wdev, tmp, &rdev->wiphy.wdev_list, list) {
 		if (wdev->nl_owner_dead) {
 			if (wdev->netdev)
 				dev_close(wdev->netdev);
-			found = true;
-		}
-	}
 
-	if (!found)
-		return;
-
-	wiphy_lock(&rdev->wiphy);
-	list_for_each_entry_safe(wdev, tmp, &rdev->wiphy.wdev_list, list) {
-		if (wdev->nl_owner_dead) {
+			wiphy_lock(&rdev->wiphy);
 			cfg80211_leave(rdev, wdev);
-			rdev_del_virtual_intf(rdev, wdev);
+			cfg80211_remove_virtual_intf(rdev, wdev);
+			wiphy_unlock(&rdev->wiphy);
 		}
 	}
-	wiphy_unlock(&rdev->wiphy);
 }
 
 static void cfg80211_destroy_iface_wk(struct work_struct *work)
@@ -369,7 +367,8 @@ static void cfg80211_destroy_iface_wk(struct work_struct *work)
 	rtnl_unlock();
 }
 
-static void cfg80211_sched_scan_stop_wk(struct work_struct *work)
+static void cfg80211_sched_scan_stop_wk(struct wiphy *wiphy,
+					struct wiphy_work *work)
 {
 	struct cfg80211_registered_device *rdev;
 	struct cfg80211_sched_scan_request *req, *tmp;
@@ -377,12 +376,10 @@ static void cfg80211_sched_scan_stop_wk(struct work_struct *work)
 	rdev = container_of(work, struct cfg80211_registered_device,
 			   sched_scan_stop_wk);
 
-	rtnl_lock();
 	list_for_each_entry_safe(req, tmp, &rdev->sched_scan_req_list, list) {
 		if (req->nl_owner_dead)
 			cfg80211_stop_sched_scan_req(rdev, req, false);
 	}
-	rtnl_unlock();
 }
 
 static void cfg80211_propagate_radar_detect_wk(struct work_struct *work)
@@ -415,6 +412,37 @@ static void cfg80211_propagate_cac_done_wk(struct work_struct *work)
 				       NL80211_RADAR_CAC_FINISHED);
 
 	rtnl_unlock();
+}
+
+static void cfg80211_wiphy_work(struct work_struct *work)
+{
+	struct cfg80211_registered_device *rdev;
+	struct wiphy_work *wk;
+
+	rdev = container_of(work, struct cfg80211_registered_device, wiphy_work);
+
+	trace_wiphy_work_worker_start(&rdev->wiphy);
+
+	wiphy_lock(&rdev->wiphy);
+	if (rdev->suspended)
+		goto out;
+
+	spin_lock_irq(&rdev->wiphy_work_lock);
+	wk = list_first_entry_or_null(&rdev->wiphy_work_list,
+				      struct wiphy_work, entry);
+	if (wk) {
+		list_del_init(&wk->entry);
+		if (!list_empty(&rdev->wiphy_work_list))
+			queue_work(system_unbound_wq, work);
+		spin_unlock_irq(&rdev->wiphy_work_lock);
+
+		trace_wiphy_work_run(&rdev->wiphy, wk);
+		wk->func(&rdev->wiphy, wk);
+	} else {
+		spin_unlock_irq(&rdev->wiphy_work_lock);
+	}
+out:
+	wiphy_unlock(&rdev->wiphy);
 }
 
 /* exported functions */
@@ -504,7 +532,7 @@ use_default_name:
 	spin_lock_init(&rdev->bss_lock);
 	INIT_LIST_HEAD(&rdev->bss_list);
 	INIT_LIST_HEAD(&rdev->sched_scan_req_list);
-	INIT_WORK(&rdev->scan_done_wk, __cfg80211_scan_done);
+	wiphy_work_init(&rdev->scan_done_wk, __cfg80211_scan_done);
 	INIT_DELAYED_WORK(&rdev->dfs_update_channels_wk,
 			  cfg80211_dfs_channels_update_work);
 #ifdef CONFIG_CFG80211_WEXT
@@ -517,7 +545,7 @@ use_default_name:
 	device_enable_async_suspend(&rdev->wiphy.dev);
 
 	INIT_WORK(&rdev->destroy_work, cfg80211_destroy_iface_wk);
-	INIT_WORK(&rdev->sched_scan_stop_wk, cfg80211_sched_scan_stop_wk);
+	wiphy_work_init(&rdev->sched_scan_stop_wk, cfg80211_sched_scan_stop_wk);
 	INIT_WORK(&rdev->sched_scan_res_wk, cfg80211_sched_scan_results_wk);
 	INIT_WORK(&rdev->propagate_radar_detect_wk,
 		  cfg80211_propagate_radar_detect_wk);
@@ -542,6 +570,9 @@ use_default_name:
 		return NULL;
 	}
 
+	INIT_WORK(&rdev->wiphy_work, cfg80211_wiphy_work);
+	INIT_LIST_HEAD(&rdev->wiphy_work_list);
+	spin_lock_init(&rdev->wiphy_work_lock);
 	INIT_WORK(&rdev->rfkill_block, cfg80211_rfkill_block_work);
 	INIT_WORK(&rdev->conn_work, cfg80211_conn_work);
 	INIT_WORK(&rdev->event_work, cfg80211_event_work);
@@ -572,16 +603,20 @@ use_default_name:
 }
 EXPORT_SYMBOL(wiphy_new_nm);
 
-static int wiphy_verify_combinations(struct wiphy *wiphy)
+static
+int wiphy_verify_iface_combinations(struct wiphy *wiphy,
+				    const struct ieee80211_iface_combination *iface_comb,
+				    int n_iface_comb,
+				    bool combined_radio)
 {
 	const struct ieee80211_iface_combination *c;
 	int i, j;
 
-	for (i = 0; i < wiphy->n_iface_combinations; i++) {
+	for (i = 0; i < n_iface_comb; i++) {
 		u32 cnt = 0;
 		u16 all_iftypes = 0;
 
-		c = &wiphy->iface_combinations[i];
+		c = &iface_comb[i];
 
 		/*
 		 * Combinations with just one interface aren't real,
@@ -594,9 +629,13 @@ static int wiphy_verify_combinations(struct wiphy *wiphy)
 		if (WARN_ON(!c->num_different_channels))
 			return -EINVAL;
 
-		/* DFS only works on one channel. */
-		if (WARN_ON(c->radar_detect_widths &&
-			    (c->num_different_channels > 1)))
+		/* DFS only works on one channel. Avoid this check
+		 * for multi-radio global combination, since it hold
+		 * the capabilities of all radio combinations.
+		 */
+		if (!combined_radio &&
+		    WARN_ON(c->radar_detect_widths &&
+			    c->num_different_channels > 1))
 			return -EINVAL;
 
 		if (WARN_ON(!c->n_limits))
@@ -617,13 +656,21 @@ static int wiphy_verify_combinations(struct wiphy *wiphy)
 			if (WARN_ON(wiphy->software_iftypes & types))
 				return -EINVAL;
 
-			/* Only a single P2P_DEVICE can be allowed */
-			if (WARN_ON(types & BIT(NL80211_IFTYPE_P2P_DEVICE) &&
+			/* Only a single P2P_DEVICE can be allowed, avoid this
+			 * check for multi-radio global combination, since it
+			 * hold the capabilities of all radio combinations.
+			 */
+			if (!combined_radio &&
+			    WARN_ON(types & BIT(NL80211_IFTYPE_P2P_DEVICE) &&
 				    c->limits[j].max > 1))
 				return -EINVAL;
 
-			/* Only a single NAN can be allowed */
-			if (WARN_ON(types & BIT(NL80211_IFTYPE_NAN) &&
+			/* Only a single NAN can be allowed, avoid this
+			 * check for multi-radio global combination, since it
+			 * hold the capabilities of all radio combinations.
+			 */
+			if (!combined_radio &&
+			    WARN_ON(types & BIT(NL80211_IFTYPE_NAN) &&
 				    c->limits[j].max > 1))
 				return -EINVAL;
 
@@ -660,6 +707,34 @@ static int wiphy_verify_combinations(struct wiphy *wiphy)
 	}
 
 	return 0;
+}
+
+static int wiphy_verify_combinations(struct wiphy *wiphy)
+{
+	int i, ret;
+	bool combined_radio = false;
+
+	if (wiphy->n_radio) {
+		for (i = 0; i < wiphy->n_radio; i++) {
+			const struct wiphy_radio *radio = &wiphy->radio[i];
+
+			ret = wiphy_verify_iface_combinations(wiphy,
+							      radio->iface_combinations,
+							      radio->n_iface_combinations,
+							      false);
+			if (ret)
+				return ret;
+		}
+
+		combined_radio = true;
+	}
+
+	ret = wiphy_verify_iface_combinations(wiphy,
+					      wiphy->iface_combinations,
+					      wiphy->n_iface_combinations,
+					      combined_radio);
+
+	return ret;
 }
 
 int wiphy_register(struct wiphy *wiphy)
@@ -730,22 +805,6 @@ int wiphy_register(struct wiphy *wiphy)
 			return -EINVAL;
 	}
 
-	/*
-	 * if a wiphy has unsupported modes for regulatory channel enforcement,
-	 * opt-out of enforcement checking
-	 */
-	if (wiphy->interface_modes & ~(BIT(NL80211_IFTYPE_STATION) |
-				       BIT(NL80211_IFTYPE_P2P_CLIENT) |
-				       BIT(NL80211_IFTYPE_AP) |
-				       BIT(NL80211_IFTYPE_MESH_POINT) |
-				       BIT(NL80211_IFTYPE_P2P_GO) |
-				       BIT(NL80211_IFTYPE_ADHOC) |
-				       BIT(NL80211_IFTYPE_P2P_DEVICE) |
-				       BIT(NL80211_IFTYPE_NAN) |
-				       BIT(NL80211_IFTYPE_AP_VLAN) |
-				       BIT(NL80211_IFTYPE_MONITOR)))
-		wiphy->regulatory_flags |= REGULATORY_IGNORE_STALE_KICKOFF;
-
 	if (WARN_ON((wiphy->regulatory_flags & REGULATORY_WIPHY_SELF_MANAGED) &&
 		    (wiphy->regulatory_flags &
 					(REGULATORY_CUSTOM_REG |
@@ -811,6 +870,7 @@ int wiphy_register(struct wiphy *wiphy)
 
 	/* sanity check supported bands/channels */
 	for (band = 0; band < NUM_NL80211_BANDS; band++) {
+		const struct ieee80211_sband_iftype_data *iftd;
 		u16 types = 0;
 		bool have_he = false;
 
@@ -867,10 +927,10 @@ int wiphy_register(struct wiphy *wiphy)
 				return -EINVAL;
 		}
 
-		for (i = 0; i < sband->n_iftype_data; i++) {
-			const struct ieee80211_sband_iftype_data *iftd;
-
-			iftd = &sband->iftype_data[i];
+		for_each_sband_iftype_data(sband, i, iftd) {
+			bool has_ap, has_non_ap;
+			u32 ap_bits = BIT(NL80211_IFTYPE_AP) |
+				      BIT(NL80211_IFTYPE_P2P_GO);
 
 			if (WARN_ON(!iftd->types_mask))
 				return -EINVAL;
@@ -888,6 +948,19 @@ int wiphy_register(struct wiphy *wiphy)
 			else
 				have_he = have_he &&
 					  iftd->he_cap.has_he;
+
+			has_ap = iftd->types_mask & ap_bits;
+			has_non_ap = iftd->types_mask & ~ap_bits;
+
+			/*
+			 * For EHT 20 MHz STA, the capabilities format differs
+			 * but to simplify, don't check 20 MHz but rather check
+			 * only if AP and non-AP were mentioned at the same time,
+			 * reject if so.
+			 */
+			if (WARN_ON(iftd->eht_cap.has_eht &&
+				    has_ap && has_non_ap))
+				return -EINVAL;
 		}
 
 		if (WARN_ON(!have_he && band == NL80211_BAND_6GHZ))
@@ -922,14 +995,22 @@ int wiphy_register(struct wiphy *wiphy)
 		return -EINVAL;
 #endif
 
+	if (!wiphy->max_num_akm_suites)
+		wiphy->max_num_akm_suites = NL80211_MAX_NR_AKM_SUITES;
+	else if (wiphy->max_num_akm_suites < NL80211_MAX_NR_AKM_SUITES ||
+		 wiphy->max_num_akm_suites > CFG80211_MAX_NUM_AKM_SUITES)
+		return -EINVAL;
+
 	/* check and set up bitrates */
 	ieee80211_set_bitrate_flags(wiphy);
 
 	rdev->wiphy.features |= NL80211_FEATURE_SCAN_FLUSH;
 
 	rtnl_lock();
+	wiphy_lock(&rdev->wiphy);
 	res = device_add(&rdev->wiphy.dev);
 	if (res) {
+		wiphy_unlock(&rdev->wiphy);
 		rtnl_unlock();
 		return res;
 	}
@@ -943,6 +1024,7 @@ int wiphy_register(struct wiphy *wiphy)
 
 	cfg80211_debugfs_rdev_add(rdev);
 	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
+	wiphy_unlock(&rdev->wiphy);
 
 	/* set up regulatory info */
 	wiphy_regulatory_register(wiphy);
@@ -1014,6 +1096,37 @@ void wiphy_rfkill_start_polling(struct wiphy *wiphy)
 }
 EXPORT_SYMBOL(wiphy_rfkill_start_polling);
 
+void cfg80211_process_wiphy_works(struct cfg80211_registered_device *rdev,
+				  struct wiphy_work *end)
+{
+	unsigned int runaway_limit = 100;
+	unsigned long flags;
+
+	lockdep_assert_held(&rdev->wiphy.mtx);
+
+	spin_lock_irqsave(&rdev->wiphy_work_lock, flags);
+	while (!list_empty(&rdev->wiphy_work_list)) {
+		struct wiphy_work *wk;
+
+		wk = list_first_entry(&rdev->wiphy_work_list,
+				      struct wiphy_work, entry);
+		list_del_init(&wk->entry);
+		spin_unlock_irqrestore(&rdev->wiphy_work_lock, flags);
+
+		trace_wiphy_work_run(&rdev->wiphy, wk);
+		wk->func(&rdev->wiphy, wk);
+
+		spin_lock_irqsave(&rdev->wiphy_work_lock, flags);
+
+		if (wk == end)
+			break;
+
+		if (WARN_ON(--runaway_limit == 0))
+			INIT_LIST_HEAD(&rdev->wiphy_work_list);
+	}
+	spin_unlock_irqrestore(&rdev->wiphy_work_lock, flags);
+}
+
 void wiphy_unregister(struct wiphy *wiphy)
 {
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
@@ -1052,27 +1165,32 @@ void wiphy_unregister(struct wiphy *wiphy)
 	cfg80211_rdev_list_generation++;
 	device_del(&rdev->wiphy.dev);
 
+#ifdef CONFIG_PM
+	if (rdev->wiphy.wowlan_config && rdev->ops->set_wakeup)
+		rdev_set_wakeup(rdev, false);
+#endif
+
+	/* surely nothing is reachable now, clean up work */
+	cfg80211_process_wiphy_works(rdev, NULL);
 	wiphy_unlock(&rdev->wiphy);
 	rtnl_unlock();
 
-	flush_work(&rdev->scan_done_wk);
+	/* this has nothing to do now but make sure it's gone */
+	cancel_work_sync(&rdev->wiphy_work);
+
 	cancel_work_sync(&rdev->conn_work);
 	flush_work(&rdev->event_work);
 	cancel_delayed_work_sync(&rdev->dfs_update_channels_wk);
 	cancel_delayed_work_sync(&rdev->background_cac_done_wk);
 	flush_work(&rdev->destroy_work);
-	flush_work(&rdev->sched_scan_stop_wk);
 	flush_work(&rdev->propagate_radar_detect_wk);
 	flush_work(&rdev->propagate_cac_done_wk);
 	flush_work(&rdev->mgmt_registrations_update_wk);
 	flush_work(&rdev->background_cac_abort_wk);
 
-#ifdef CONFIG_PM
-	if (rdev->wiphy.wowlan_config && rdev->ops->set_wakeup)
-		rdev_set_wakeup(rdev, false);
-#endif
 	cfg80211_rdev_free_wowlan(rdev);
-	cfg80211_rdev_free_coalesce(rdev);
+	cfg80211_free_coalesce(rdev->coalesce);
+	rdev->coalesce = NULL;
 }
 EXPORT_SYMBOL(wiphy_unregister);
 
@@ -1117,21 +1235,15 @@ void wiphy_rfkill_set_hw_state_reason(struct wiphy *wiphy, bool blocked,
 }
 EXPORT_SYMBOL(wiphy_rfkill_set_hw_state_reason);
 
-void cfg80211_cqm_config_free(struct wireless_dev *wdev)
-{
-	kfree(wdev->cqm_config);
-	wdev->cqm_config = NULL;
-}
-
 static void _cfg80211_unregister_wdev(struct wireless_dev *wdev,
 				      bool unregister_netdev)
 {
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
+	struct cfg80211_cqm_config *cqm_config;
+	unsigned int link_id;
 
 	ASSERT_RTNL();
 	lockdep_assert_held(&rdev->wiphy.mtx);
-
-	flush_work(&wdev->pmsr_free_wk);
 
 	nl80211_notify_iface(rdev, wdev, NL80211_CMD_DEL_INTERFACE);
 
@@ -1164,11 +1276,11 @@ static void _cfg80211_unregister_wdev(struct wireless_dev *wdev,
 	kfree_sensitive(wdev->wext.keys);
 	wdev->wext.keys = NULL;
 #endif
-	/* only initialized if we have a netdev */
-	if (wdev->netdev)
-		flush_work(&wdev->disconnect_wk);
-
-	cfg80211_cqm_config_free(wdev);
+	wiphy_work_cancel(wdev->wiphy, &wdev->cqm_rssi_work);
+	/* deleted from the list, so can't be found from nl80211 any more */
+	cqm_config = rcu_access_pointer(wdev->cqm_config);
+	kfree_rcu(cqm_config, rcu_head);
+	RCU_INIT_POINTER(wdev->cqm_config, NULL);
 
 	/*
 	 * Ensure that all events have been processed and
@@ -1176,11 +1288,22 @@ static void _cfg80211_unregister_wdev(struct wireless_dev *wdev,
 	 */
 	cfg80211_process_wdev_events(wdev);
 
-	if (WARN_ON(wdev->current_bss)) {
-		cfg80211_unhold_bss(wdev->current_bss);
-		cfg80211_put_bss(wdev->wiphy, &wdev->current_bss->pub);
-		wdev->current_bss = NULL;
+	if (wdev->iftype == NL80211_IFTYPE_STATION ||
+	    wdev->iftype == NL80211_IFTYPE_P2P_CLIENT) {
+		for (link_id = 0; link_id < ARRAY_SIZE(wdev->links); link_id++) {
+			struct cfg80211_internal_bss *curbss;
+
+			curbss = wdev->links[link_id].client.current_bss;
+
+			if (WARN_ON(curbss)) {
+				cfg80211_unhold_bss(curbss);
+				cfg80211_put_bss(wdev->wiphy, &curbss->pub);
+				wdev->links[link_id].client.current_bss = NULL;
+			}
+		}
 	}
+
+	wdev->connected = false;
 }
 
 void cfg80211_unregister_wdev(struct wireless_dev *wdev)
@@ -1203,14 +1326,13 @@ void cfg80211_update_iface_num(struct cfg80211_registered_device *rdev,
 		rdev->num_running_monitor_ifaces += num;
 }
 
-void __cfg80211_leave(struct cfg80211_registered_device *rdev,
-		      struct wireless_dev *wdev)
+void cfg80211_leave(struct cfg80211_registered_device *rdev,
+		    struct wireless_dev *wdev)
 {
 	struct net_device *dev = wdev->netdev;
 	struct cfg80211_sched_scan_request *pos, *tmp;
 
 	lockdep_assert_held(&rdev->wiphy.mtx);
-	ASSERT_WDEV_LOCK(wdev);
 
 	cfg80211_pmsr_wdev_down(wdev);
 
@@ -1218,7 +1340,7 @@ void __cfg80211_leave(struct cfg80211_registered_device *rdev,
 
 	switch (wdev->iftype) {
 	case NL80211_IFTYPE_ADHOC:
-		__cfg80211_leave_ibss(rdev, dev, true);
+		cfg80211_leave_ibss(rdev, dev, true);
 		break;
 	case NL80211_IFTYPE_P2P_CLIENT:
 	case NL80211_IFTYPE_STATION:
@@ -1238,14 +1360,14 @@ void __cfg80211_leave(struct cfg80211_registered_device *rdev,
 				    WLAN_REASON_DEAUTH_LEAVING, true);
 		break;
 	case NL80211_IFTYPE_MESH_POINT:
-		__cfg80211_leave_mesh(rdev, dev);
+		cfg80211_leave_mesh(rdev, dev);
 		break;
 	case NL80211_IFTYPE_AP:
 	case NL80211_IFTYPE_P2P_GO:
-		__cfg80211_stop_ap(rdev, dev, true);
+		cfg80211_stop_ap(rdev, dev, -1, true);
 		break;
 	case NL80211_IFTYPE_OCB:
-		__cfg80211_leave_ocb(rdev, dev);
+		cfg80211_leave_ocb(rdev, dev);
 		break;
 	case NL80211_IFTYPE_P2P_DEVICE:
 	case NL80211_IFTYPE_NAN:
@@ -1261,14 +1383,6 @@ void __cfg80211_leave(struct cfg80211_registered_device *rdev,
 		/* invalid */
 		break;
 	}
-}
-
-void cfg80211_leave(struct cfg80211_registered_device *rdev,
-		    struct wireless_dev *wdev)
-{
-	wdev_lock(wdev);
-	__cfg80211_leave(rdev, wdev);
-	wdev_unlock(wdev);
 }
 
 void cfg80211_stop_iface(struct wiphy *wiphy, struct wireless_dev *wdev,
@@ -1295,7 +1409,6 @@ EXPORT_SYMBOL(cfg80211_stop_iface);
 
 void cfg80211_init_wdev(struct wireless_dev *wdev)
 {
-	mutex_init(&wdev->mtx);
 	INIT_LIST_HEAD(&wdev->event_list);
 	spin_lock_init(&wdev->event_lock);
 	INIT_LIST_HEAD(&wdev->mgmt_registrations);
@@ -1309,12 +1422,16 @@ void cfg80211_init_wdev(struct wireless_dev *wdev)
 	wdev->wext.connect.auth_type = NL80211_AUTHTYPE_AUTOMATIC;
 #endif
 
+	wiphy_work_init(&wdev->cqm_rssi_work, cfg80211_cqm_rssi_notify_work);
+
 	if (wdev->wiphy->flags & WIPHY_FLAG_PS_ON_BY_DEFAULT)
 		wdev->ps = true;
 	else
 		wdev->ps = false;
 	/* allow mac80211 to determine the timeout */
 	wdev->ps_timeout = -1;
+
+	wdev->radio_mask = BIT(wdev->wiphy->n_radio) - 1;
 
 	if ((wdev->iftype == NL80211_IFTYPE_STATION ||
 	     wdev->iftype == NL80211_IFTYPE_P2P_CLIENT ||
@@ -1403,7 +1520,7 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		SET_NETDEV_DEVTYPE(dev, &wiphy_type);
 		wdev->netdev = dev;
 		/* can only change netns with wiphy */
-		dev->features |= NETIF_F_NETNS_LOCAL;
+		dev->netns_local = true;
 
 		cfg80211_init_wdev(wdev);
 		break;
@@ -1428,7 +1545,11 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 	case NETDEV_GOING_DOWN:
 		wiphy_lock(&rdev->wiphy);
 		cfg80211_leave(rdev, wdev);
+		cfg80211_remove_links(wdev);
 		wiphy_unlock(&rdev->wiphy);
+		/* since we just did cfg80211_leave() nothing to do there */
+		cancel_work_sync(&wdev->disconnect_wk);
+		cancel_work_sync(&wdev->pmsr_free_wk);
 		break;
 	case NETDEV_DOWN:
 		wiphy_lock(&rdev->wiphy);
@@ -1454,7 +1575,6 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 	case NETDEV_UP:
 		wiphy_lock(&rdev->wiphy);
 		cfg80211_update_iface_num(rdev, wdev->iftype, 1);
-		wdev_lock(wdev);
 		switch (wdev->iftype) {
 #ifdef CONFIG_CFG80211_WEXT
 		case NL80211_IFTYPE_ADHOC:
@@ -1472,9 +1592,9 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 				memcpy(&setup, &default_mesh_setup,
 						sizeof(setup));
 				 /* back compat only needed for mesh_id */
-				setup.mesh_id = wdev->ssid;
-				setup.mesh_id_len = wdev->mesh_id_up_len;
-				if (wdev->mesh_id_up_len)
+				setup.mesh_id = wdev->u.mesh.id;
+				setup.mesh_id_len = wdev->u.mesh.id_up_len;
+				if (wdev->u.mesh.id_up_len)
 					__cfg80211_join_mesh(rdev, dev,
 							&setup,
 							&default_mesh_config);
@@ -1484,7 +1604,6 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		default:
 			break;
 		}
-		wdev_unlock(wdev);
 		rdev->opencount++;
 
 		/*
@@ -1527,7 +1646,7 @@ static void __net_exit cfg80211_pernet_exit(struct net *net)
 	struct cfg80211_registered_device *rdev;
 
 	rtnl_lock();
-	list_for_each_entry(rdev, &cfg80211_rdev_list, list) {
+	for_each_rdev(rdev) {
 		if (net_eq(wiphy_net(&rdev->wiphy), net))
 			WARN_ON(cfg80211_switch_netns(rdev, &init_net));
 	}
@@ -1537,6 +1656,107 @@ static void __net_exit cfg80211_pernet_exit(struct net *net)
 static struct pernet_operations cfg80211_pernet_ops = {
 	.exit = cfg80211_pernet_exit,
 };
+
+void wiphy_work_queue(struct wiphy *wiphy, struct wiphy_work *work)
+{
+	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
+	unsigned long flags;
+
+	trace_wiphy_work_queue(wiphy, work);
+
+	spin_lock_irqsave(&rdev->wiphy_work_lock, flags);
+	if (list_empty(&work->entry))
+		list_add_tail(&work->entry, &rdev->wiphy_work_list);
+	spin_unlock_irqrestore(&rdev->wiphy_work_lock, flags);
+
+	queue_work(system_unbound_wq, &rdev->wiphy_work);
+}
+EXPORT_SYMBOL_GPL(wiphy_work_queue);
+
+void wiphy_work_cancel(struct wiphy *wiphy, struct wiphy_work *work)
+{
+	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
+	unsigned long flags;
+
+	lockdep_assert_held(&wiphy->mtx);
+
+	trace_wiphy_work_cancel(wiphy, work);
+
+	spin_lock_irqsave(&rdev->wiphy_work_lock, flags);
+	if (!list_empty(&work->entry))
+		list_del_init(&work->entry);
+	spin_unlock_irqrestore(&rdev->wiphy_work_lock, flags);
+}
+EXPORT_SYMBOL_GPL(wiphy_work_cancel);
+
+void wiphy_work_flush(struct wiphy *wiphy, struct wiphy_work *work)
+{
+	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
+	unsigned long flags;
+	bool run;
+
+	trace_wiphy_work_flush(wiphy, work);
+
+	spin_lock_irqsave(&rdev->wiphy_work_lock, flags);
+	run = !work || !list_empty(&work->entry);
+	spin_unlock_irqrestore(&rdev->wiphy_work_lock, flags);
+
+	if (run)
+		cfg80211_process_wiphy_works(rdev, work);
+}
+EXPORT_SYMBOL_GPL(wiphy_work_flush);
+
+void wiphy_delayed_work_timer(struct timer_list *t)
+{
+	struct wiphy_delayed_work *dwork = from_timer(dwork, t, timer);
+
+	wiphy_work_queue(dwork->wiphy, &dwork->work);
+}
+EXPORT_SYMBOL(wiphy_delayed_work_timer);
+
+void wiphy_delayed_work_queue(struct wiphy *wiphy,
+			      struct wiphy_delayed_work *dwork,
+			      unsigned long delay)
+{
+	trace_wiphy_delayed_work_queue(wiphy, &dwork->work, delay);
+
+	if (!delay) {
+		del_timer(&dwork->timer);
+		wiphy_work_queue(wiphy, &dwork->work);
+		return;
+	}
+
+	dwork->wiphy = wiphy;
+	mod_timer(&dwork->timer, jiffies + delay);
+}
+EXPORT_SYMBOL_GPL(wiphy_delayed_work_queue);
+
+void wiphy_delayed_work_cancel(struct wiphy *wiphy,
+			       struct wiphy_delayed_work *dwork)
+{
+	lockdep_assert_held(&wiphy->mtx);
+
+	del_timer_sync(&dwork->timer);
+	wiphy_work_cancel(wiphy, &dwork->work);
+}
+EXPORT_SYMBOL_GPL(wiphy_delayed_work_cancel);
+
+void wiphy_delayed_work_flush(struct wiphy *wiphy,
+			      struct wiphy_delayed_work *dwork)
+{
+	lockdep_assert_held(&wiphy->mtx);
+
+	del_timer_sync(&dwork->timer);
+	wiphy_work_flush(wiphy, &dwork->work);
+}
+EXPORT_SYMBOL_GPL(wiphy_delayed_work_flush);
+
+bool wiphy_delayed_work_pending(struct wiphy *wiphy,
+				struct wiphy_delayed_work *dwork)
+{
+	return timer_pending(&dwork->timer);
+}
+EXPORT_SYMBOL_GPL(wiphy_delayed_work_pending);
 
 static int __init cfg80211_init(void)
 {

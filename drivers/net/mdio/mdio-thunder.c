@@ -23,7 +23,6 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 				     const struct pci_device_id *ent)
 {
 	struct device_node *node;
-	struct fwnode_handle *fwn;
 	struct thunder_mdiobus_nexus *nexus;
 	int err;
 	int i;
@@ -54,7 +53,7 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 	}
 
 	i = 0;
-	device_for_each_child_node(&pdev->dev, fwn) {
+	device_for_each_child_node_scoped(&pdev->dev, fwn) {
 		struct resource r;
 		struct mii_bus *mii_bus;
 		struct cavium_mdiobus *bus;
@@ -93,8 +92,10 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 		bus->mii_bus->name = KBUILD_MODNAME;
 		snprintf(bus->mii_bus->id, MII_BUS_ID_SIZE, "%llx", r.start);
 		bus->mii_bus->parent = &pdev->dev;
-		bus->mii_bus->read = cavium_mdiobus_read;
-		bus->mii_bus->write = cavium_mdiobus_write;
+		bus->mii_bus->read = cavium_mdiobus_read_c22;
+		bus->mii_bus->write = cavium_mdiobus_write_c22;
+		bus->mii_bus->read_c45 = cavium_mdiobus_read_c45;
+		bus->mii_bus->write_c45 = cavium_mdiobus_write_c45;
 
 		err = of_mdiobus_register(bus->mii_bus, node);
 		if (err)

@@ -11,8 +11,10 @@
 
 #include <linux/types.h>
 #include <linux/list.h>
+#include <asm/asm-extable.h>
 #include <asm/sclp.h>
 #include <asm/ebcdic.h>
+#include <asm/asm.h>
 
 /* maximum number of pages concerning our own memory management */
 #define MAX_KMEM_PAGES (sizeof(unsigned long) << 3)
@@ -203,7 +205,7 @@ struct read_storage_sccb {
 	u16 assigned;
 	u16 standby;
 	u16 :16;
-	u32 entries[0];
+	u32 entries[];
 } __packed;
 
 static inline void sclp_fill_core_info(struct sclp_core_info *info,
@@ -306,7 +308,7 @@ enum {
 
 extern int sclp_init_state;
 extern int sclp_console_pages;
-extern int sclp_console_drop;
+extern bool sclp_console_drop;
 extern unsigned long sclp_console_full;
 extern bool sclp_mask_compat_mode;
 
@@ -324,19 +326,22 @@ struct read_info_sccb * __init sclp_early_get_info(void);
 /* Perform service call. Return 0 on success, non-zero otherwise. */
 static inline int sclp_service_call(sclp_cmdw_t command, void *sccb)
 {
-	int cc = 4; /* Initialize for program check handling */
+	int cc, exception;
 
+	exception = 1;
 	asm volatile(
-		"0:	.insn	rre,0xb2200000,%1,%2\n"	 /* servc %1,%2 */
-		"1:	ipm	%0\n"
-		"	srl	%0,28\n"
+		"0:	.insn	rre,0xb2200000,%[cmd],%[sccb]\n" /* servc */
+		"1:	lhi	%[exc],0\n"
 		"2:\n"
+		CC_IPM(cc)
 		EX_TABLE(0b, 2b)
 		EX_TABLE(1b, 2b)
-		: "+&d" (cc) : "d" (command), "a" (__pa(sccb))
-		: "cc", "memory");
-	if (cc == 4)
+		: CC_OUT(cc, cc), [exc] "+d" (exception)
+		: [cmd] "d" (command), [sccb] "a" (__pa(sccb))
+		: CC_CLOBBER_LIST("memory"));
+	if (exception)
 		return -EINVAL;
+	cc = CC_TRANSFORM(cc);
 	if (cc == 3)
 		return -EIO;
 	if (cc == 2)

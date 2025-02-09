@@ -331,7 +331,7 @@ static int pm860x_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int pm860x_rtc_remove(struct platform_device *pdev)
+static void pm860x_rtc_remove(struct platform_device *pdev)
 {
 	struct pm860x_rtc_info *info = platform_get_drvdata(pdev);
 
@@ -340,8 +340,6 @@ static int pm860x_rtc_remove(struct platform_device *pdev)
 	/* disable measurement */
 	pm860x_set_bits(info->i2c, PM8607_MEAS_EN2, MEAS2_VRTC, 0);
 #endif	/* VRTC_CALIBRATION */
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

@@ -7,19 +7,16 @@
  */
 
 #include <dt-bindings/interconnect/qcom,qcm2290.h>
-#include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect-provider.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
 #include "icc-rpm.h"
-#include "smd-rpm.h"
 
 enum {
 	QCM2290_MASTER_APPSS_PROC = 1,
@@ -115,6 +112,9 @@ static struct qcom_icc_node mas_appss_proc = {
 	.qos.qos_mode = NOC_QOS_MODE_FIXED,
 	.qos.prio_level = 0,
 	.qos.areq_prio = 0,
+	.bus_clk_desc = &mem_1_clk,
+	.ab_coeff = 159,
+	.ib_coeff = 96,
 	.mas_rpm_id = 0,
 	.slv_rpm_id = -1,
 	.num_links = ARRAY_SIZE(mas_appss_proc_links),
@@ -147,9 +147,9 @@ static struct qcom_icc_node mas_snoc_bimc_nrt = {
 	.name = "mas_snoc_bimc_nrt",
 	.buswidth = 16,
 	.qos.ap_owned = true,
-	.qos.qos_port = 2,
+	.qos.qos_port = 3,
 	.qos.qos_mode = NOC_QOS_MODE_BYPASS,
-	.mas_rpm_id = 163,
+	.mas_rpm_id = 164,
 	.slv_rpm_id = -1,
 	.num_links = ARRAY_SIZE(mas_snoc_bimc_nrt_links),
 	.links = mas_snoc_bimc_nrt_links,
@@ -164,9 +164,9 @@ static struct qcom_icc_node mas_snoc_bimc = {
 	.name = "mas_snoc_bimc",
 	.buswidth = 16,
 	.qos.ap_owned = true,
-	.qos.qos_port = 2,
+	.qos.qos_port = 6,
 	.qos.qos_mode = NOC_QOS_MODE_BYPASS,
-	.mas_rpm_id = 164,
+	.mas_rpm_id = 3,
 	.slv_rpm_id = -1,
 	.num_links = ARRAY_SIZE(mas_snoc_bimc_links),
 	.links = mas_snoc_bimc_links,
@@ -678,7 +678,8 @@ static struct qcom_icc_node mas_gfx3d = {
 static struct qcom_icc_node slv_ebi1 = {
 	.name = "slv_ebi1",
 	.id = QCM2290_SLAVE_EBI1,
-	.buswidth = 8,
+	.buswidth = 4,
+	.channels = 2,
 	.mas_rpm_id = -1,
 	.slv_rpm_id = 0,
 };
@@ -1174,7 +1175,7 @@ static struct qcom_icc_node slv_anoc_snoc = {
 };
 
 /* NoC descriptors */
-static struct qcom_icc_node *qcm2290_bimc_nodes[] = {
+static struct qcom_icc_node * const qcm2290_bimc_nodes[] = {
 	[MASTER_APPSS_PROC] = &mas_appss_proc,
 	[MASTER_SNOC_BIMC_RT] = &mas_snoc_bimc_rt,
 	[MASTER_SNOC_BIMC_NRT] = &mas_snoc_bimc_nrt,
@@ -1193,16 +1194,19 @@ static const struct regmap_config qcm2290_bimc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc qcm2290_bimc = {
+static const struct qcom_icc_desc qcm2290_bimc = {
 	.type = QCOM_ICC_BIMC,
 	.nodes = qcm2290_bimc_nodes,
 	.num_nodes = ARRAY_SIZE(qcm2290_bimc_nodes),
+	.bus_clk_desc = &bimc_clk,
 	.regmap_cfg = &qcm2290_bimc_regmap_config,
+	.keep_alive = true,
 	/* M_REG_BASE() in vendor msm_bus_bimc_adhoc driver */
 	.qos_offset = 0x8000,
+	.ab_coeff = 153,
 };
 
-static struct qcom_icc_node *qcm2290_cnoc_nodes[] = {
+static struct qcom_icc_node * const qcm2290_cnoc_nodes[] = {
 	[MASTER_SNOC_CNOC] = &mas_snoc_cnoc,
 	[MASTER_QDSS_DAP] = &mas_qdss_dap,
 	[SLAVE_BIMC_CFG] = &slv_bimc_cfg,
@@ -1248,14 +1252,16 @@ static const struct regmap_config qcm2290_cnoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc qcm2290_cnoc = {
+static const struct qcom_icc_desc qcm2290_cnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = qcm2290_cnoc_nodes,
 	.num_nodes = ARRAY_SIZE(qcm2290_cnoc_nodes),
+	.bus_clk_desc = &bus_1_clk,
 	.regmap_cfg = &qcm2290_cnoc_regmap_config,
+	.keep_alive = true,
 };
 
-static struct qcom_icc_node *qcm2290_snoc_nodes[] = {
+static struct qcom_icc_node * const qcm2290_snoc_nodes[] = {
 	[MASTER_CRYPTO_CORE0] = &mas_crypto_core0,
 	[MASTER_SNOC_CFG] = &mas_snoc_cfg,
 	[MASTER_TIC] = &mas_tic,
@@ -1289,53 +1295,63 @@ static const struct regmap_config qcm2290_snoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc qcm2290_snoc = {
+static const struct qcom_icc_desc qcm2290_snoc = {
 	.type = QCOM_ICC_QNOC,
 	.nodes = qcm2290_snoc_nodes,
 	.num_nodes = ARRAY_SIZE(qcm2290_snoc_nodes),
+	.bus_clk_desc = &bus_2_clk,
 	.regmap_cfg = &qcm2290_snoc_regmap_config,
+	.keep_alive = true,
 	/* Vendor DT node fab-sys_noc property 'qcom,base-offset' */
 	.qos_offset = 0x15000,
 };
 
-static struct qcom_icc_node *qcm2290_qup_virt_nodes[] = {
+static struct qcom_icc_node * const qcm2290_qup_virt_nodes[] = {
 	[MASTER_QUP_CORE_0] = &mas_qup_core_0,
 	[SLAVE_QUP_CORE_0] = &slv_qup_core_0
 };
 
-static struct qcom_icc_desc qcm2290_qup_virt = {
+static const struct qcom_icc_desc qcm2290_qup_virt = {
 	.type = QCOM_ICC_QNOC,
 	.nodes = qcm2290_qup_virt_nodes,
 	.num_nodes = ARRAY_SIZE(qcm2290_qup_virt_nodes),
+	.bus_clk_desc = &qup_clk,
+	.keep_alive = true,
 };
 
-static struct qcom_icc_node *qcm2290_mmnrt_virt_nodes[] = {
+static struct qcom_icc_node * const qcm2290_mmnrt_virt_nodes[] = {
 	[MASTER_CAMNOC_SF] = &mas_camnoc_sf,
 	[MASTER_VIDEO_P0] = &mas_video_p0,
 	[MASTER_VIDEO_PROC] = &mas_video_proc,
 	[SLAVE_SNOC_BIMC_NRT] = &slv_snoc_bimc_nrt,
 };
 
-static struct qcom_icc_desc qcm2290_mmnrt_virt = {
+static const struct qcom_icc_desc qcm2290_mmnrt_virt = {
 	.type = QCOM_ICC_QNOC,
 	.nodes = qcm2290_mmnrt_virt_nodes,
 	.num_nodes = ARRAY_SIZE(qcm2290_mmnrt_virt_nodes),
+	.bus_clk_desc = &mmaxi_0_clk,
 	.regmap_cfg = &qcm2290_snoc_regmap_config,
+	.keep_alive = true,
 	.qos_offset = 0x15000,
+	.ab_coeff = 142,
 };
 
-static struct qcom_icc_node *qcm2290_mmrt_virt_nodes[] = {
+static struct qcom_icc_node * const qcm2290_mmrt_virt_nodes[] = {
 	[MASTER_CAMNOC_HF] = &mas_camnoc_hf,
 	[MASTER_MDP0] = &mas_mdp0,
 	[SLAVE_SNOC_BIMC_RT] = &slv_snoc_bimc_rt,
 };
 
-static struct qcom_icc_desc qcm2290_mmrt_virt = {
+static const struct qcom_icc_desc qcm2290_mmrt_virt = {
 	.type = QCOM_ICC_QNOC,
 	.nodes = qcm2290_mmrt_virt_nodes,
 	.num_nodes = ARRAY_SIZE(qcm2290_mmrt_virt_nodes),
+	.bus_clk_desc = &mmaxi_1_clk,
 	.regmap_cfg = &qcm2290_snoc_regmap_config,
+	.keep_alive = true,
 	.qos_offset = 0x15000,
+	.ab_coeff = 139,
 };
 
 static const struct of_device_id qcm2290_noc_of_match[] = {
@@ -1355,6 +1371,7 @@ static struct platform_driver qcm2290_noc_driver = {
 	.driver = {
 		.name = "qnoc-qcm2290",
 		.of_match_table = qcm2290_noc_of_match,
+		.sync_state = icc_sync_state,
 	},
 };
 module_platform_driver(qcm2290_noc_driver);

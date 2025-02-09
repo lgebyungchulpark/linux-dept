@@ -7,17 +7,19 @@
 
 #include <linux/device.h>
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
+#include <linux/module.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/spi/spi.h>
 #include <linux/regulator/consumer.h>
 #include <linux/err.h>
-#include <linux/module.h>
 #include <linux/gcd.h>
 #include <linux/gpio/consumer.h>
 #include <asm/div64.h>
 #include <linux/clk.h>
-#include <linux/of.h>
+#include <linux/clk-provider.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -32,10 +34,12 @@ enum {
 
 struct adf4350_state {
 	struct spi_device		*spi;
-	struct regulator		*reg;
 	struct gpio_desc		*lock_detect_gpiod;
 	struct adf4350_platform_data	*pdata;
 	struct clk			*clk;
+	struct clk			*clkout;
+	const char			*clk_out_name;
+	struct clk_hw			hw;
 	unsigned long			clkin;
 	unsigned long			chspc; /* Channel Spacing */
 	unsigned long			fpfd; /* Phase Frequency Detector */
@@ -55,11 +59,13 @@ struct adf4350_state {
 	 */
 	struct mutex			lock;
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
-	 * transfer buffers to live in their own cache lines.
+	 * DMA (thus cache coherency maintenance) may require that
+	 * transfer buffers live in their own cache lines.
 	 */
-	__be32				val ____cacheline_aligned;
+	__be32				val __aligned(IIO_DMA_MINALIGN);
 };
+
+#define to_adf4350_state(_hw) container_of(_hw, struct adf4350_state, hw)
 
 static struct adf4350_platform_data default_pdata = {
 	.channel_spacing = 10000,
@@ -381,10 +387,115 @@ static const struct iio_info adf4350_info = {
 	.debugfs_reg_access = &adf4350_reg_access,
 };
 
-#ifdef CONFIG_OF
+static void adf4350_clk_del_provider(void *data)
+{
+	struct adf4350_state *st = data;
+
+	of_clk_del_provider(st->spi->dev.of_node);
+}
+
+static unsigned long adf4350_clk_recalc_rate(struct clk_hw *hw,
+					     unsigned long parent_rate)
+{
+	struct adf4350_state *st = to_adf4350_state(hw);
+	unsigned long long tmp;
+
+	tmp = (u64)(st->r0_int * st->r1_mod + st->r0_fract) * st->fpfd;
+	do_div(tmp, st->r1_mod * (1 << st->r4_rf_div_sel));
+
+	return tmp;
+}
+
+static int adf4350_clk_set_rate(struct clk_hw *hw,
+				unsigned long rate,
+				unsigned long parent_rate)
+{
+	struct adf4350_state *st = to_adf4350_state(hw);
+
+	if (parent_rate == 0 || parent_rate > ADF4350_MAX_FREQ_REFIN)
+		return -EINVAL;
+
+	st->clkin = parent_rate;
+
+	return adf4350_set_freq(st, rate);
+}
+
+static int adf4350_clk_prepare(struct clk_hw *hw)
+{
+	struct adf4350_state *st = to_adf4350_state(hw);
+
+	st->regs[ADF4350_REG2] &= ~ADF4350_REG2_POWER_DOWN_EN;
+
+	return adf4350_sync_config(st);
+}
+
+static void adf4350_clk_unprepare(struct clk_hw *hw)
+{
+	struct adf4350_state *st = to_adf4350_state(hw);
+
+	st->regs[ADF4350_REG2] |= ADF4350_REG2_POWER_DOWN_EN;
+
+	adf4350_sync_config(st);
+}
+
+static int adf4350_clk_is_enabled(struct clk_hw *hw)
+{
+	struct adf4350_state *st = to_adf4350_state(hw);
+
+	return (st->regs[ADF4350_REG2] & ADF4350_REG2_POWER_DOWN_EN);
+}
+
+static const struct clk_ops adf4350_clk_ops = {
+	.recalc_rate = adf4350_clk_recalc_rate,
+	.set_rate = adf4350_clk_set_rate,
+	.prepare = adf4350_clk_prepare,
+	.unprepare = adf4350_clk_unprepare,
+	.is_enabled = adf4350_clk_is_enabled,
+};
+
+static int adf4350_clk_register(struct adf4350_state *st)
+{
+	struct spi_device *spi = st->spi;
+	struct clk_init_data init;
+	struct clk *clk;
+	const char *parent_name;
+	int ret;
+
+	if (!device_property_present(&spi->dev, "#clock-cells"))
+		return 0;
+
+	if (device_property_read_string(&spi->dev, "clock-output-names", &init.name)) {
+		init.name = devm_kasprintf(&spi->dev, GFP_KERNEL, "%s-clk",
+					   fwnode_get_name(dev_fwnode(&spi->dev)));
+		if (!init.name)
+			return -ENOMEM;
+	}
+
+	parent_name = of_clk_get_parent_name(spi->dev.of_node, 0);
+	if (!parent_name)
+		return -EINVAL;
+
+	init.ops = &adf4350_clk_ops;
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
+	init.flags = CLK_SET_RATE_PARENT;
+
+	st->hw.init = &init;
+	clk = devm_clk_register(&spi->dev, &st->hw);
+	if (IS_ERR(clk))
+		return PTR_ERR(clk);
+
+	ret = of_clk_add_provider(spi->dev.of_node, of_clk_src_simple_get, clk);
+	if (ret)
+		return ret;
+
+	st->clkout = clk;
+
+	return devm_add_action_or_reset(&spi->dev, adf4350_clk_del_provider, st);
+}
+
 static struct adf4350_platform_data *adf4350_parse_dt(struct device *dev)
 {
-	struct device_node *np = dev->of_node;
 	struct adf4350_platform_data *pdata;
 	unsigned int tmp;
 
@@ -392,101 +503,92 @@ static struct adf4350_platform_data *adf4350_parse_dt(struct device *dev)
 	if (!pdata)
 		return NULL;
 
-	snprintf(&pdata->name[0], SPI_NAME_SIZE - 1, "%pOFn", np);
+	snprintf(pdata->name, sizeof(pdata->name), "%pfw", dev_fwnode(dev));
 
 	tmp = 10000;
-	of_property_read_u32(np, "adi,channel-spacing", &tmp);
+	device_property_read_u32(dev, "adi,channel-spacing", &tmp);
 	pdata->channel_spacing = tmp;
 
 	tmp = 0;
-	of_property_read_u32(np, "adi,power-up-frequency", &tmp);
+	device_property_read_u32(dev, "adi,power-up-frequency", &tmp);
 	pdata->power_up_frequency = tmp;
 
 	tmp = 0;
-	of_property_read_u32(np, "adi,reference-div-factor", &tmp);
+	device_property_read_u32(dev, "adi,reference-div-factor", &tmp);
 	pdata->ref_div_factor = tmp;
 
-	pdata->ref_doubler_en = of_property_read_bool(np,
-			"adi,reference-doubler-enable");
-	pdata->ref_div2_en = of_property_read_bool(np,
-			"adi,reference-div2-enable");
+	pdata->ref_doubler_en = device_property_read_bool(dev, "adi,reference-doubler-enable");
+	pdata->ref_div2_en = device_property_read_bool(dev, "adi,reference-div2-enable");
 
 	/* r2_user_settings */
-	pdata->r2_user_settings = of_property_read_bool(np,
-			"adi,phase-detector-polarity-positive-enable") ?
-			ADF4350_REG2_PD_POLARITY_POS : 0;
-	pdata->r2_user_settings |= of_property_read_bool(np,
-			"adi,lock-detect-precision-6ns-enable") ?
-			ADF4350_REG2_LDP_6ns : 0;
-	pdata->r2_user_settings |= of_property_read_bool(np,
-			"adi,lock-detect-function-integer-n-enable") ?
-			ADF4350_REG2_LDF_INT_N : 0;
+	pdata->r2_user_settings = 0;
+	if (device_property_read_bool(dev, "adi,phase-detector-polarity-positive-enable"))
+		pdata->r2_user_settings |= ADF4350_REG2_PD_POLARITY_POS;
+	if (device_property_read_bool(dev, "adi,lock-detect-precision-6ns-enable"))
+		pdata->r2_user_settings |= ADF4350_REG2_LDP_6ns;
+	if (device_property_read_bool(dev, "adi,lock-detect-function-integer-n-enable"))
+		pdata->r2_user_settings |= ADF4350_REG2_LDF_INT_N;
 
 	tmp = 2500;
-	of_property_read_u32(np, "adi,charge-pump-current", &tmp);
+	device_property_read_u32(dev, "adi,charge-pump-current", &tmp);
 	pdata->r2_user_settings |= ADF4350_REG2_CHARGE_PUMP_CURR_uA(tmp);
 
 	tmp = 0;
-	of_property_read_u32(np, "adi,muxout-select", &tmp);
+	device_property_read_u32(dev, "adi,muxout-select", &tmp);
 	pdata->r2_user_settings |= ADF4350_REG2_MUXOUT(tmp);
 
-	pdata->r2_user_settings |= of_property_read_bool(np,
-			"adi,low-spur-mode-enable") ?
-			ADF4350_REG2_NOISE_MODE(0x3) : 0;
+	if (device_property_read_bool(dev, "adi,low-spur-mode-enable"))
+		pdata->r2_user_settings |= ADF4350_REG2_NOISE_MODE(0x3);
 
 	/* r3_user_settings */
 
-	pdata->r3_user_settings = of_property_read_bool(np,
-			"adi,cycle-slip-reduction-enable") ?
-			ADF4350_REG3_12BIT_CSR_EN : 0;
-	pdata->r3_user_settings |= of_property_read_bool(np,
-			"adi,charge-cancellation-enable") ?
-			ADF4351_REG3_CHARGE_CANCELLATION_EN : 0;
-
-	pdata->r3_user_settings |= of_property_read_bool(np,
-			"adi,anti-backlash-3ns-enable") ?
-			ADF4351_REG3_ANTI_BACKLASH_3ns_EN : 0;
-	pdata->r3_user_settings |= of_property_read_bool(np,
-			"adi,band-select-clock-mode-high-enable") ?
-			ADF4351_REG3_BAND_SEL_CLOCK_MODE_HIGH : 0;
+	pdata->r3_user_settings = 0;
+	if (device_property_read_bool(dev, "adi,cycle-slip-reduction-enable"))
+		pdata->r3_user_settings |= ADF4350_REG3_12BIT_CSR_EN;
+	if (device_property_read_bool(dev, "adi,charge-cancellation-enable"))
+		pdata->r3_user_settings |= ADF4351_REG3_CHARGE_CANCELLATION_EN;
+	if (device_property_read_bool(dev, "adi,anti-backlash-3ns-enable"))
+		pdata->r3_user_settings |= ADF4351_REG3_ANTI_BACKLASH_3ns_EN;
+	if (device_property_read_bool(dev, "adi,band-select-clock-mode-high-enable"))
+		pdata->r3_user_settings |= ADF4351_REG3_BAND_SEL_CLOCK_MODE_HIGH;
 
 	tmp = 0;
-	of_property_read_u32(np, "adi,12bit-clk-divider", &tmp);
+	device_property_read_u32(dev, "adi,12bit-clk-divider", &tmp);
 	pdata->r3_user_settings |= ADF4350_REG3_12BIT_CLKDIV(tmp);
 
 	tmp = 0;
-	of_property_read_u32(np, "adi,clk-divider-mode", &tmp);
+	device_property_read_u32(dev, "adi,clk-divider-mode", &tmp);
 	pdata->r3_user_settings |= ADF4350_REG3_12BIT_CLKDIV_MODE(tmp);
 
 	/* r4_user_settings */
 
-	pdata->r4_user_settings = of_property_read_bool(np,
-			"adi,aux-output-enable") ?
-			ADF4350_REG4_AUX_OUTPUT_EN : 0;
-	pdata->r4_user_settings |= of_property_read_bool(np,
-			"adi,aux-output-fundamental-enable") ?
-			ADF4350_REG4_AUX_OUTPUT_FUND : 0;
-	pdata->r4_user_settings |= of_property_read_bool(np,
-			"adi,mute-till-lock-enable") ?
-			ADF4350_REG4_MUTE_TILL_LOCK_EN : 0;
+	pdata->r4_user_settings = 0;
+	if (device_property_read_bool(dev, "adi,aux-output-enable"))
+		pdata->r4_user_settings |= ADF4350_REG4_AUX_OUTPUT_EN;
+	if (device_property_read_bool(dev, "adi,aux-output-fundamental-enable"))
+		pdata->r4_user_settings |= ADF4350_REG4_AUX_OUTPUT_FUND;
+	if (device_property_read_bool(dev, "adi,mute-till-lock-enable"))
+		pdata->r4_user_settings |= ADF4350_REG4_MUTE_TILL_LOCK_EN;
 
 	tmp = 0;
-	of_property_read_u32(np, "adi,output-power", &tmp);
+	device_property_read_u32(dev, "adi,output-power", &tmp);
 	pdata->r4_user_settings |= ADF4350_REG4_OUTPUT_PWR(tmp);
 
 	tmp = 0;
-	of_property_read_u32(np, "adi,aux-output-power", &tmp);
+	device_property_read_u32(dev, "adi,aux-output-power", &tmp);
 	pdata->r4_user_settings |= ADF4350_REG4_AUX_OUTPUT_PWR(tmp);
 
 	return pdata;
 }
-#else
-static
-struct adf4350_platform_data *adf4350_parse_dt(struct device *dev)
+
+static void adf4350_power_down(void *data)
 {
-	return NULL;
+	struct iio_dev *indio_dev = data;
+	struct adf4350_state *st = iio_priv(indio_dev);
+
+	st->regs[ADF4350_REG2] |= ADF4350_REG2_POWER_DOWN_EN;
+	adf4350_sync_config(st);
 }
-#endif
 
 static int adf4350_probe(struct spi_device *spi)
 {
@@ -496,12 +598,12 @@ static int adf4350_probe(struct spi_device *spi)
 	struct clk *clk = NULL;
 	int ret;
 
-	if (spi->dev.of_node) {
+	if (dev_fwnode(&spi->dev)) {
 		pdata = adf4350_parse_dt(&spi->dev);
 		if (pdata == NULL)
 			return -EINVAL;
 	} else {
-		pdata = spi->dev.platform_data;
+		pdata = dev_get_platdata(&spi->dev);
 	}
 
 	if (!pdata) {
@@ -510,31 +612,21 @@ static int adf4350_probe(struct spi_device *spi)
 	}
 
 	if (!pdata->clkin) {
-		clk = devm_clk_get(&spi->dev, "clkin");
+		clk = devm_clk_get_enabled(&spi->dev, "clkin");
 		if (IS_ERR(clk))
-			return -EPROBE_DEFER;
-
-		ret = clk_prepare_enable(clk);
-		if (ret < 0)
-			return ret;
+			return PTR_ERR(clk);
 	}
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
-	if (indio_dev == NULL) {
-		ret =  -ENOMEM;
-		goto error_disable_clk;
-	}
+	if (indio_dev == NULL)
+		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
 
-	st->reg = devm_regulator_get(&spi->dev, "vcc");
-	if (!IS_ERR(st->reg)) {
-		ret = regulator_enable(st->reg);
-		if (ret)
-			goto error_disable_clk;
-	}
+	ret = devm_regulator_get_enable(&spi->dev, "vcc");
+	if (ret)
+		return ret;
 
-	spi_set_drvdata(spi, indio_dev);
 	st->spi = spi;
 	st->pdata = pdata;
 
@@ -543,8 +635,6 @@ static int adf4350_probe(struct spi_device *spi)
 
 	indio_dev->info = &adf4350_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
-	indio_dev->channels = &adf4350_chan;
-	indio_dev->num_channels = 1;
 
 	mutex_init(&st->lock);
 
@@ -563,49 +653,30 @@ static int adf4350_probe(struct spi_device *spi)
 
 	st->lock_detect_gpiod = devm_gpiod_get_optional(&spi->dev, NULL,
 							GPIOD_IN);
-	if (IS_ERR(st->lock_detect_gpiod)) {
-		ret = PTR_ERR(st->lock_detect_gpiod);
-		goto error_disable_reg;
-	}
+	if (IS_ERR(st->lock_detect_gpiod))
+		return PTR_ERR(st->lock_detect_gpiod);
 
 	if (pdata->power_up_frequency) {
 		ret = adf4350_set_freq(st, pdata->power_up_frequency);
 		if (ret)
-			goto error_disable_reg;
+			return ret;
 	}
 
-	ret = iio_device_register(indio_dev);
+	ret = adf4350_clk_register(st);
 	if (ret)
-		goto error_disable_reg;
+		return ret;
 
-	return 0;
+	if (!st->clkout) {
+		indio_dev->channels = &adf4350_chan;
+		indio_dev->num_channels = 1;
+	}
 
-error_disable_reg:
-	if (!IS_ERR(st->reg))
-		regulator_disable(st->reg);
-error_disable_clk:
-	clk_disable_unprepare(clk);
+	ret = devm_add_action_or_reset(&spi->dev, adf4350_power_down, indio_dev);
+	if (ret)
+		return dev_err_probe(&spi->dev, ret,
+				     "Failed to add action to managed power down\n");
 
-	return ret;
-}
-
-static int adf4350_remove(struct spi_device *spi)
-{
-	struct iio_dev *indio_dev = spi_get_drvdata(spi);
-	struct adf4350_state *st = iio_priv(indio_dev);
-	struct regulator *reg = st->reg;
-
-	st->regs[ADF4350_REG2] |= ADF4350_REG2_POWER_DOWN_EN;
-	adf4350_sync_config(st);
-
-	iio_device_unregister(indio_dev);
-
-	clk_disable_unprepare(st->clk);
-
-	if (!IS_ERR(reg))
-		regulator_disable(reg);
-
-	return 0;
+	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
 static const struct of_device_id adf4350_of_match[] = {
@@ -625,10 +696,9 @@ MODULE_DEVICE_TABLE(spi, adf4350_id);
 static struct spi_driver adf4350_driver = {
 	.driver = {
 		.name	= "adf4350",
-		.of_match_table = of_match_ptr(adf4350_of_match),
+		.of_match_table = adf4350_of_match,
 	},
 	.probe		= adf4350_probe,
-	.remove		= adf4350_remove,
 	.id_table	= adf4350_id,
 };
 module_spi_driver(adf4350_driver);

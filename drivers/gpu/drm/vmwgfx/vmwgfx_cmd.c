@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 OR MIT
 /**************************************************************************
  *
- * Copyright 2009-2020 VMware, Inc., Palo Alto, CA., USA
+ * Copyright 2009-2023 VMware, Inc., Palo Alto, CA., USA
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -24,13 +24,14 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  **************************************************************************/
-
-#include <linux/sched/signal.h>
+#include "vmwgfx_bo.h"
+#include "vmwgfx_drv.h"
+#include "vmwgfx_devcaps.h"
 
 #include <drm/ttm/ttm_placement.h>
 
-#include "vmwgfx_drv.h"
-#include "vmwgfx_devcaps.h"
+#include <linux/sched/signal.h>
+#include <linux/vmalloc.h>
 
 bool vmw_supports_3d(struct vmw_private *dev_priv)
 {
@@ -528,7 +529,7 @@ int vmw_cmd_send_fence(struct vmw_private *dev_priv, uint32_t *seqno)
 		*seqno = atomic_add_return(1, &dev_priv->marker_seq);
 	} while (*seqno == 0);
 
-	if (!(vmw_fifo_caps(dev_priv) & SVGA_FIFO_CAP_FENCE)) {
+	if (!vmw_has_fences(dev_priv)) {
 
 		/*
 		 * Don't request hardware to send a fence. The
@@ -567,7 +568,7 @@ static int vmw_cmd_emit_dummy_legacy_query(struct vmw_private *dev_priv,
 	 * without writing to the query result structure.
 	 */
 
-	struct ttm_buffer_object *bo = &dev_priv->dummy_query_bo->base;
+	struct ttm_buffer_object *bo = &dev_priv->dummy_query_bo->tbo;
 	struct {
 		SVGA3dCmdHeader header;
 		SVGA3dCmdWaitForQuery body;
@@ -613,7 +614,7 @@ static int vmw_cmd_emit_dummy_gb_query(struct vmw_private *dev_priv,
 	 * without writing to the query result structure.
 	 */
 
-	struct ttm_buffer_object *bo = &dev_priv->dummy_query_bo->base;
+	struct ttm_buffer_object *bo = &dev_priv->dummy_query_bo->tbo;
 	struct {
 		SVGA3dCmdHeader header;
 		SVGA3dCmdWaitForGBQuery body;
@@ -675,11 +676,14 @@ int vmw_cmd_emit_dummy_query(struct vmw_private *dev_priv,
  */
 bool vmw_cmd_supported(struct vmw_private *vmw)
 {
-	if ((vmw->capabilities & (SVGA_CAP_COMMAND_BUFFERS |
-				  SVGA_CAP_CMD_BUFFERS_2)) != 0)
-		return true;
+	bool has_cmdbufs =
+		(vmw->capabilities & (SVGA_CAP_COMMAND_BUFFERS |
+				      SVGA_CAP_CMD_BUFFERS_2)) != 0;
+	if (vmw_is_svga_v3(vmw))
+		return (has_cmdbufs &&
+			(vmw->capabilities & SVGA_CAP_GBOBJECTS) != 0);
 	/*
 	 * We have FIFO cmd's
 	 */
-	return vmw->fifo_mem != NULL;
+	return has_cmdbufs || vmw->fifo_mem != NULL;
 }

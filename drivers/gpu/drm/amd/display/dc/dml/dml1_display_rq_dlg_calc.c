@@ -39,7 +39,7 @@
 
 static unsigned int get_bytes_per_element(enum source_format_class source_format, bool is_chroma)
 {
-	unsigned int ret_val = 0;
+	unsigned int ret_val = 1;
 
 	if (source_format == dm_444_16) {
 		if (!is_chroma)
@@ -559,12 +559,11 @@ static void get_surf_rq_param(
 		const struct _vcs_dpi_display_pipe_source_params_st *pipe_src_param,
 		bool is_chroma)
 {
-	bool mode_422 = 0;
 	unsigned int vp_width = 0;
 	unsigned int vp_height = 0;
 	unsigned int data_pitch = 0;
 	unsigned int meta_pitch = 0;
-	unsigned int ppe = mode_422 ? 2 : 1;
+	unsigned int ppe = 1;
 	bool surf_linear;
 	bool surf_vert;
 	unsigned int bytes_per_element;
@@ -1331,10 +1330,6 @@ void dml1_rq_dlg_get_dlg_params(
 	if (dual_plane)
 		DTRACE("DLG: %s: swath_height_c     = %d", __func__, swath_height_c);
 
-	DTRACE(
-			"DLG: %s: t_srx_delay_us     = %3.2f",
-			__func__,
-			(double) dlg_sys_param->t_srx_delay_us);
 	DTRACE("DLG: %s: line_time_in_us    = %3.2f", __func__, (double) line_time_in_us);
 	DTRACE("DLG: %s: vupdate_offset     = %d", __func__, vupdate_offset);
 	DTRACE("DLG: %s: vupdate_width      = %d", __func__, vupdate_width);
@@ -1599,11 +1594,6 @@ void dml1_rq_dlg_get_dlg_params(
 		swath_width_pixels_ub_l = swath_width_ub_l * 1;
 		swath_width_pixels_ub_c = swath_width_ub_c * 1;
 	}
-
-	hscale_pixel_rate_l = 0.;
-	hscale_pixel_rate_c = 0.;
-	min_hratio_fact_l = 1.0;
-	min_hratio_fact_c = 1.0;
 
 	if (htaps_l <= 1)
 		min_hratio_fact_l = 2.0;

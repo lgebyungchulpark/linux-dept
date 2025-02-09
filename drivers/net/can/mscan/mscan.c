@@ -34,12 +34,6 @@ static const struct can_bittiming_const mscan_bittiming_const = {
 	.brp_inc = 1,
 };
 
-struct mscan_state {
-	u8 mode;
-	u8 canrier;
-	u8 cantier;
-};
-
 static enum can_state state_map[] = {
 	CAN_STATE_ERROR_ACTIVE,
 	CAN_STATE_ERROR_WARNING,
@@ -191,7 +185,7 @@ static netdev_tx_t mscan_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	int i, rtr, buf_id;
 	u32 can_id;
 
-	if (can_dropped_invalid_skb(dev, skb))
+	if (can_dev_dropped_skb(dev, skb))
 		return NETDEV_TX_OK;
 
 	out_8(&regs->cantier, 0);
@@ -616,6 +610,10 @@ static const struct net_device_ops mscan_netdev_ops = {
 	.ndo_change_mtu	= can_change_mtu,
 };
 
+static const struct ethtool_ops mscan_ethtool_ops = {
+	.get_ts_info = ethtool_op_get_ts_info,
+};
+
 int register_mscandev(struct net_device *dev, int mscan_clksrc)
 {
 	struct mscan_priv *priv = netdev_priv(dev);
@@ -676,10 +674,11 @@ struct net_device *alloc_mscandev(void)
 	priv = netdev_priv(dev);
 
 	dev->netdev_ops = &mscan_netdev_ops;
+	dev->ethtool_ops = &mscan_ethtool_ops;
 
 	dev->flags |= IFF_ECHO;	/* we support local echo */
 
-	netif_napi_add(dev, &priv->napi, mscan_rx_poll, 8);
+	netif_napi_add_weight(dev, &priv->napi, mscan_rx_poll, 8);
 
 	priv->can.bittiming_const = &mscan_bittiming_const;
 	priv->can.do_set_bittiming = mscan_do_set_bittiming;

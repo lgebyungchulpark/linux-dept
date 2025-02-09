@@ -1,5 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /*
- * Copyright 2014 Advanced Micro Devices, Inc.
+ * Copyright 2014-2022 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -30,6 +31,14 @@
 
 #define KFD_TOPOLOGY_PUBLIC_NAME_SIZE 32
 
+#define HSA_DBG_WATCH_ADDR_MASK_LO_BIT_GFX9	6
+#define HSA_DBG_WATCH_ADDR_MASK_LO_BIT_GFX9_4_3 7
+#define HSA_DBG_WATCH_ADDR_MASK_LO_BIT_GFX10	7
+#define HSA_DBG_WATCH_ADDR_MASK_HI_BIT  \
+			(29 << HSA_DBG_WATCH_ADDR_MASK_HI_BIT_SHIFT)
+#define HSA_DBG_WATCH_ADDR_MASK_HI_BIT_GFX9_4_3 \
+			(30 << HSA_DBG_WATCH_ADDR_MASK_HI_BIT_SHIFT)
+
 struct kfd_node_properties {
 	uint64_t hive_id;
 	uint32_t cpu_cores_count;
@@ -37,9 +46,11 @@ struct kfd_node_properties {
 	uint32_t mem_banks_count;
 	uint32_t caches_count;
 	uint32_t io_links_count;
+	uint32_t p2p_links_count;
 	uint32_t cpu_core_id_base;
 	uint32_t simd_id_base;
 	uint32_t capability;
+	uint64_t debug_prop;
 	uint32_t max_waves_per_simd;
 	uint32_t lds_size_in_kb;
 	uint32_t gds_size_in_kb;
@@ -63,6 +74,10 @@ struct kfd_node_properties {
 	uint32_t num_sdma_xgmi_engines;
 	uint32_t num_sdma_queues_per_engine;
 	uint32_t num_cp_queues;
+	uint32_t cwsr_size;
+	uint32_t ctl_stack_size;
+	uint32_t eop_buffer_size;
+	uint32_t debug_memory_size;
 	char name[KFD_TOPOLOGY_PUBLIC_NAME_SIZE];
 };
 
@@ -73,10 +88,12 @@ struct kfd_mem_properties {
 	uint32_t		flags;
 	uint32_t		width;
 	uint32_t		mem_clk_max;
-	struct kfd_dev		*gpu;
+	struct kfd_node		*gpu;
 	struct kobject		*kobj;
 	struct attribute	attr;
 };
+
+#define CACHE_SIBLINGMAP_SIZE 128
 
 struct kfd_cache_properties {
 	struct list_head	list;
@@ -88,10 +105,11 @@ struct kfd_cache_properties {
 	uint32_t		cache_assoc;
 	uint32_t		cache_latency;
 	uint32_t		cache_type;
-	uint8_t			sibling_map[CRAT_SIBLINGMAP_SIZE];
-	struct kfd_dev		*gpu;
+	uint8_t			sibling_map[CACHE_SIBLINGMAP_SIZE];
+	struct kfd_node		*gpu;
 	struct kobject		*kobj;
 	struct attribute	attr;
+	uint32_t		sibling_map_size;
 };
 
 struct kfd_iolink_properties {
@@ -107,8 +125,9 @@ struct kfd_iolink_properties {
 	uint32_t		min_bandwidth;
 	uint32_t		max_bandwidth;
 	uint32_t		rec_transfer_size;
+	uint32_t		rec_sdma_eng_id_mask;
 	uint32_t		flags;
-	struct kfd_dev		*gpu;
+	struct kfd_node		*gpu;
 	struct kobject		*kobj;
 	struct attribute	attr;
 };
@@ -126,21 +145,24 @@ struct kfd_topology_device {
 	uint32_t			proximity_domain;
 	struct kfd_node_properties	node_props;
 	struct list_head		mem_props;
-	uint32_t			cache_count;
 	struct list_head		cache_props;
-	uint32_t			io_link_count;
 	struct list_head		io_link_props;
+	struct list_head		p2p_link_props;
 	struct list_head		perf_props;
-	struct kfd_dev			*gpu;
+	struct kfd_node			*gpu;
 	struct kobject			*kobj_node;
 	struct kobject			*kobj_mem;
 	struct kobject			*kobj_cache;
 	struct kobject			*kobj_iolink;
+	struct kobject			*kobj_p2plink;
 	struct kobject			*kobj_perf;
 	struct attribute		attr_gpuid;
 	struct attribute		attr_name;
 	struct attribute		attr_props;
-	uint8_t				oem_id[CRAT_OEMID_LENGTH];
+	union {
+		uint8_t				oem_id[CRAT_OEMID_LENGTH];
+		uint64_t			oem_id64;
+	};
 	uint8_t				oem_table_id[CRAT_OEMTABLEID_LENGTH];
 	uint32_t			oem_revision;
 };

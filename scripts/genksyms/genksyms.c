@@ -16,9 +16,7 @@
 #include <unistd.h>
 #include <assert.h>
 #include <stdarg.h>
-#ifdef __GNU_LIBRARY__
 #include <getopt.h>
-#endif				/* __GNU_LIBRARY__ */
 
 #include "genksyms.h"
 /*----------------------------------------------------------------------*/
@@ -33,7 +31,7 @@ char *cur_filename;
 int in_source_file;
 
 static int flag_debug, flag_dump_defs, flag_reference, flag_dump_types,
-	   flag_preserve, flag_warnings, flag_rel_crcs;
+	   flag_preserve, flag_warnings;
 
 static int errors;
 static int nsyms;
@@ -634,58 +632,55 @@ static unsigned long expand_and_crc_sym(struct symbol *sym, unsigned long crc)
 void export_symbol(const char *name)
 {
 	struct symbol *sym;
+	unsigned long crc;
+	int has_changed = 0;
 
 	sym = find_symbol(name, SYM_NORMAL, 0);
-	if (!sym)
+	if (!sym) {
 		error_with_pos("export undefined symbol %s", name);
-	else {
-		unsigned long crc;
-		int has_changed = 0;
-
-		if (flag_dump_defs)
-			fprintf(debugfile, "Export %s == <", name);
-
-		expansion_trail = (struct symbol *)-1L;
-
-		sym->expansion_trail = expansion_trail;
-		expansion_trail = sym;
-		crc = expand_and_crc_sym(sym, 0xffffffff) ^ 0xffffffff;
-
-		sym = expansion_trail;
-		while (sym != (struct symbol *)-1L) {
-			struct symbol *n = sym->expansion_trail;
-
-			if (sym->status != STATUS_UNCHANGED) {
-				if (!has_changed) {
-					print_location();
-					fprintf(stderr, "%s: %s: modversion "
-						"changed because of changes "
-						"in ", flag_preserve ? "error" :
-						       "warning", name);
-				} else
-					fprintf(stderr, ", ");
-				print_type_name(sym->type, sym->name);
-				if (sym->status == STATUS_DEFINED)
-					fprintf(stderr, " (became defined)");
-				has_changed = 1;
-				if (flag_preserve)
-					errors++;
-			}
-			sym->expansion_trail = 0;
-			sym = n;
-		}
-		if (has_changed)
-			fprintf(stderr, "\n");
-
-		if (flag_dump_defs)
-			fputs(">\n", debugfile);
-
-		/* Used as a linker script. */
-		printf(!flag_rel_crcs ? "__crc_%s = 0x%08lx;\n" :
-		       "SECTIONS { .rodata : ALIGN(4) { "
-		       "__crc_%s = .; LONG(0x%08lx); } }\n",
-		       name, crc);
+		return;
 	}
+
+	if (flag_dump_defs)
+		fprintf(debugfile, "Export %s == <", name);
+
+	expansion_trail = (struct symbol *)-1L;
+
+	sym->expansion_trail = expansion_trail;
+	expansion_trail = sym;
+	crc = expand_and_crc_sym(sym, 0xffffffff) ^ 0xffffffff;
+
+	sym = expansion_trail;
+	while (sym != (struct symbol *)-1L) {
+		struct symbol *n = sym->expansion_trail;
+
+		if (sym->status != STATUS_UNCHANGED) {
+			if (!has_changed) {
+				print_location();
+				fprintf(stderr,
+					"%s: %s: modversion changed because of changes in ",
+					flag_preserve ? "error" : "warning",
+					name);
+			} else {
+				fprintf(stderr, ", ");
+			}
+			print_type_name(sym->type, sym->name);
+			if (sym->status == STATUS_DEFINED)
+				fprintf(stderr, " (became defined)");
+			has_changed = 1;
+			if (flag_preserve)
+				errors++;
+		}
+		sym->expansion_trail = 0;
+		sym = n;
+	}
+	if (has_changed)
+		fprintf(stderr, "\n");
+
+	if (flag_dump_defs)
+		fputs(">\n", debugfile);
+
+	printf("#SYMVER %s 0x%08lx\n", name, crc);
 }
 
 /*----------------------------------------------------------------------*/
@@ -722,8 +717,6 @@ void error_with_pos(const char *fmt, ...)
 static void genksyms_usage(void)
 {
 	fputs("Usage:\n" "genksyms [-adDTwqhVR] > /path/to/.tmp_obj.ver\n" "\n"
-#ifdef __GNU_LIBRARY__
-	      "  -s, --symbol-prefix   Select symbol prefix\n"
 	      "  -d, --debug           Increment the debug level (repeatable)\n"
 	      "  -D, --dump            Dump expanded symbol defs (for debugging only)\n"
 	      "  -r, --reference file  Read reference symbols from a file\n"
@@ -733,20 +726,6 @@ static void genksyms_usage(void)
 	      "  -q, --quiet           Disable warnings (default)\n"
 	      "  -h, --help            Print this message\n"
 	      "  -V, --version         Print the release version\n"
-	      "  -R, --relative-crc    Emit section relative symbol CRCs\n"
-#else				/* __GNU_LIBRARY__ */
-	      "  -s                    Select symbol prefix\n"
-	      "  -d                    Increment the debug level (repeatable)\n"
-	      "  -D                    Dump expanded symbol defs (for debugging only)\n"
-	      "  -r file               Read reference symbols from a file\n"
-	      "  -T file               Dump expanded types into file\n"
-	      "  -p                    Preserve reference modversions or fail\n"
-	      "  -w                    Enable warnings\n"
-	      "  -q                    Disable warnings (default)\n"
-	      "  -h                    Print this message\n"
-	      "  -V                    Print the release version\n"
-	      "  -R                    Emit section relative symbol CRCs\n"
-#endif				/* __GNU_LIBRARY__ */
 	      , stderr);
 }
 
@@ -755,7 +734,6 @@ int main(int argc, char **argv)
 	FILE *dumpfile = NULL, *ref_file = NULL;
 	int o;
 
-#ifdef __GNU_LIBRARY__
 	struct option long_opts[] = {
 		{"debug", 0, 0, 'd'},
 		{"warnings", 0, 0, 'w'},
@@ -766,15 +744,11 @@ int main(int argc, char **argv)
 		{"preserve", 0, 0, 'p'},
 		{"version", 0, 0, 'V'},
 		{"help", 0, 0, 'h'},
-		{"relative-crc", 0, 0, 'R'},
 		{0, 0, 0, 0}
 	};
 
-	while ((o = getopt_long(argc, argv, "s:dwqVDr:T:phR",
+	while ((o = getopt_long(argc, argv, "dwqVDr:T:ph",
 				&long_opts[0], NULL)) != EOF)
-#else				/* __GNU_LIBRARY__ */
-	while ((o = getopt(argc, argv, "s:dwqVDr:T:phR")) != EOF)
-#endif				/* __GNU_LIBRARY__ */
 		switch (o) {
 		case 'd':
 			flag_debug++;
@@ -813,9 +787,6 @@ int main(int argc, char **argv)
 		case 'h':
 			genksyms_usage();
 			return 0;
-		case 'R':
-			flag_rel_crcs = 1;
-			break;
 		default:
 			genksyms_usage();
 			return 1;

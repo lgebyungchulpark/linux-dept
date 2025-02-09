@@ -219,7 +219,7 @@ static int apple_msi_domain_alloc(struct irq_domain *domain, unsigned int virq,
 	if (hwirq < 0)
 		return -ENOSPC;
 
-	fwspec.param[1] += hwirq;
+	fwspec.param[fwspec.param_count - 2] += hwirq;
 
 	ret = irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, &fwspec);
 	if (ret)
@@ -516,8 +516,8 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
 	u32 stat, idx;
 	int ret, i;
 
-	reset = gpiod_get_from_of_node(np, "reset-gpios", 0,
-				       GPIOD_OUT_LOW, "PERST#");
+	reset = devm_fwnode_gpiod_get(pcie->dev, of_fwnode_handle(np), "reset",
+				      GPIOD_OUT_LOW, "PERST#");
 	if (IS_ERR(reset))
 		return PTR_ERR(reset);
 
@@ -670,7 +670,7 @@ static struct apple_pcie_port *apple_pcie_get_port(struct pci_dev *pdev)
 static int apple_pcie_add_device(struct apple_pcie_port *port,
 				 struct pci_dev *pdev)
 {
-	u32 sid, rid = PCI_DEVID(pdev->bus->number, pdev->devfn);
+	u32 sid, rid = pci_dev_id(pdev);
 	int idx, err;
 
 	dev_dbg(&pdev->dev, "added to bus %s, index %d\n",
@@ -701,7 +701,7 @@ static int apple_pcie_add_device(struct apple_pcie_port *port,
 static void apple_pcie_release_device(struct apple_pcie_port *port,
 				      struct pci_dev *pdev)
 {
-	u32 rid = PCI_DEVID(pdev->bus->number, pdev->devfn);
+	u32 rid = pci_dev_id(pdev);
 	int idx;
 
 	mutex_lock(&port->pcie->lock);
@@ -783,6 +783,10 @@ static int apple_pcie_init(struct pci_config_window *cfg)
 	cfg->priv = pcie;
 	INIT_LIST_HEAD(&pcie->ports);
 
+	ret = apple_msi_init(pcie);
+	if (ret)
+		return ret;
+
 	for_each_child_of_node(dev->of_node, of_port) {
 		ret = apple_pcie_setup_port(pcie, of_port);
 		if (ret) {
@@ -792,7 +796,7 @@ static int apple_pcie_init(struct pci_config_window *cfg)
 		}
 	}
 
-	return apple_msi_init(pcie);
+	return 0;
 }
 
 static int apple_pcie_probe(struct platform_device *pdev)
@@ -835,4 +839,5 @@ static struct platform_driver apple_pcie_driver = {
 };
 module_platform_driver(apple_pcie_driver);
 
+MODULE_DESCRIPTION("Apple PCIe host bridge driver");
 MODULE_LICENSE("GPL v2");

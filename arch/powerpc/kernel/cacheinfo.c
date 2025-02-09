@@ -18,7 +18,6 @@
 #include <linux/of.h>
 #include <linux/percpu.h>
 #include <linux/slab.h>
-#include <asm/prom.h>
 #include <asm/cputhreads.h>
 #include <asm/smp.h>
 
@@ -736,7 +735,7 @@ static const struct sysfs_ops cache_index_ops = {
 	.show = cache_index_show,
 };
 
-static struct kobj_type cache_index_type = {
+static const struct kobj_type cache_index_type = {
 	.release = cache_index_release,
 	.sysfs_ops = &cache_index_ops,
 	.default_groups = cache_index_default_groups,

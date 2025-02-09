@@ -21,6 +21,7 @@
 #define REG_MTXFIFO	0x00
 #define REG_MRXFIFO	0x04
 #define REG_SMSTA	0x14
+#define REG_IMASK	0x18
 #define REG_CTL		0x1c
 #define REG_REV		0x28
 
@@ -66,6 +67,7 @@ static void pasemi_reset(struct pasemi_smbus *smbus)
 		val |= CTL_EN;
 
 	reg_write(smbus, REG_CTL, val);
+	reinit_completion(&smbus->irq_completion);
 }
 
 static void pasemi_smb_clear(struct pasemi_smbus *smbus)
@@ -78,14 +80,21 @@ static void pasemi_smb_clear(struct pasemi_smbus *smbus)
 
 static int pasemi_smb_waitready(struct pasemi_smbus *smbus)
 {
-	int timeout = 10;
+	int timeout = 100;
 	unsigned int status;
 
-	status = reg_read(smbus, REG_SMSTA);
-
-	while (!(status & SMSTA_XEN) && timeout--) {
-		msleep(1);
+	if (smbus->use_irq) {
+		reinit_completion(&smbus->irq_completion);
+		reg_write(smbus, REG_IMASK, SMSTA_XEN | SMSTA_MTN);
+		wait_for_completion_timeout(&smbus->irq_completion, msecs_to_jiffies(100));
+		reg_write(smbus, REG_IMASK, 0);
 		status = reg_read(smbus, REG_SMSTA);
+	} else {
+		status = reg_read(smbus, REG_SMSTA);
+		while (!(status & SMSTA_XEN) && timeout--) {
+			msleep(1);
+			status = reg_read(smbus, REG_SMSTA);
+		}
 	}
 
 	/* Got NACK? */
@@ -137,6 +146,12 @@ static int pasemi_i2c_xfer_msg(struct i2c_adapter *adapter,
 
 		TXFIFO_WR(smbus, msg->buf[msg->len-1] |
 			  (stop ? MTXFIFO_STOP : 0));
+
+		if (stop) {
+			err = pasemi_smb_waitready(smbus);
+			if (err)
+				goto reset_out;
+		}
 	}
 
 	return 0;
@@ -321,9 +336,9 @@ static u32 pasemi_smb_func(struct i2c_adapter *adapter)
 }
 
 static const struct i2c_algorithm smbus_algorithm = {
-	.master_xfer	= pasemi_i2c_xfer,
-	.smbus_xfer	= pasemi_smb_xfer,
-	.functionality	= pasemi_smb_func,
+	.xfer = pasemi_i2c_xfer,
+	.smbus_xfer = pasemi_smb_xfer,
+	.functionality = pasemi_smb_func,
 };
 
 int pasemi_i2c_common_probe(struct pasemi_smbus *smbus)
@@ -333,15 +348,18 @@ int pasemi_i2c_common_probe(struct pasemi_smbus *smbus)
 	smbus->adapter.owner = THIS_MODULE;
 	snprintf(smbus->adapter.name, sizeof(smbus->adapter.name),
 		 "PA Semi SMBus adapter (%s)", dev_name(smbus->dev));
-	smbus->adapter.class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 	smbus->adapter.algo = &smbus_algorithm;
 	smbus->adapter.algo_data = smbus;
 
 	/* set up the sysfs linkage to our parent device */
 	smbus->adapter.dev.parent = smbus->dev;
+	smbus->use_irq = 0;
+	init_completion(&smbus->irq_completion);
 
 	if (smbus->hw_rev != PASEMI_HW_REV_PCI)
 		smbus->hw_rev = reg_read(smbus, REG_REV);
+
+	reg_write(smbus, REG_IMASK, 0);
 
 	pasemi_reset(smbus);
 
@@ -351,3 +369,18 @@ int pasemi_i2c_common_probe(struct pasemi_smbus *smbus)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(pasemi_i2c_common_probe);
+
+irqreturn_t pasemi_irq_handler(int irq, void *dev_id)
+{
+	struct pasemi_smbus *smbus = dev_id;
+
+	reg_write(smbus, REG_IMASK, 0);
+	complete(&smbus->irq_completion);
+	return IRQ_HANDLED;
+}
+EXPORT_SYMBOL_GPL(pasemi_irq_handler);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Olof Johansson <olof@lixom.net>");
+MODULE_DESCRIPTION("PA Semi PWRficient SMBus driver");

@@ -11,6 +11,7 @@
 #include <linux/bcd.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
+#include <linux/kstrtox.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/property.h>
@@ -64,6 +65,7 @@ enum ds_type {
 #	define DS1340_BIT_CENTURY_EN	0x80	/* in REG_HOUR */
 #	define DS1340_BIT_CENTURY	0x40	/* in REG_HOUR */
 #define DS1307_REG_WDAY		0x03	/* 01-07 */
+#	define MCP794XX_BIT_OSCRUN	BIT(5)
 #	define MCP794XX_BIT_VBATEN	0x08
 #define DS1307_REG_MDAY		0x04	/* 01-31 */
 #define DS1307_REG_MONTH	0x05	/* 01-12 */
@@ -241,6 +243,10 @@ static int ds1307_get_time(struct device *dev, struct rtc_time *t)
 	    regs[DS1307_REG_MIN] & M41T0_BIT_OF) {
 		dev_warn_once(dev, "oscillator failed, set time!\n");
 		return -EINVAL;
+	} else if (ds1307->type == mcp794xx &&
+	    !(regs[DS1307_REG_WDAY] & MCP794XX_BIT_OSCRUN)) {
+		dev_warn_once(dev, "oscillator failed, set time!\n");
+		return -EINVAL;
 	}
 
 	tmp = regs[DS1307_REG_SECS];
@@ -353,7 +359,7 @@ static int ds1307_set_time(struct device *dev, struct rtc_time *t)
 	regs[DS1307_REG_MONTH] = bin2bcd(t->tm_mon + 1);
 
 	/* assume 20YY not 19YY */
-	tmp = t->tm_year - 100;
+	tmp = t->tm_year % 100;
 	regs[DS1307_REG_YEAR] = bin2bcd(tmp);
 
 	if (chip->century_enable_bit)
@@ -1218,8 +1224,7 @@ static ssize_t frequency_test_show(struct device *dev,
 
 	regmap_read(ds1307->regmap, M41TXX_REG_CONTROL, &ctrl_reg);
 
-	return scnprintf(buf, PAGE_SIZE, (ctrl_reg & M41TXX_BIT_FT) ? "on\n" :
-			"off\n");
+	return sysfs_emit(buf, (ctrl_reg & M41TXX_BIT_FT) ? "on\n" : "off\n");
 }
 
 static DEVICE_ATTR_RW(frequency_test);
@@ -1712,9 +1717,9 @@ static const struct regmap_config regmap_config = {
 	.val_bits = 8,
 };
 
-static int ds1307_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ds1307_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct ds1307		*ds1307;
 	const void		*match;
 	int			err = -ENODEV;
@@ -1744,7 +1749,7 @@ static int ds1307_probe(struct i2c_client *client,
 
 	match = device_get_match_data(&client->dev);
 	if (match) {
-		ds1307->type = (enum ds_type)match;
+		ds1307->type = (uintptr_t)match;
 		chip = &chips[ds1307->type];
 	} else if (id) {
 		chip = &chips[id->driver_data];
@@ -1955,7 +1960,7 @@ static int ds1307_probe(struct i2c_client *client,
 		dev_info(ds1307->dev,
 			 "'wakeup-source' is set, request for an IRQ is disabled!\n");
 		/* We cannot support UIE mode if we do not have an IRQ line */
-		ds1307->rtc->uie_unsupported = 1;
+		clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, ds1307->rtc->features);
 	}
 
 	if (want_irq) {

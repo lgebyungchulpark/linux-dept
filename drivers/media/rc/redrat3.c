@@ -31,7 +31,7 @@
  * --
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/device.h>
 #include <linux/leds.h>
 #include <linux/module.h>
@@ -1155,9 +1155,9 @@ static int redrat3_dev_resume(struct usb_interface *intf)
 {
 	struct redrat3_dev *rr3 = usb_get_intfdata(intf);
 
-	if (usb_submit_urb(rr3->narrow_urb, GFP_ATOMIC))
+	if (usb_submit_urb(rr3->narrow_urb, GFP_NOIO))
 		return -EIO;
-	if (usb_submit_urb(rr3->wide_urb, GFP_ATOMIC))
+	if (usb_submit_urb(rr3->wide_urb, GFP_NOIO))
 		return -EIO;
 	led_classdev_resume(&rr3->led);
 	return 0;

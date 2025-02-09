@@ -161,7 +161,7 @@ static irqreturn_t st_uvis25_trigger_handler_thread(int irq, void *private)
 	if (!(status & ST_UVIS25_REG_UV_DA_MASK))
 		return IRQ_NONE;
 
-	iio_trigger_poll_chained(hw->trig);
+	iio_trigger_poll_nested(hw->trig);
 
 	return IRQ_HANDLED;
 }
@@ -174,8 +174,7 @@ static int st_uvis25_allocate_trigger(struct iio_dev *iio_dev)
 	unsigned long irq_type;
 	int err;
 
-	irq_type = irqd_get_trigger_type(irq_get_irq_data(hw->irq));
-
+	irq_type = irq_get_trigger_type(hw->irq);
 	switch (irq_type) {
 	case IRQF_TRIGGER_HIGH:
 	case IRQF_TRIGGER_RISING:
@@ -291,7 +290,7 @@ int st_uvis25_probe(struct device *dev, int irq, struct regmap *regmap)
 	if (!iio_dev)
 		return -ENOMEM;
 
-	dev_set_drvdata(dev, (void *)iio_dev);
+	dev_set_drvdata(dev, iio_dev);
 
 	hw = iio_priv(iio_dev);
 	hw->irq = irq;
@@ -323,18 +322,18 @@ int st_uvis25_probe(struct device *dev, int irq, struct regmap *regmap)
 
 	return devm_iio_device_register(dev, iio_dev);
 }
-EXPORT_SYMBOL(st_uvis25_probe);
+EXPORT_SYMBOL_NS(st_uvis25_probe, "IIO_UVIS25");
 
-static int __maybe_unused st_uvis25_suspend(struct device *dev)
+static int st_uvis25_suspend(struct device *dev)
 {
 	struct iio_dev *iio_dev = dev_get_drvdata(dev);
 	struct st_uvis25_hw *hw = iio_priv(iio_dev);
 
-	return regmap_update_bits(hw->regmap, ST_UVIS25_REG_CTRL1_ADDR,
-				  ST_UVIS25_REG_ODR_MASK, 0);
+	return regmap_clear_bits(hw->regmap, ST_UVIS25_REG_CTRL1_ADDR,
+				 ST_UVIS25_REG_ODR_MASK);
 }
 
-static int __maybe_unused st_uvis25_resume(struct device *dev)
+static int st_uvis25_resume(struct device *dev)
 {
 	struct iio_dev *iio_dev = dev_get_drvdata(dev);
 	struct st_uvis25_hw *hw = iio_priv(iio_dev);
@@ -346,10 +345,7 @@ static int __maybe_unused st_uvis25_resume(struct device *dev)
 	return 0;
 }
 
-const struct dev_pm_ops st_uvis25_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(st_uvis25_suspend, st_uvis25_resume)
-};
-EXPORT_SYMBOL(st_uvis25_pm_ops);
+EXPORT_NS_SIMPLE_DEV_PM_OPS(st_uvis25_pm_ops, st_uvis25_suspend, st_uvis25_resume, IIO_UVIS25);
 
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>");
 MODULE_DESCRIPTION("STMicroelectronics uvis25 sensor driver");

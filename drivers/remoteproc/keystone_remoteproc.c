@@ -14,7 +14,7 @@
 #include <linux/workqueue.h>
 #include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 #include <linux/remoteproc.h>
@@ -59,10 +59,10 @@ struct keystone_rproc {
 	int num_mems;
 	struct regmap *dev_ctrl;
 	struct reset_control *reset;
+	struct gpio_desc *kick_gpio;
 	u32 boot_offset;
 	int irq_ring;
 	int irq_fault;
-	int kick_gpio;
 	struct work_struct workqueue;
 };
 
@@ -232,10 +232,10 @@ static void keystone_rproc_kick(struct rproc *rproc, int vqid)
 {
 	struct keystone_rproc *ksproc = rproc->priv;
 
-	if (WARN_ON(ksproc->kick_gpio < 0))
+	if (!ksproc->kick_gpio)
 		return;
 
-	gpio_set_value(ksproc->kick_gpio, 1);
+	gpiod_set_value(ksproc->kick_gpio, 1);
 }
 
 /*
@@ -366,8 +366,6 @@ static int keystone_rproc_probe(struct platform_device *pdev)
 	struct rproc *rproc;
 	int dsp_id;
 	char *fw_name = NULL;
-	char *template = "keystone-dsp%d-fw";
-	int name_len = 0;
 	int ret = 0;
 
 	if (!np) {
@@ -382,14 +380,12 @@ static int keystone_rproc_probe(struct platform_device *pdev)
 	}
 
 	/* construct a custom default fw name - subject to change in future */
-	name_len = strlen(template); /* assuming a single digit alias */
-	fw_name = devm_kzalloc(dev, name_len, GFP_KERNEL);
+	fw_name = devm_kasprintf(dev, GFP_KERNEL, "keystone-dsp%d-fw", dsp_id);
 	if (!fw_name)
 		return -ENOMEM;
-	snprintf(fw_name, name_len, template, dsp_id);
 
-	rproc = rproc_alloc(dev, dev_name(dev), &keystone_rproc_ops, fw_name,
-			    sizeof(*ksproc));
+	rproc = devm_rproc_alloc(dev, dev_name(dev), &keystone_rproc_ops,
+				 fw_name, sizeof(*ksproc));
 	if (!rproc)
 		return -ENOMEM;
 
@@ -400,20 +396,17 @@ static int keystone_rproc_probe(struct platform_device *pdev)
 
 	ret = keystone_rproc_of_get_dev_syscon(pdev, ksproc);
 	if (ret)
-		goto free_rproc;
+		return ret;
 
 	ksproc->reset = devm_reset_control_get_exclusive(dev, NULL);
-	if (IS_ERR(ksproc->reset)) {
-		ret = PTR_ERR(ksproc->reset);
-		goto free_rproc;
-	}
+	if (IS_ERR(ksproc->reset))
+		return PTR_ERR(ksproc->reset);
 
 	/* enable clock for accessing DSP internal memories */
 	pm_runtime_enable(dev);
-	ret = pm_runtime_get_sync(dev);
+	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0) {
 		dev_err(dev, "failed to enable clock, status = %d\n", ret);
-		pm_runtime_put_noidle(dev);
 		goto disable_rpm;
 	}
 
@@ -433,9 +426,9 @@ static int keystone_rproc_probe(struct platform_device *pdev)
 		goto disable_clk;
 	}
 
-	ksproc->kick_gpio = of_get_named_gpio_flags(np, "kick-gpios", 0, NULL);
-	if (ksproc->kick_gpio < 0) {
-		ret = ksproc->kick_gpio;
+	ksproc->kick_gpio = gpiod_get(dev, "kick", GPIOD_ASIS);
+	ret = PTR_ERR_OR_ZERO(ksproc->kick_gpio);
+	if (ret) {
 		dev_err(dev, "failed to get gpio for virtio kicks, status = %d\n",
 			ret);
 		goto disable_clk;
@@ -467,26 +460,23 @@ static int keystone_rproc_probe(struct platform_device *pdev)
 
 release_mem:
 	of_reserved_mem_device_release(dev);
+	gpiod_put(ksproc->kick_gpio);
 disable_clk:
 	pm_runtime_put_sync(dev);
 disable_rpm:
 	pm_runtime_disable(dev);
-free_rproc:
-	rproc_free(rproc);
 	return ret;
 }
 
-static int keystone_rproc_remove(struct platform_device *pdev)
+static void keystone_rproc_remove(struct platform_device *pdev)
 {
 	struct keystone_rproc *ksproc = platform_get_drvdata(pdev);
 
 	rproc_del(ksproc->rproc);
+	gpiod_put(ksproc->kick_gpio);
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-	rproc_free(ksproc->rproc);
 	of_reserved_mem_device_release(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id keystone_rproc_of_match[] = {
@@ -500,7 +490,7 @@ MODULE_DEVICE_TABLE(of, keystone_rproc_of_match);
 
 static struct platform_driver keystone_rproc_driver = {
 	.probe	= keystone_rproc_probe,
-	.remove	= keystone_rproc_remove,
+	.remove = keystone_rproc_remove,
 	.driver	= {
 		.name = "keystone-rproc",
 		.of_match_table = keystone_rproc_of_match,

@@ -41,6 +41,7 @@ struct f_acm {
 	struct gserial			port;
 	u8				ctrl_id, data_id;
 	u8				port_num;
+	u8				bInterfaceProtocol;
 
 	u8				pending;
 
@@ -57,18 +58,8 @@ struct f_acm {
 
 	/* SetControlLineState request -- CDC 1.1 section 6.2.14 (INPUT) */
 	u16				port_handshake_bits;
-#define ACM_CTRL_RTS	(1 << 1)	/* unused with full duplex */
-#define ACM_CTRL_DTR	(1 << 0)	/* host is ready for data r/w */
-
 	/* SerialState notification -- CDC 1.1 section 6.3.5 (OUTPUT) */
 	u16				serial_state;
-#define ACM_CTRL_OVERRUN	(1 << 6)
-#define ACM_CTRL_PARITY		(1 << 5)
-#define ACM_CTRL_FRAMING	(1 << 4)
-#define ACM_CTRL_RI		(1 << 3)
-#define ACM_CTRL_BRK		(1 << 2)
-#define ACM_CTRL_DSR		(1 << 1)
-#define ACM_CTRL_DCD		(1 << 0)
 };
 
 static inline struct f_acm *func_to_acm(struct usb_function *f)
@@ -99,7 +90,7 @@ acm_iad_descriptor = {
 	.bInterfaceCount = 	2,	// control + data
 	.bFunctionClass =	USB_CLASS_COMM,
 	.bFunctionSubClass =	USB_CDC_SUBCLASS_ACM,
-	.bFunctionProtocol =	USB_CDC_ACM_PROTO_AT_V25TER,
+	/* .bFunctionProtocol = DYNAMIC */
 	/* .iFunction =		DYNAMIC */
 };
 
@@ -111,7 +102,7 @@ static struct usb_interface_descriptor acm_control_interface_desc = {
 	.bNumEndpoints =	1,
 	.bInterfaceClass =	USB_CLASS_COMM,
 	.bInterfaceSubClass =	USB_CDC_SUBCLASS_ACM,
-	.bInterfaceProtocol =	USB_CDC_ACM_PROTO_AT_V25TER,
+	/* .bInterfaceProtocol = DYNAMIC */
 	/* .iInterface = DYNAMIC */
 };
 
@@ -333,6 +324,8 @@ static void acm_complete_set_line_coding(struct usb_ep *ep,
 	}
 }
 
+static int acm_send_break(struct gserial *port, int duration);
+
 static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 {
 	struct f_acm		*acm = func_to_acm(f);
@@ -385,10 +378,18 @@ static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 		value = 0;
 
 		/* FIXME we should not allow data to flow until the
-		 * host sets the ACM_CTRL_DTR bit; and when it clears
+		 * host sets the USB_CDC_CTRL_DTR bit; and when it clears
 		 * that bit, we should return to that no-flow state.
 		 */
 		acm->port_handshake_bits = w_value;
+		break;
+
+	case ((USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8)
+			| USB_CDC_REQ_SEND_BREAK:
+		if (w_index != acm->ctrl_id)
+			goto invalid;
+
+		acm_send_break(&acm->port, w_value);
 		break;
 
 	default:
@@ -575,7 +576,7 @@ static void acm_connect(struct gserial *port)
 {
 	struct f_acm		*acm = port_to_acm(port);
 
-	acm->serial_state |= ACM_CTRL_DSR | ACM_CTRL_DCD;
+	acm->serial_state |= USB_CDC_SERIAL_STATE_DSR | USB_CDC_SERIAL_STATE_DCD;
 	acm_notify_serial_state(acm);
 }
 
@@ -583,7 +584,7 @@ static void acm_disconnect(struct gserial *port)
 {
 	struct f_acm		*acm = port_to_acm(port);
 
-	acm->serial_state &= ~(ACM_CTRL_DSR | ACM_CTRL_DCD);
+	acm->serial_state &= ~(USB_CDC_SERIAL_STATE_DSR | USB_CDC_SERIAL_STATE_DCD);
 	acm_notify_serial_state(acm);
 }
 
@@ -593,9 +594,9 @@ static int acm_send_break(struct gserial *port, int duration)
 	u16			state;
 
 	state = acm->serial_state;
-	state &= ~ACM_CTRL_BRK;
+	state &= ~USB_CDC_SERIAL_STATE_BREAK;
 	if (duration)
-		state |= ACM_CTRL_BRK;
+		state |= USB_CDC_SERIAL_STATE_BREAK;
 
 	acm->serial_state = state;
 	return acm_notify_serial_state(acm);
@@ -663,6 +664,9 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 		goto fail;
 	acm->notify = ep;
 
+	acm_iad_descriptor.bFunctionProtocol = acm->bInterfaceProtocol;
+	acm_control_interface_desc.bInterfaceProtocol = acm->bInterfaceProtocol;
+
 	/* allocate notification */
 	acm->notify_req = gs_alloc_req(ep,
 			sizeof(struct usb_cdc_notification) + 2,
@@ -691,10 +695,8 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 		goto fail;
 
 	dev_dbg(&cdev->gadget->dev,
-		"acm ttyGS%d: %s speed IN/%s OUT/%s NOTIFY/%s\n",
+		"acm ttyGS%d: IN/%s OUT/%s NOTIFY/%s\n",
 		acm->port_num,
-		gadget_is_superspeed(c->cdev->gadget) ? "super" :
-		gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full",
 		acm->port.in->name, acm->port.out->name,
 		acm->notify->name);
 	return 0;
@@ -721,8 +723,14 @@ static void acm_unbind(struct usb_configuration *c, struct usb_function *f)
 static void acm_free_func(struct usb_function *f)
 {
 	struct f_acm		*acm = func_to_acm(f);
+	struct f_serial_opts	*opts;
+
+	opts = container_of(f->fi, struct f_serial_opts, func_inst);
 
 	kfree(acm);
+	mutex_lock(&opts->lock);
+	opts->instances--;
+	mutex_unlock(&opts->lock);
 }
 
 static void acm_resume(struct usb_function *f)
@@ -763,7 +771,11 @@ static struct usb_function *acm_alloc_func(struct usb_function_instance *fi)
 	acm->port.func.disable = acm_disable;
 
 	opts = container_of(fi, struct f_serial_opts, func_inst);
+	mutex_lock(&opts->lock);
 	acm->port_num = opts->port_num;
+	acm->bInterfaceProtocol = opts->protocol;
+	opts->instances++;
+	mutex_unlock(&opts->lock);
 	acm->port.func.unbind = acm_unbind;
 	acm->port.func.free_func = acm_free_func;
 	acm->port.func.resume = acm_resume;
@@ -814,11 +826,42 @@ static ssize_t f_acm_port_num_show(struct config_item *item, char *page)
 
 CONFIGFS_ATTR_RO(f_acm_, port_num);
 
+static ssize_t f_acm_protocol_show(struct config_item *item, char *page)
+{
+	return sprintf(page, "%u\n", to_f_serial_opts(item)->protocol);
+}
+
+static ssize_t f_acm_protocol_store(struct config_item *item,
+		const char *page, size_t count)
+{
+	struct f_serial_opts *opts = to_f_serial_opts(item);
+	int ret;
+
+	mutex_lock(&opts->lock);
+
+	if (opts->instances) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	ret = kstrtou8(page, 0, &opts->protocol);
+	if (ret)
+		goto out;
+	ret = count;
+
+out:
+	mutex_unlock(&opts->lock);
+	return ret;
+}
+
+CONFIGFS_ATTR(f_acm_, protocol);
+
 static struct configfs_attribute *acm_attrs[] = {
 #ifdef CONFIG_U_SERIAL_CONSOLE
 	&f_acm_attr_console,
 #endif
 	&f_acm_attr_port_num,
+	&f_acm_attr_protocol,
 	NULL,
 };
 
@@ -834,6 +877,7 @@ static void acm_free_instance(struct usb_function_instance *fi)
 
 	opts = container_of(fi, struct f_serial_opts, func_inst);
 	gserial_free_line(opts->port_num);
+	mutex_destroy(&opts->lock);
 	kfree(opts);
 }
 
@@ -845,7 +889,9 @@ static struct usb_function_instance *acm_alloc_instance(void)
 	opts = kzalloc(sizeof(*opts), GFP_KERNEL);
 	if (!opts)
 		return ERR_PTR(-ENOMEM);
+	opts->protocol = USB_CDC_ACM_PROTO_AT_V25TER;
 	opts->func_inst.free_func_inst = acm_free_instance;
+	mutex_init(&opts->lock);
 	ret = gserial_alloc_line(&opts->port_num);
 	if (ret) {
 		kfree(opts);
@@ -856,4 +902,5 @@ static struct usb_function_instance *acm_alloc_instance(void)
 	return &opts->func_inst;
 }
 DECLARE_USB_FUNCTION_INIT(acm, acm_alloc_instance, acm_alloc_func);
+MODULE_DESCRIPTION("USB CDC serial (ACM) function driver");
 MODULE_LICENSE("GPL");

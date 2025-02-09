@@ -229,20 +229,18 @@ disable_mux:
 	return ret;
 }
 
-static int am654_hbmc_remove(struct platform_device *pdev)
+static void am654_hbmc_remove(struct platform_device *pdev)
 {
 	struct am654_hbmc_priv *priv = platform_get_drvdata(pdev);
 	struct am654_hbmc_device_priv *dev_priv = priv->hbdev.priv;
-	int ret;
 
-	ret = hyperbus_unregister_device(&priv->hbdev);
+	hyperbus_unregister_device(&priv->hbdev);
+
 	if (priv->mux_ctrl)
 		mux_control_deselect(priv->mux_ctrl);
 
 	if (dev_priv->rx_chan)
 		dma_release_channel(dev_priv->rx_chan);
-
-	return ret;
 }
 
 static const struct of_device_id am654_hbmc_dt_ids[] = {

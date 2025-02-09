@@ -10,14 +10,16 @@
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/reset.h>
 #include <linux/seq_file.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_device.h>
-#include <drm/drm_fb_cma_helper.h>
+#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_dma_helper.h>
 
 #include "sti_compositor.h"
 #include "sti_drv.h"
@@ -1035,6 +1037,9 @@ static int sti_hqvdp_atomic_check(struct drm_plane *drm_plane,
 		return 0;
 
 	crtc_state = drm_atomic_get_crtc_state(state, crtc);
+	if (IS_ERR(crtc_state))
+		return PTR_ERR(crtc_state);
+
 	mode = &crtc_state->mode;
 	dst_x = new_plane_state->crtc_x;
 	dst_y = new_plane_state->crtc_y;
@@ -1053,8 +1058,8 @@ static int sti_hqvdp_atomic_check(struct drm_plane *drm_plane,
 		return -EINVAL;
 	}
 
-	if (!drm_fb_cma_get_gem_obj(fb, 0)) {
-		DRM_ERROR("Can't get CMA GEM object for fb\n");
+	if (!drm_fb_dma_get_gem_obj(fb, 0)) {
+		DRM_ERROR("Can't get DMA GEM object for fb\n");
 		return -EINVAL;
 	}
 
@@ -1122,7 +1127,7 @@ static void sti_hqvdp_atomic_update(struct drm_plane *drm_plane,
 	struct drm_display_mode *mode;
 	int dst_x, dst_y, dst_w, dst_h;
 	int src_x, src_y, src_w, src_h;
-	struct drm_gem_cma_object *cma_obj;
+	struct drm_gem_dma_object *dma_obj;
 	struct sti_hqvdp_cmd *cmd;
 	int scale_h, scale_v;
 	int cmd_offset;
@@ -1176,15 +1181,15 @@ static void sti_hqvdp_atomic_update(struct drm_plane *drm_plane,
 	cmd->iqi.sat_gain = IQI_SAT_GAIN_DFLT;
 	cmd->iqi.pxf_conf = IQI_PXF_CONF_DFLT;
 
-	cma_obj = drm_fb_cma_get_gem_obj(fb, 0);
+	dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
 
 	DRM_DEBUG_DRIVER("drm FB:%d format:%.4s phys@:0x%lx\n", fb->base.id,
 			 (char *)&fb->format->format,
-			 (unsigned long)cma_obj->paddr);
+			 (unsigned long) dma_obj->dma_addr);
 
 	/* Buffer planes address */
-	cmd->top.current_luma = (u32)cma_obj->paddr + fb->offsets[0];
-	cmd->top.current_chroma = (u32)cma_obj->paddr + fb->offsets[1];
+	cmd->top.current_luma = (u32) dma_obj->dma_addr + fb->offsets[0];
+	cmd->top.current_chroma = (u32) dma_obj->dma_addr + fb->offsets[1];
 
 	/* Pitches */
 	cmd->top.luma_processed_pitch = fb->pitches[0];
@@ -1283,7 +1288,7 @@ static const struct drm_plane_funcs sti_hqvdp_plane_helpers_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
 	.destroy = drm_plane_cleanup,
-	.reset = sti_plane_reset,
+	.reset = drm_atomic_helper_plane_reset,
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
 	.late_register = sti_hqvdp_late_register,
@@ -1398,10 +1403,9 @@ static int sti_hqvdp_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sti_hqvdp_ops);
 }
 
-static int sti_hqvdp_remove(struct platform_device *pdev)
+static void sti_hqvdp_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sti_hqvdp_ops);
-	return 0;
 }
 
 static const struct of_device_id hqvdp_of_match[] = {
@@ -1413,7 +1417,6 @@ MODULE_DEVICE_TABLE(of, hqvdp_of_match);
 struct platform_driver sti_hqvdp_driver = {
 	.driver = {
 		.name = "sti-hqvdp",
-		.owner = THIS_MODULE,
 		.of_match_table = hqvdp_of_match,
 	},
 	.probe = sti_hqvdp_probe,

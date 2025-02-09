@@ -54,9 +54,6 @@
 #define APDS9960_REG_CONTROL_PGAIN_MASK_SHIFT	2
 
 #define APDS9960_REG_CONFIG_2	0x90
-#define APDS9960_REG_CONFIG_2_GGAIN_MASK	0x60
-#define APDS9960_REG_CONFIG_2_GGAIN_MASK_SHIFT	5
-
 #define APDS9960_REG_ID		0x92
 
 #define APDS9960_REG_STATUS	0x93
@@ -77,6 +74,9 @@
 #define APDS9960_REG_GCONF_1_GFIFO_THRES_MASK_SHIFT	6
 
 #define APDS9960_REG_GCONF_2	0xa3
+#define APDS9960_REG_GCONF_2_GGAIN_MASK			0x60
+#define APDS9960_REG_GCONF_2_GGAIN_MASK_SHIFT		5
+
 #define APDS9960_REG_GOFFSET_U	0xa4
 #define APDS9960_REG_GOFFSET_D	0xa5
 #define APDS9960_REG_GPULSE	0xa6
@@ -133,8 +133,8 @@ struct apds9960_data {
 	struct regmap_field *reg_enable_pxs;
 
 	/* state */
-	int als_int;
-	int pxs_int;
+	bool als_int;
+	bool pxs_int;
 	int gesture_mode_running;
 
 	/* gain values */
@@ -146,6 +146,25 @@ struct apds9960_data {
 
 	/* gesture buffer */
 	u8 buffer[4]; /* 4 8-bit channels */
+
+	/* calibration value buffer */
+	int calibbias[5];
+};
+
+enum {
+	APDS9960_CHAN_PROXIMITY,
+	APDS9960_CHAN_GESTURE_UP,
+	APDS9960_CHAN_GESTURE_DOWN,
+	APDS9960_CHAN_GESTURE_LEFT,
+	APDS9960_CHAN_GESTURE_RIGHT,
+};
+
+static const unsigned int apds9960_offset_regs[][2] = {
+	[APDS9960_CHAN_PROXIMITY] = {APDS9960_REG_POFFSET_UR, APDS9960_REG_POFFSET_DL},
+	[APDS9960_CHAN_GESTURE_UP] = {APDS9960_REG_GOFFSET_U, 0},
+	[APDS9960_CHAN_GESTURE_DOWN] = {APDS9960_REG_GOFFSET_D, 0},
+	[APDS9960_CHAN_GESTURE_LEFT] = {APDS9960_REG_GOFFSET_L, 0},
+	[APDS9960_CHAN_GESTURE_RIGHT] = {APDS9960_REG_GOFFSET_R, 0},
 };
 
 static const struct reg_default apds9960_reg_defaults[] = {
@@ -223,14 +242,16 @@ static const struct iio_event_spec apds9960_pxs_event_spec[] = {
 	{
 		.type = IIO_EV_TYPE_THRESH,
 		.dir = IIO_EV_DIR_RISING,
-		.mask_separate = BIT(IIO_EV_INFO_VALUE) |
-			BIT(IIO_EV_INFO_ENABLE),
+		.mask_separate = BIT(IIO_EV_INFO_VALUE),
 	},
 	{
 		.type = IIO_EV_TYPE_THRESH,
 		.dir = IIO_EV_DIR_FALLING,
-		.mask_separate = BIT(IIO_EV_INFO_VALUE) |
-			BIT(IIO_EV_INFO_ENABLE),
+		.mask_separate = BIT(IIO_EV_INFO_VALUE),
+	},
+	{
+		.type = IIO_EV_TYPE_THRESH,
+		.mask_separate = BIT(IIO_EV_INFO_ENABLE),
 	},
 };
 
@@ -238,19 +259,22 @@ static const struct iio_event_spec apds9960_als_event_spec[] = {
 	{
 		.type = IIO_EV_TYPE_THRESH,
 		.dir = IIO_EV_DIR_RISING,
-		.mask_separate = BIT(IIO_EV_INFO_VALUE) |
-			BIT(IIO_EV_INFO_ENABLE),
+		.mask_separate = BIT(IIO_EV_INFO_VALUE),
 	},
 	{
 		.type = IIO_EV_TYPE_THRESH,
 		.dir = IIO_EV_DIR_FALLING,
-		.mask_separate = BIT(IIO_EV_INFO_VALUE) |
-			BIT(IIO_EV_INFO_ENABLE),
+		.mask_separate = BIT(IIO_EV_INFO_VALUE),
+	},
+	{
+		.type = IIO_EV_TYPE_THRESH,
+		.mask_separate = BIT(IIO_EV_INFO_ENABLE),
 	},
 };
 
 #define APDS9960_GESTURE_CHANNEL(_dir, _si) { \
 	.type = IIO_PROXIMITY, \
+	.info_mask_separate = BIT(IIO_CHAN_INFO_CALIBBIAS), \
 	.channel = _si + 1, \
 	.scan_index = _si, \
 	.indexed = 1, \
@@ -278,7 +302,8 @@ static const struct iio_chan_spec apds9960_channels[] = {
 	{
 		.type = IIO_PROXIMITY,
 		.address = APDS9960_REG_PDATA,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+			BIT(IIO_CHAN_INFO_CALIBBIAS),
 		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.channel = 0,
 		.indexed = 0,
@@ -311,6 +336,28 @@ static const struct iio_chan_spec apds9960_channels[] = {
 	APDS9960_INTENSITY_CHANNEL(GREEN),
 	APDS9960_INTENSITY_CHANNEL(BLUE),
 };
+
+static int apds9960_set_calibbias(struct apds9960_data *data,
+		struct iio_chan_spec const *chan, int calibbias)
+{
+	int ret, i;
+
+	if (calibbias < S8_MIN || calibbias > S8_MAX)
+		return -EINVAL;
+
+	guard(mutex)(&data->lock);
+	for (i = 0; i < 2; i++) {
+		if (apds9960_offset_regs[chan->channel][i] == 0)
+			break;
+
+		ret = regmap_write(data->regmap, apds9960_offset_regs[chan->channel][i], calibbias);
+		if (ret < 0)
+			return ret;
+	}
+	data->calibbias[chan->channel] = calibbias;
+
+	return 0;
+}
 
 /* integration time in us */
 static const int apds9960_int_time[][2] = {
@@ -396,9 +443,9 @@ static int apds9960_set_pxs_gain(struct apds9960_data *data, int val)
 			}
 
 			ret = regmap_update_bits(data->regmap,
-				APDS9960_REG_CONFIG_2,
-				APDS9960_REG_CONFIG_2_GGAIN_MASK,
-				idx << APDS9960_REG_CONFIG_2_GGAIN_MASK_SHIFT);
+				APDS9960_REG_GCONF_2,
+				APDS9960_REG_GCONF_2_GGAIN_MASK,
+				idx << APDS9960_REG_GCONF_2_GGAIN_MASK_SHIFT);
 			if (!ret)
 				data->pxs_gain = idx;
 			mutex_unlock(&data->lock);
@@ -527,6 +574,12 @@ static int apds9960_read_raw(struct iio_dev *indio_dev,
 		}
 		mutex_unlock(&data->lock);
 		break;
+	case IIO_CHAN_INFO_CALIBBIAS:
+		mutex_lock(&data->lock);
+		*val = data->calibbias[chan->channel];
+		ret = IIO_VAL_INT;
+		mutex_unlock(&data->lock);
+		break;
 	}
 
 	return ret;
@@ -560,6 +613,10 @@ static int apds9960_write_raw(struct iio_dev *indio_dev,
 		default:
 			return -EINVAL;
 		}
+	case IIO_CHAN_INFO_CALIBBIAS:
+		if (val2 != 0)
+			return -EINVAL;
+		return apds9960_set_calibbias(data, chan, val);
 	default:
 		return -EINVAL;
 	}
@@ -692,20 +749,16 @@ static int apds9960_read_event_config(struct iio_dev *indio_dev,
 	default:
 		return -EINVAL;
 	}
-
-	return 0;
 }
 
 static int apds9960_write_event_config(struct iio_dev *indio_dev,
 				       const struct iio_chan_spec *chan,
 				       enum iio_event_type type,
 				       enum iio_event_direction dir,
-				       int state)
+				       bool state)
 {
 	struct apds9960_data *data = iio_priv(indio_dev);
 	int ret;
-
-	state = !!state;
 
 	switch (chan->type) {
 	case IIO_PROXIMITY:
@@ -984,8 +1037,7 @@ static int apds9960_chip_init(struct apds9960_data *data)
 	return apds9960_set_powermode(data, 1);
 }
 
-static int apds9960_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int apds9960_probe(struct i2c_client *client)
 {
 	struct apds9960_data *data;
 	struct iio_dev *indio_dev;
@@ -1003,7 +1055,6 @@ static int apds9960_probe(struct i2c_client *client,
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
 	ret = devm_iio_kfifo_buffer_setup(&client->dev, indio_dev,
-					  INDIO_BUFFER_SOFTWARE,
 					  &apds9960_buffer_setup_ops);
 	if (ret)
 		return ret;
@@ -1068,7 +1119,7 @@ error_power_down:
 	return ret;
 }
 
-static int apds9960_remove(struct i2c_client *client)
+static void apds9960_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct apds9960_data *data = iio_priv(indio_dev);
@@ -1077,8 +1128,6 @@ static int apds9960_remove(struct i2c_client *client)
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
 	apds9960_set_powermode(data, 0);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -1107,7 +1156,7 @@ static const struct dev_pm_ops apds9960_pm_ops = {
 };
 
 static const struct i2c_device_id apds9960_id[] = {
-	{ "apds9960", 0 },
+	{ "apds9960" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, apds9960_id);

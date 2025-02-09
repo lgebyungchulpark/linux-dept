@@ -7,6 +7,7 @@
 
 #ifndef _DEBUGFS_INTERNAL_H_
 #define _DEBUGFS_INTERNAL_H_
+#include <linux/list.h>
 
 struct file_operations;
 
@@ -14,11 +15,23 @@ struct file_operations;
 extern const struct file_operations debugfs_noop_file_operations;
 extern const struct file_operations debugfs_open_proxy_file_operations;
 extern const struct file_operations debugfs_full_proxy_file_operations;
+extern const struct file_operations debugfs_full_short_proxy_file_operations;
 
 struct debugfs_fsdata {
 	const struct file_operations *real_fops;
-	refcount_t active_users;
-	struct completion active_users_drained;
+	const struct debugfs_short_fops *short_fops;
+	union {
+		/* automount_fn is used when real_fops is NULL */
+		debugfs_automount_t automount;
+		struct {
+			refcount_t active_users;
+			struct completion active_users_drained;
+
+			/* protect cancellations */
+			struct mutex cancellations_mtx;
+			struct list_head cancellations;
+		};
+	};
 };
 
 /*

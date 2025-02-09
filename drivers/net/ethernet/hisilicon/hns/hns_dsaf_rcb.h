@@ -108,7 +108,7 @@ struct rcb_common_cb {
 	u32 ring_num;
 	u32 desc_num; /*  desc num per queue*/
 
-	struct ring_pair_cb ring_pair_cb[];
+	struct ring_pair_cb ring_pair_cb[] __counted_by(ring_num);
 };
 
 int hns_rcb_buf_size2type(u32 buf_size);
@@ -157,7 +157,7 @@ int hns_rcb_get_ring_regs_count(void);
 
 void hns_rcb_get_ring_regs(struct hnae_queue *queue, void *data);
 
-void hns_rcb_get_strings(int stringset, u8 *data, int index);
+void hns_rcb_get_strings(int stringset, u8 **data, int index);
 void hns_rcb_set_rx_ring_bs(struct hnae_queue *q, u32 buf_size);
 void hns_rcb_set_tx_ring_bs(struct hnae_queue *q, u32 buf_size);
 

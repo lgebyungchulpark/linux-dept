@@ -10,16 +10,18 @@
 #include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
-#include <linux/of_platform.h>
-#include <linux/pinctrl/pinctrl.h>
-#include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/mfd/ocelot.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/reset.h>
 #include <linux/slab.h>
+
+#include <linux/pinctrl/consumer.h>
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/pinctrl/pinconf.h>
+#include <linux/pinctrl/pinctrl.h>
+#include <linux/pinctrl/pinmux.h>
 
 #include "core.h"
 #include "pinconf.h"
@@ -28,18 +30,11 @@
 #define ocelot_clrsetbits(addr, clear, set) \
 	writel((readl(addr) & ~(clear)) | (set), (addr))
 
-/* PINCONFIG bits (sparx5 only) */
 enum {
 	PINCONF_BIAS,
 	PINCONF_SCHMITT,
 	PINCONF_DRIVE_STRENGTH,
 };
-
-#define BIAS_PD_BIT BIT(4)
-#define BIAS_PU_BIT BIT(3)
-#define BIAS_BITS   (BIAS_PD_BIT|BIAS_PU_BIT)
-#define SCHMITT_BIT BIT(2)
-#define DRIVE_BITS  GENMASK(1, 0)
 
 /* GPIO standard registers */
 #define OCELOT_GPIO_OUT_SET	0x0
@@ -60,7 +55,10 @@ enum {
 	FUNC_CAN0_a,
 	FUNC_CAN0_b,
 	FUNC_CAN1,
+	FUNC_CLKMON,
 	FUNC_NONE,
+	FUNC_FAN,
+	FUNC_FC,
 	FUNC_FC0_a,
 	FUNC_FC0_b,
 	FUNC_FC0_c,
@@ -75,6 +73,7 @@ enum {
 	FUNC_FC4_a,
 	FUNC_FC4_b,
 	FUNC_FC4_c,
+	FUNC_FC_SHRD,
 	FUNC_FC_SHRD0,
 	FUNC_FC_SHRD1,
 	FUNC_FC_SHRD2,
@@ -96,6 +95,7 @@ enum {
 	FUNC_FC_SHRD18,
 	FUNC_FC_SHRD19,
 	FUNC_FC_SHRD20,
+	FUNC_FUSA,
 	FUNC_GPIO,
 	FUNC_IB_TRG_a,
 	FUNC_IB_TRG_b,
@@ -112,6 +112,8 @@ enum {
 	FUNC_IRQ1,
 	FUNC_IRQ1_IN,
 	FUNC_IRQ1_OUT,
+	FUNC_IRQ3,
+	FUNC_IRQ4,
 	FUNC_EXT_IRQ,
 	FUNC_MIIM,
 	FUNC_MIIM_a,
@@ -119,16 +121,19 @@ enum {
 	FUNC_MIIM_c,
 	FUNC_MIIM_Sa,
 	FUNC_MIIM_Sb,
+	FUNC_MIIM_IRQ,
 	FUNC_OB_TRG,
 	FUNC_OB_TRG_a,
 	FUNC_OB_TRG_b,
 	FUNC_PHY_LED,
 	FUNC_PCI_WAKE,
 	FUNC_MD,
+	FUNC_PCIE_PERST,
 	FUNC_PTP0,
 	FUNC_PTP1,
 	FUNC_PTP2,
 	FUNC_PTP3,
+	FUNC_PTPSYNC_0,
 	FUNC_PTPSYNC_1,
 	FUNC_PTPSYNC_2,
 	FUNC_PTPSYNC_3,
@@ -137,6 +142,8 @@ enum {
 	FUNC_PTPSYNC_6,
 	FUNC_PTPSYNC_7,
 	FUNC_PWM,
+	FUNC_PWM_a,
+	FUNC_PWM_b,
 	FUNC_QSPI1,
 	FUNC_QSPI2,
 	FUNC_R,
@@ -153,6 +160,7 @@ enum {
 	FUNC_SGPIO_b,
 	FUNC_SI,
 	FUNC_SI2,
+	FUNC_SYNCE,
 	FUNC_TACHO,
 	FUNC_TACHO_a,
 	FUNC_TACHO_b,
@@ -171,6 +179,10 @@ enum {
 	FUNC_USB_S_a,
 	FUNC_USB_S_b,
 	FUNC_USB_S_c,
+	FUNC_USB_POWER,
+	FUNC_USB2PHY_RST,
+	FUNC_USB_OVER_DETECT,
+	FUNC_USB_ULPI,
 	FUNC_PLL_STAT,
 	FUNC_EMMC,
 	FUNC_EMMC_SD,
@@ -183,7 +195,10 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_CAN0_a]		= "can0_a",
 	[FUNC_CAN0_b]		= "can0_b",
 	[FUNC_CAN1]		= "can1",
+	[FUNC_CLKMON]		= "clkmon",
 	[FUNC_NONE]		= "none",
+	[FUNC_FAN]		= "fan",
+	[FUNC_FC]		= "fc",
 	[FUNC_FC0_a]		= "fc0_a",
 	[FUNC_FC0_b]		= "fc0_b",
 	[FUNC_FC0_c]		= "fc0_c",
@@ -198,6 +213,7 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_FC4_a]		= "fc4_a",
 	[FUNC_FC4_b]		= "fc4_b",
 	[FUNC_FC4_c]		= "fc4_c",
+	[FUNC_FC_SHRD]		= "fc_shrd",
 	[FUNC_FC_SHRD0]		= "fc_shrd0",
 	[FUNC_FC_SHRD1]		= "fc_shrd1",
 	[FUNC_FC_SHRD2]		= "fc_shrd2",
@@ -219,6 +235,7 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_FC_SHRD18]	= "fc_shrd18",
 	[FUNC_FC_SHRD19]	= "fc_shrd19",
 	[FUNC_FC_SHRD20]	= "fc_shrd20",
+	[FUNC_FUSA]		= "fusa",
 	[FUNC_GPIO]		= "gpio",
 	[FUNC_IB_TRG_a]		= "ib_trig_a",
 	[FUNC_IB_TRG_b]		= "ib_trig_b",
@@ -235,6 +252,8 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_IRQ1]		= "irq1",
 	[FUNC_IRQ1_IN]		= "irq1_in",
 	[FUNC_IRQ1_OUT]		= "irq1_out",
+	[FUNC_IRQ3]		= "irq3",
+	[FUNC_IRQ4]		= "irq4",
 	[FUNC_EXT_IRQ]		= "ext_irq",
 	[FUNC_MIIM]		= "miim",
 	[FUNC_MIIM_a]		= "miim_a",
@@ -242,8 +261,10 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_MIIM_c]		= "miim_c",
 	[FUNC_MIIM_Sa]		= "miim_slave_a",
 	[FUNC_MIIM_Sb]		= "miim_slave_b",
+	[FUNC_MIIM_IRQ]		= "miim_irq",
 	[FUNC_PHY_LED]		= "phy_led",
 	[FUNC_PCI_WAKE]		= "pci_wake",
+	[FUNC_PCIE_PERST]	= "pcie_perst",
 	[FUNC_MD]		= "md",
 	[FUNC_OB_TRG]		= "ob_trig",
 	[FUNC_OB_TRG_a]		= "ob_trig_a",
@@ -252,6 +273,7 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_PTP1]		= "ptp1",
 	[FUNC_PTP2]		= "ptp2",
 	[FUNC_PTP3]		= "ptp3",
+	[FUNC_PTPSYNC_0]	= "ptpsync_0",
 	[FUNC_PTPSYNC_1]	= "ptpsync_1",
 	[FUNC_PTPSYNC_2]	= "ptpsync_2",
 	[FUNC_PTPSYNC_3]	= "ptpsync_3",
@@ -260,6 +282,8 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_PTPSYNC_6]	= "ptpsync_6",
 	[FUNC_PTPSYNC_7]	= "ptpsync_7",
 	[FUNC_PWM]		= "pwm",
+	[FUNC_PWM_a]		= "pwm_a",
+	[FUNC_PWM_b]		= "pwm_b",
 	[FUNC_QSPI1]		= "qspi1",
 	[FUNC_QSPI2]		= "qspi2",
 	[FUNC_R]		= "reserved",
@@ -276,6 +300,7 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_SGPIO_b]		= "sgpio_b",
 	[FUNC_SI]		= "si",
 	[FUNC_SI2]		= "si2",
+	[FUNC_SYNCE]		= "synce",
 	[FUNC_TACHO]		= "tacho",
 	[FUNC_TACHO_a]		= "tacho_a",
 	[FUNC_TACHO_b]		= "tacho_b",
@@ -291,6 +316,10 @@ static const char *const ocelot_function_names[] = {
 	[FUNC_USB_S_a]		= "usb_slave_a",
 	[FUNC_USB_S_b]		= "usb_slave_b",
 	[FUNC_USB_S_c]		= "usb_slave_c",
+	[FUNC_USB_POWER]	= "usb_power",
+	[FUNC_USB2PHY_RST]	= "usb2phy_rst",
+	[FUNC_USB_OVER_DETECT]	= "usb_over_detect",
+	[FUNC_USB_ULPI]		= "usb_ulpi",
 	[FUNC_UART]		= "uart",
 	[FUNC_UART2]		= "uart2",
 	[FUNC_UART3]		= "uart3",
@@ -312,6 +341,13 @@ struct ocelot_pin_caps {
 	unsigned char a_functions[OCELOT_FUNC_PER_PIN];	/* Additional functions */
 };
 
+struct ocelot_pincfg_data {
+	u8 pd_bit;
+	u8 pu_bit;
+	u8 drive_bits;
+	u8 schmitt_bit;
+};
+
 struct ocelot_pinctrl {
 	struct device *dev;
 	struct pinctrl_dev *pctl;
@@ -319,8 +355,20 @@ struct ocelot_pinctrl {
 	struct regmap *map;
 	struct regmap *pincfg;
 	struct pinctrl_desc *desc;
+	const struct ocelot_pincfg_data *pincfg_data;
 	struct ocelot_pmx_func func[FUNC_MAX];
 	u8 stride;
+	struct workqueue_struct *wq;
+};
+
+struct ocelot_match_data {
+	struct pinctrl_desc desc;
+	struct ocelot_pincfg_data pincfg_data;
+};
+
+struct ocelot_irq_work {
+	struct work_struct irq_work;
+	struct irq_desc *irq_desc;
 };
 
 #define LUTON_P(p, f0, f1)						\
@@ -695,6 +743,98 @@ static const struct pinctrl_pin_desc jaguar2_pins[] = {
 	JAGUAR2_PIN(63),
 };
 
+#define SERVALT_P(p, f0, f1, f2)					\
+static struct ocelot_pin_caps servalt_pin_##p = {			\
+	.pin = p,							\
+	.functions = {							\
+		FUNC_GPIO, FUNC_##f0, FUNC_##f1, FUNC_##f2		\
+	},								\
+}
+
+SERVALT_P(0,  SG0,        NONE,      NONE);
+SERVALT_P(1,  SG0,        NONE,      NONE);
+SERVALT_P(2,  SG0,        NONE,      NONE);
+SERVALT_P(3,  SG0,        NONE,      NONE);
+SERVALT_P(4,  IRQ0_IN,    IRQ0_OUT,  TWI_SCL_M);
+SERVALT_P(5,  IRQ1_IN,    IRQ1_OUT,  TWI_SCL_M);
+SERVALT_P(6,  UART,       NONE,      NONE);
+SERVALT_P(7,  UART,       NONE,      NONE);
+SERVALT_P(8,  SI,         SFP,       TWI_SCL_M);
+SERVALT_P(9,  PCI_WAKE,   SFP,       SI);
+SERVALT_P(10, PTP0,       SFP,       TWI_SCL_M);
+SERVALT_P(11, PTP1,       SFP,       TWI_SCL_M);
+SERVALT_P(12, REF_CLK,    SFP,       TWI_SCL_M);
+SERVALT_P(13, REF_CLK,    SFP,       TWI_SCL_M);
+SERVALT_P(14, REF_CLK,    IRQ0_OUT,  SI);
+SERVALT_P(15, REF_CLK,    IRQ1_OUT,  SI);
+SERVALT_P(16, TACHO,      SFP,       SI);
+SERVALT_P(17, PWM,        NONE,      TWI_SCL_M);
+SERVALT_P(18, PTP2,       SFP,       SI);
+SERVALT_P(19, PTP3,       SFP,       SI);
+SERVALT_P(20, UART2,      SFP,       SI);
+SERVALT_P(21, UART2,      NONE,      NONE);
+SERVALT_P(22, MIIM,       SFP,       TWI2);
+SERVALT_P(23, MIIM,       SFP,       TWI2);
+SERVALT_P(24, TWI,        NONE,      NONE);
+SERVALT_P(25, TWI,        SFP,       TWI_SCL_M);
+SERVALT_P(26, TWI_SCL_M,  SFP,       SI);
+SERVALT_P(27, TWI_SCL_M,  SFP,       SI);
+SERVALT_P(28, TWI_SCL_M,  SFP,       SI);
+SERVALT_P(29, TWI_SCL_M,  NONE,      NONE);
+SERVALT_P(30, TWI_SCL_M,  NONE,      NONE);
+SERVALT_P(31, TWI_SCL_M,  NONE,      NONE);
+SERVALT_P(32, TWI_SCL_M,  NONE,      NONE);
+SERVALT_P(33, RCVRD_CLK,  NONE,      NONE);
+SERVALT_P(34, RCVRD_CLK,  NONE,      NONE);
+SERVALT_P(35, RCVRD_CLK,  NONE,      NONE);
+SERVALT_P(36, RCVRD_CLK,  NONE,      NONE);
+
+#define SERVALT_PIN(n) {					\
+	.number = n,						\
+	.name = "GPIO_"#n,					\
+	.drv_data = &servalt_pin_##n				\
+}
+
+static const struct pinctrl_pin_desc servalt_pins[] = {
+	SERVALT_PIN(0),
+	SERVALT_PIN(1),
+	SERVALT_PIN(2),
+	SERVALT_PIN(3),
+	SERVALT_PIN(4),
+	SERVALT_PIN(5),
+	SERVALT_PIN(6),
+	SERVALT_PIN(7),
+	SERVALT_PIN(8),
+	SERVALT_PIN(9),
+	SERVALT_PIN(10),
+	SERVALT_PIN(11),
+	SERVALT_PIN(12),
+	SERVALT_PIN(13),
+	SERVALT_PIN(14),
+	SERVALT_PIN(15),
+	SERVALT_PIN(16),
+	SERVALT_PIN(17),
+	SERVALT_PIN(18),
+	SERVALT_PIN(19),
+	SERVALT_PIN(20),
+	SERVALT_PIN(21),
+	SERVALT_PIN(22),
+	SERVALT_PIN(23),
+	SERVALT_PIN(24),
+	SERVALT_PIN(25),
+	SERVALT_PIN(26),
+	SERVALT_PIN(27),
+	SERVALT_PIN(28),
+	SERVALT_PIN(29),
+	SERVALT_PIN(30),
+	SERVALT_PIN(31),
+	SERVALT_PIN(32),
+	SERVALT_PIN(33),
+	SERVALT_PIN(34),
+	SERVALT_PIN(35),
+	SERVALT_PIN(36),
+};
+
 #define SPARX5_P(p, f0, f1, f2)					\
 static struct ocelot_pin_caps sparx5_pin_##p = {			\
 	.pin = p,							\
@@ -883,15 +1023,15 @@ LAN966X_P(23,   GPIO,    NONE,     NONE,      NONE, OB_TRG_a,     NONE,      NON
 LAN966X_P(24,   GPIO,   FC0_b, IB_TRG_a,   USB_H_c, OB_TRG_a, IRQ_IN_c,   TACHO_a,        R);
 LAN966X_P(25,   GPIO,   FC0_b, IB_TRG_a,   USB_H_c, OB_TRG_a, IRQ_OUT_c,   SFP_SD,        R);
 LAN966X_P(26,   GPIO,   FC0_b, IB_TRG_a,   USB_S_c, OB_TRG_a,   CAN0_a,    SFP_SD,        R);
-LAN966X_P(27,   GPIO,    NONE,     NONE,      NONE, OB_TRG_a,   CAN0_a,      NONE,        R);
+LAN966X_P(27,   GPIO,    NONE,     NONE,      NONE, OB_TRG_a,   CAN0_a,     PWM_a,        R);
 LAN966X_P(28,   GPIO,  MIIM_a,     NONE,      NONE, OB_TRG_a, IRQ_OUT_c,   SFP_SD,        R);
 LAN966X_P(29,   GPIO,  MIIM_a,     NONE,      NONE, OB_TRG_a,     NONE,      NONE,        R);
-LAN966X_P(30,   GPIO,   FC3_c,     CAN1,      NONE,   OB_TRG,   RECO_b,      NONE,        R);
-LAN966X_P(31,   GPIO,   FC3_c,     CAN1,      NONE,   OB_TRG,   RECO_b,      NONE,        R);
+LAN966X_P(30,   GPIO,   FC3_c,     CAN1,    CLKMON,   OB_TRG,   RECO_b,      NONE,        R);
+LAN966X_P(31,   GPIO,   FC3_c,     CAN1,    CLKMON,   OB_TRG,   RECO_b,      NONE,        R);
 LAN966X_P(32,   GPIO,   FC3_c,     NONE,   SGPIO_a,     NONE,  MIIM_Sa,      NONE,        R);
 LAN966X_P(33,   GPIO,   FC1_b,     NONE,   SGPIO_a,     NONE,  MIIM_Sa,    MIIM_b,        R);
 LAN966X_P(34,   GPIO,   FC1_b,     NONE,   SGPIO_a,     NONE,  MIIM_Sa,    MIIM_b,        R);
-LAN966X_P(35,   GPIO,   FC1_b,     NONE,   SGPIO_a,   CAN0_b,     NONE,      NONE,        R);
+LAN966X_P(35,   GPIO,   FC1_b,  PTPSYNC_0, SGPIO_a,   CAN0_b,     NONE,      NONE,        R);
 LAN966X_P(36,   GPIO,    NONE,  PTPSYNC_1,    NONE,   CAN0_b,     NONE,      NONE,        R);
 LAN966X_P(37,   GPIO, FC_SHRD0, PTPSYNC_2, TWI_SLC_GATE_AD, NONE, NONE,      NONE,        R);
 LAN966X_P(38,   GPIO,    NONE,  PTPSYNC_3,    NONE,     NONE,     NONE,      NONE,        R);
@@ -907,7 +1047,7 @@ LAN966X_P(47,   GPIO,   FC1_c,   OB_TRG_b, IB_TRG_b, IRQ_OUT_a, FC_SHRD5, IRQ_IN
 LAN966X_P(48,   GPIO,   FC1_c,   OB_TRG_b, IB_TRG_b, IRQ_OUT_a, FC_SHRD6, IRQ_IN_a,       R);
 LAN966X_P(49,   GPIO, FC_SHRD7,  OB_TRG_b, IB_TRG_b, IRQ_OUT_a, TWI_SLC_GATE, IRQ_IN_a,   R);
 LAN966X_P(50,   GPIO, FC_SHRD16, OB_TRG_b, IB_TRG_b, IRQ_OUT_a, TWI_SLC_GATE, NONE,       R);
-LAN966X_P(51,   GPIO,   FC3_b,   OB_TRG_b, IB_TRG_c, IRQ_OUT_b,    NONE,  IRQ_IN_b,       R);
+LAN966X_P(51,   GPIO,   FC3_b,   OB_TRG_b, IB_TRG_c, IRQ_OUT_b,   PWM_b,  IRQ_IN_b,       R);
 LAN966X_P(52,   GPIO,   FC3_b,   OB_TRG_b, IB_TRG_c, IRQ_OUT_b, TACHO_b,  IRQ_IN_b,       R);
 LAN966X_P(53,   GPIO,   FC3_b,   OB_TRG_b, IB_TRG_c, IRQ_OUT_b,    NONE,  IRQ_IN_b,       R);
 LAN966X_P(54,   GPIO, FC_SHRD8,  OB_TRG_b, IB_TRG_c, IRQ_OUT_b, TWI_SLC_GATE, IRQ_IN_b,   R);
@@ -1022,6 +1162,165 @@ static const struct pinctrl_pin_desc lan966x_pins[] = {
 	LAN966X_PIN(77),
 };
 
+#define LAN969X_P(p, f0, f1, f2, f3, f4, f5, f6, f7)           \
+static struct ocelot_pin_caps lan969x_pin_##p = {              \
+	.pin = p,                                              \
+	.functions = {                                         \
+		FUNC_##f0, FUNC_##f1, FUNC_##f2,               \
+		FUNC_##f3                                      \
+	},                                                     \
+	.a_functions = {                                       \
+		FUNC_##f4, FUNC_##f5, FUNC_##f6,               \
+		FUNC_##f7                                      \
+	},                                                     \
+}
+
+/* Pinmuxing table taken from data sheet */
+/*        Pin   FUNC0      FUNC1   FUNC2         FUNC3                  FUNC4     FUNC5      FUNC6        FUNC7 */
+LAN969X_P(0,    GPIO,      IRQ0,   FC_SHRD,      PCIE_PERST,            NONE,     NONE,      NONE,        R);
+LAN969X_P(1,    GPIO,      IRQ1,   FC_SHRD,       USB_POWER,            NONE,     NONE,      NONE,        R);
+LAN969X_P(2,    GPIO,        FC,      NONE,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(3,    GPIO,        FC,      NONE,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(4,    GPIO,        FC,      NONE,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(5,    GPIO,   SGPIO_a,      NONE,          CLKMON,            NONE,     NONE,      NONE,        R);
+LAN969X_P(6,    GPIO,   SGPIO_a,      NONE,          CLKMON,            NONE,     NONE,      NONE,        R);
+LAN969X_P(7,    GPIO,   SGPIO_a,      NONE,          CLKMON,            NONE,     NONE,      NONE,        R);
+LAN969X_P(8,    GPIO,   SGPIO_a,      NONE,          CLKMON,            NONE,     NONE,      NONE,        R);
+LAN969X_P(9,    GPIO,      MIIM,   MIIM_Sa,          CLKMON,            NONE,     NONE,      NONE,        R);
+LAN969X_P(10,   GPIO,      MIIM,   MIIM_Sa,          CLKMON,            NONE,     NONE,      NONE,        R);
+LAN969X_P(11,   GPIO,  MIIM_IRQ,   MIIM_Sa,          CLKMON,            NONE,     NONE,      NONE,        R);
+LAN969X_P(12,   GPIO,      IRQ3,   FC_SHRD,     USB2PHY_RST,            NONE,     NONE,      NONE,        R);
+LAN969X_P(13,   GPIO,      IRQ4,   FC_SHRD, USB_OVER_DETECT,            NONE,     NONE,      NONE,        R);
+LAN969X_P(14,   GPIO,   EMMC_SD,     QSPI1,              FC,            NONE,     NONE,      NONE,        R);
+LAN969X_P(15,   GPIO,   EMMC_SD,     QSPI1,              FC,            NONE,     NONE,      NONE,        R);
+LAN969X_P(16,   GPIO,   EMMC_SD,     QSPI1,              FC,            NONE,     NONE,      NONE,        R);
+LAN969X_P(17,   GPIO,   EMMC_SD,     QSPI1,       PTPSYNC_0,       USB_POWER,     NONE,      NONE,        R);
+LAN969X_P(18,   GPIO,   EMMC_SD,     QSPI1,       PTPSYNC_1,     USB2PHY_RST,     NONE,      NONE,        R);
+LAN969X_P(19,   GPIO,   EMMC_SD,     QSPI1,       PTPSYNC_2, USB_OVER_DETECT,     NONE,      NONE,        R);
+LAN969X_P(20,   GPIO,   EMMC_SD,      NONE,         FC_SHRD,            NONE,     NONE,      NONE,        R);
+LAN969X_P(21,   GPIO,   EMMC_SD,      NONE,         FC_SHRD,            NONE,     NONE,      NONE,        R);
+LAN969X_P(22,   GPIO,   EMMC_SD,      NONE,         FC_SHRD,            NONE,     NONE,      NONE,        R);
+LAN969X_P(23,   GPIO,   EMMC_SD,      NONE,         FC_SHRD,            NONE,     NONE,      NONE,        R);
+LAN969X_P(24,   GPIO,   EMMC_SD,      NONE,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(25,   GPIO,       FAN,      FUSA,          CAN0_a,           QSPI1,     NONE,      NONE,        R);
+LAN969X_P(26,   GPIO,       FAN,      FUSA,          CAN0_a,           QSPI1,     NONE,      NONE,        R);
+LAN969X_P(27,   GPIO,     SYNCE,        FC,            MIIM,           QSPI1,     NONE,      NONE,        R);
+LAN969X_P(28,   GPIO,     SYNCE,        FC,            MIIM,           QSPI1,     NONE,      NONE,        R);
+LAN969X_P(29,   GPIO,     SYNCE,        FC,        MIIM_IRQ,           QSPI1,     NONE,      NONE,        R);
+LAN969X_P(30,   GPIO, PTPSYNC_0,  USB_ULPI,         FC_SHRD,           QSPI1,     NONE,      NONE,        R);
+LAN969X_P(31,   GPIO, PTPSYNC_1,  USB_ULPI,         FC_SHRD,            NONE,     NONE,      NONE,        R);
+LAN969X_P(32,   GPIO, PTPSYNC_2,  USB_ULPI,         FC_SHRD,            NONE,     NONE,      NONE,        R);
+LAN969X_P(33,   GPIO,        SD,  USB_ULPI,         FC_SHRD,            NONE,     NONE,      NONE,        R);
+LAN969X_P(34,   GPIO,        SD,  USB_ULPI,            CAN1,         FC_SHRD,     NONE,      NONE,        R);
+LAN969X_P(35,   GPIO,        SD,  USB_ULPI,            CAN1,         FC_SHRD,     NONE,      NONE,        R);
+LAN969X_P(36,   GPIO,        SD,  USB_ULPI,      PCIE_PERST,         FC_SHRD,     NONE,      NONE,        R);
+LAN969X_P(37,   GPIO,        SD,  USB_ULPI,          CAN0_b,            NONE,     NONE,      NONE,        R);
+LAN969X_P(38,   GPIO,        SD,  USB_ULPI,          CAN0_b,            NONE,     NONE,      NONE,        R);
+LAN969X_P(39,   GPIO,        SD,  USB_ULPI,            MIIM,            NONE,     NONE,      NONE,        R);
+LAN969X_P(40,   GPIO,        SD,  USB_ULPI,            MIIM,            NONE,     NONE,      NONE,        R);
+LAN969X_P(41,   GPIO,        SD,  USB_ULPI,        MIIM_IRQ,            NONE,     NONE,      NONE,        R);
+LAN969X_P(42,   GPIO, PTPSYNC_3,      CAN1,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(43,   GPIO, PTPSYNC_4,      CAN1,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(44,   GPIO, PTPSYNC_5,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(45,   GPIO, PTPSYNC_6,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(46,   GPIO, PTPSYNC_7,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(47,   GPIO,      NONE,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(48,   GPIO,      NONE,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(49,   GPIO,      NONE,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(50,   GPIO,      NONE,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(51,   GPIO,      NONE,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(52,   GPIO,       FAN,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(53,   GPIO,       FAN,    SFP_SD,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(54,   GPIO,     SYNCE,        FC,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(55,   GPIO,     SYNCE,        FC,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(56,   GPIO,     SYNCE,        FC,            NONE,            NONE,     NONE,      NONE,        R);
+LAN969X_P(57,   GPIO,    SFP_SD,   FC_SHRD,             TWI,       PTPSYNC_3,     NONE,      NONE,        R);
+LAN969X_P(58,   GPIO,    SFP_SD,   FC_SHRD,             TWI,       PTPSYNC_4,     NONE,      NONE,        R);
+LAN969X_P(59,   GPIO,    SFP_SD,   FC_SHRD,             TWI,       PTPSYNC_5,     NONE,      NONE,        R);
+LAN969X_P(60,   GPIO,    SFP_SD,   FC_SHRD,             TWI,       PTPSYNC_6,     NONE,      NONE,        R);
+LAN969X_P(61,   GPIO,      MIIM,   FC_SHRD,             TWI,            NONE,     NONE,      NONE,        R);
+LAN969X_P(62,   GPIO,      MIIM,   FC_SHRD,             TWI,            NONE,     NONE,      NONE,        R);
+LAN969X_P(63,   GPIO,  MIIM_IRQ,   FC_SHRD,             TWI,            NONE,     NONE,      NONE,        R);
+LAN969X_P(64,   GPIO,        FC,   FC_SHRD,             TWI,            NONE,     NONE,      NONE,        R);
+LAN969X_P(65,   GPIO,        FC,   FC_SHRD,             TWI,            NONE,     NONE,      NONE,        R);
+LAN969X_P(66,   GPIO,        FC,   FC_SHRD,             TWI,            NONE,     NONE,      NONE,        R);
+
+#define LAN969X_PIN(n) {                                       \
+	.number = n,                                           \
+	.name = "GPIO_"#n,                                     \
+	.drv_data = &lan969x_pin_##n                           \
+}
+
+static const struct pinctrl_pin_desc lan969x_pins[] = {
+	LAN969X_PIN(0),
+	LAN969X_PIN(1),
+	LAN969X_PIN(2),
+	LAN969X_PIN(3),
+	LAN969X_PIN(4),
+	LAN969X_PIN(5),
+	LAN969X_PIN(6),
+	LAN969X_PIN(7),
+	LAN969X_PIN(8),
+	LAN969X_PIN(9),
+	LAN969X_PIN(10),
+	LAN969X_PIN(11),
+	LAN969X_PIN(12),
+	LAN969X_PIN(13),
+	LAN969X_PIN(14),
+	LAN969X_PIN(15),
+	LAN969X_PIN(16),
+	LAN969X_PIN(17),
+	LAN969X_PIN(18),
+	LAN969X_PIN(19),
+	LAN969X_PIN(20),
+	LAN969X_PIN(21),
+	LAN969X_PIN(22),
+	LAN969X_PIN(23),
+	LAN969X_PIN(24),
+	LAN969X_PIN(25),
+	LAN969X_PIN(26),
+	LAN969X_PIN(27),
+	LAN969X_PIN(28),
+	LAN969X_PIN(29),
+	LAN969X_PIN(30),
+	LAN969X_PIN(31),
+	LAN969X_PIN(32),
+	LAN969X_PIN(33),
+	LAN969X_PIN(34),
+	LAN969X_PIN(35),
+	LAN969X_PIN(36),
+	LAN969X_PIN(37),
+	LAN969X_PIN(38),
+	LAN969X_PIN(39),
+	LAN969X_PIN(40),
+	LAN969X_PIN(41),
+	LAN969X_PIN(42),
+	LAN969X_PIN(43),
+	LAN969X_PIN(44),
+	LAN969X_PIN(45),
+	LAN969X_PIN(46),
+	LAN969X_PIN(47),
+	LAN969X_PIN(48),
+	LAN969X_PIN(49),
+	LAN969X_PIN(50),
+	LAN969X_PIN(51),
+	LAN969X_PIN(52),
+	LAN969X_PIN(53),
+	LAN969X_PIN(54),
+	LAN969X_PIN(55),
+	LAN969X_PIN(56),
+	LAN969X_PIN(57),
+	LAN969X_PIN(58),
+	LAN969X_PIN(59),
+	LAN969X_PIN(60),
+	LAN969X_PIN(61),
+	LAN969X_PIN(62),
+	LAN969X_PIN(63),
+	LAN969X_PIN(64),
+	LAN969X_PIN(65),
+	LAN969X_PIN(66),
+};
+
 static int ocelot_get_functions_count(struct pinctrl_dev *pctldev)
 {
 	return ARRAY_SIZE(ocelot_function_names);
@@ -1088,7 +1387,7 @@ static int ocelot_pinmux_set_mux(struct pinctrl_dev *pctldev,
 	regmap_update_bits(info->map, REG_ALT(0, info, pin->pin),
 			   BIT(p), f << p);
 	regmap_update_bits(info->map, REG_ALT(1, info, pin->pin),
-			   BIT(p), f << (p - 1));
+			   BIT(p), (f >> 1) << p);
 
 	return 0;
 }
@@ -1224,24 +1523,27 @@ static int ocelot_hw_get_value(struct ocelot_pinctrl *info,
 	int ret = -EOPNOTSUPP;
 
 	if (info->pincfg) {
+		const struct ocelot_pincfg_data *opd = info->pincfg_data;
 		u32 regcfg;
 
-		ret = regmap_read(info->pincfg, pin, &regcfg);
+		ret = regmap_read(info->pincfg,
+				  pin * regmap_get_reg_stride(info->pincfg),
+				  &regcfg);
 		if (ret)
 			return ret;
 
 		ret = 0;
 		switch (reg) {
 		case PINCONF_BIAS:
-			*val = regcfg & BIAS_BITS;
+			*val = regcfg & (opd->pd_bit | opd->pu_bit);
 			break;
 
 		case PINCONF_SCHMITT:
-			*val = regcfg & SCHMITT_BIT;
+			*val = regcfg & opd->schmitt_bit;
 			break;
 
 		case PINCONF_DRIVE_STRENGTH:
-			*val = regcfg & DRIVE_BITS;
+			*val = regcfg & opd->drive_bits;
 			break;
 
 		default:
@@ -1258,14 +1560,18 @@ static int ocelot_pincfg_clrsetbits(struct ocelot_pinctrl *info, u32 regaddr,
 	u32 val;
 	int ret;
 
-	ret = regmap_read(info->pincfg, regaddr, &val);
+	ret = regmap_read(info->pincfg,
+			  regaddr * regmap_get_reg_stride(info->pincfg),
+			  &val);
 	if (ret)
 		return ret;
 
 	val &= ~clrbits;
 	val |= setbits;
 
-	ret = regmap_write(info->pincfg, regaddr, val);
+	ret = regmap_write(info->pincfg,
+			   regaddr * regmap_get_reg_stride(info->pincfg),
+			   val);
 
 	return ret;
 }
@@ -1278,23 +1584,26 @@ static int ocelot_hw_set_value(struct ocelot_pinctrl *info,
 	int ret = -EOPNOTSUPP;
 
 	if (info->pincfg) {
+		const struct ocelot_pincfg_data *opd = info->pincfg_data;
 
-		ret = 0;
 		switch (reg) {
 		case PINCONF_BIAS:
-			ret = ocelot_pincfg_clrsetbits(info, pin, BIAS_BITS,
+			ret = ocelot_pincfg_clrsetbits(info, pin,
+						       opd->pd_bit | opd->pu_bit,
 						       val);
 			break;
 
 		case PINCONF_SCHMITT:
-			ret = ocelot_pincfg_clrsetbits(info, pin, SCHMITT_BIT,
+			ret = ocelot_pincfg_clrsetbits(info, pin,
+						       opd->schmitt_bit,
 						       val);
 			break;
 
 		case PINCONF_DRIVE_STRENGTH:
 			if (val <= 3)
 				ret = ocelot_pincfg_clrsetbits(info, pin,
-							       DRIVE_BITS, val);
+							       opd->drive_bits,
+							       val);
 			else
 				ret = -EINVAL;
 			break;
@@ -1324,17 +1633,20 @@ static int ocelot_pinconf_get(struct pinctrl_dev *pctldev,
 		if (param == PIN_CONFIG_BIAS_DISABLE)
 			val = (val == 0);
 		else if (param == PIN_CONFIG_BIAS_PULL_DOWN)
-			val = (val & BIAS_PD_BIT ? true : false);
+			val = !!(val & info->pincfg_data->pd_bit);
 		else    /* PIN_CONFIG_BIAS_PULL_UP */
-			val = (val & BIAS_PU_BIT ? true : false);
+			val = !!(val & info->pincfg_data->pu_bit);
 		break;
 
 	case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
+		if (!info->pincfg_data->schmitt_bit)
+			return -EOPNOTSUPP;
+
 		err = ocelot_hw_get_value(info, pin, PINCONF_SCHMITT, &val);
 		if (err)
 			return err;
 
-		val = (val & SCHMITT_BIT ? true : false);
+		val = !!(val & info->pincfg_data->schmitt_bit);
 		break;
 
 	case PIN_CONFIG_DRIVE_STRENGTH:
@@ -1378,6 +1690,7 @@ static int ocelot_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 			      unsigned long *configs, unsigned int num_configs)
 {
 	struct ocelot_pinctrl *info = pinctrl_dev_get_drvdata(pctldev);
+	const struct ocelot_pincfg_data *opd = info->pincfg_data;
 	u32 param, arg, p;
 	int cfg, err = 0;
 
@@ -1390,8 +1703,8 @@ static int ocelot_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 		case PIN_CONFIG_BIAS_PULL_UP:
 		case PIN_CONFIG_BIAS_PULL_DOWN:
 			arg = (param == PIN_CONFIG_BIAS_DISABLE) ? 0 :
-			(param == PIN_CONFIG_BIAS_PULL_UP) ? BIAS_PU_BIT :
-			BIAS_PD_BIT;
+			      (param == PIN_CONFIG_BIAS_PULL_UP) ?
+				opd->pu_bit : opd->pd_bit;
 
 			err = ocelot_hw_set_value(info, pin, PINCONF_BIAS, arg);
 			if (err)
@@ -1400,7 +1713,10 @@ static int ocelot_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 			break;
 
 		case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
-			arg = arg ? SCHMITT_BIT : 0;
+			if (!opd->schmitt_bit)
+				return -EOPNOTSUPP;
+
+			arg = arg ? opd->schmitt_bit : 0;
 			err = ocelot_hw_set_value(info, pin, PINCONF_SCHMITT,
 						  arg);
 			if (err)
@@ -1461,60 +1777,111 @@ static const struct pinctrl_ops ocelot_pctl_ops = {
 	.dt_free_map = pinconf_generic_dt_free_map,
 };
 
-static struct pinctrl_desc luton_desc = {
-	.name = "luton-pinctrl",
-	.pins = luton_pins,
-	.npins = ARRAY_SIZE(luton_pins),
-	.pctlops = &ocelot_pctl_ops,
-	.pmxops = &ocelot_pmx_ops,
-	.owner = THIS_MODULE,
+static struct ocelot_match_data luton_desc = {
+	.desc = {
+		.name = "luton-pinctrl",
+		.pins = luton_pins,
+		.npins = ARRAY_SIZE(luton_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &ocelot_pmx_ops,
+		.owner = THIS_MODULE,
+	},
 };
 
-static struct pinctrl_desc serval_desc = {
-	.name = "serval-pinctrl",
-	.pins = serval_pins,
-	.npins = ARRAY_SIZE(serval_pins),
-	.pctlops = &ocelot_pctl_ops,
-	.pmxops = &ocelot_pmx_ops,
-	.owner = THIS_MODULE,
+static struct ocelot_match_data serval_desc = {
+	.desc = {
+		.name = "serval-pinctrl",
+		.pins = serval_pins,
+		.npins = ARRAY_SIZE(serval_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &ocelot_pmx_ops,
+		.owner = THIS_MODULE,
+	},
 };
 
-static struct pinctrl_desc ocelot_desc = {
-	.name = "ocelot-pinctrl",
-	.pins = ocelot_pins,
-	.npins = ARRAY_SIZE(ocelot_pins),
-	.pctlops = &ocelot_pctl_ops,
-	.pmxops = &ocelot_pmx_ops,
-	.owner = THIS_MODULE,
+static struct ocelot_match_data ocelot_desc = {
+	.desc = {
+		.name = "ocelot-pinctrl",
+		.pins = ocelot_pins,
+		.npins = ARRAY_SIZE(ocelot_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &ocelot_pmx_ops,
+		.owner = THIS_MODULE,
+	},
 };
 
-static struct pinctrl_desc jaguar2_desc = {
-	.name = "jaguar2-pinctrl",
-	.pins = jaguar2_pins,
-	.npins = ARRAY_SIZE(jaguar2_pins),
-	.pctlops = &ocelot_pctl_ops,
-	.pmxops = &ocelot_pmx_ops,
-	.owner = THIS_MODULE,
+static struct ocelot_match_data jaguar2_desc = {
+	.desc = {
+		.name = "jaguar2-pinctrl",
+		.pins = jaguar2_pins,
+		.npins = ARRAY_SIZE(jaguar2_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &ocelot_pmx_ops,
+		.owner = THIS_MODULE,
+	},
 };
 
-static struct pinctrl_desc sparx5_desc = {
-	.name = "sparx5-pinctrl",
-	.pins = sparx5_pins,
-	.npins = ARRAY_SIZE(sparx5_pins),
-	.pctlops = &ocelot_pctl_ops,
-	.pmxops = &ocelot_pmx_ops,
-	.confops = &ocelot_confops,
-	.owner = THIS_MODULE,
+static struct ocelot_match_data servalt_desc = {
+	.desc = {
+		.name = "servalt-pinctrl",
+		.pins = servalt_pins,
+		.npins = ARRAY_SIZE(servalt_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &ocelot_pmx_ops,
+		.owner = THIS_MODULE,
+	},
 };
 
-static struct pinctrl_desc lan966x_desc = {
-	.name = "lan966x-pinctrl",
-	.pins = lan966x_pins,
-	.npins = ARRAY_SIZE(lan966x_pins),
-	.pctlops = &ocelot_pctl_ops,
-	.pmxops = &lan966x_pmx_ops,
-	.confops = &ocelot_confops,
-	.owner = THIS_MODULE,
+static struct ocelot_match_data sparx5_desc = {
+	.desc = {
+		.name = "sparx5-pinctrl",
+		.pins = sparx5_pins,
+		.npins = ARRAY_SIZE(sparx5_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &ocelot_pmx_ops,
+		.confops = &ocelot_confops,
+		.owner = THIS_MODULE,
+	},
+	.pincfg_data = {
+		.pd_bit = BIT(4),
+		.pu_bit = BIT(3),
+		.drive_bits = GENMASK(1, 0),
+		.schmitt_bit = BIT(2),
+	},
+};
+
+static struct ocelot_match_data lan966x_desc = {
+	.desc = {
+		.name = "lan966x-pinctrl",
+		.pins = lan966x_pins,
+		.npins = ARRAY_SIZE(lan966x_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &lan966x_pmx_ops,
+		.confops = &ocelot_confops,
+		.owner = THIS_MODULE,
+	},
+	.pincfg_data = {
+		.pd_bit = BIT(3),
+		.pu_bit = BIT(2),
+		.drive_bits = GENMASK(1, 0),
+	},
+};
+
+static struct ocelot_match_data lan969x_desc = {
+	.desc = {
+		.name = "lan969x-pinctrl",
+		.pins = lan969x_pins,
+		.npins = ARRAY_SIZE(lan969x_pins),
+		.pctlops = &ocelot_pctl_ops,
+		.pmxops = &lan966x_pmx_ops,
+		.confops = &ocelot_confops,
+		.owner = THIS_MODULE,
+	},
+	.pincfg_data = {
+		.pd_bit = BIT(3),
+		.pu_bit = BIT(2),
+		.drive_bits = GENMASK(1, 0),
+	},
 };
 
 static int ocelot_create_group_func_map(struct device *dev,
@@ -1610,12 +1977,6 @@ static int ocelot_gpio_get_direction(struct gpio_chip *chip,
 	return GPIO_LINE_DIRECTION_IN;
 }
 
-static int ocelot_gpio_direction_input(struct gpio_chip *chip,
-				       unsigned int offset)
-{
-	return pinctrl_gpio_direction_input(chip->base + offset);
-}
-
 static int ocelot_gpio_direction_output(struct gpio_chip *chip,
 					unsigned int offset, int value)
 {
@@ -1629,7 +1990,7 @@ static int ocelot_gpio_direction_output(struct gpio_chip *chip,
 		regmap_write(info->map, REG(OCELOT_GPIO_OUT_CLR, info, offset),
 			     pin);
 
-	return pinctrl_gpio_direction_output(chip->base + offset);
+	return pinctrl_gpio_direction_output(chip, offset);
 }
 
 static const struct gpio_chip ocelot_gpiolib_chip = {
@@ -1638,7 +1999,7 @@ static const struct gpio_chip ocelot_gpiolib_chip = {
 	.set = ocelot_gpio_set,
 	.get = ocelot_gpio_get,
 	.get_direction = ocelot_gpio_get_direction,
-	.direction_input = ocelot_gpio_direction_input,
+	.direction_input = pinctrl_gpio_direction_input,
 	.direction_output = ocelot_gpio_direction_output,
 	.owner = THIS_MODULE,
 };
@@ -1651,6 +2012,85 @@ static void ocelot_irq_mask(struct irq_data *data)
 
 	regmap_update_bits(info->map, REG(OCELOT_GPIO_INTR_ENA, info, gpio),
 			   BIT(gpio % 32), 0);
+	gpiochip_disable_irq(chip, gpio);
+}
+
+static void ocelot_irq_work(struct work_struct *work)
+{
+	struct ocelot_irq_work *w = container_of(work, struct ocelot_irq_work, irq_work);
+	struct irq_chip *parent_chip = irq_desc_get_chip(w->irq_desc);
+	struct gpio_chip *chip = irq_desc_get_chip_data(w->irq_desc);
+	struct irq_data *data = irq_desc_get_irq_data(w->irq_desc);
+	unsigned int gpio = irqd_to_hwirq(data);
+
+	local_irq_disable();
+	chained_irq_enter(parent_chip, w->irq_desc);
+	generic_handle_domain_irq(chip->irq.domain, gpio);
+	chained_irq_exit(parent_chip, w->irq_desc);
+	local_irq_enable();
+
+	kfree(w);
+}
+
+static void ocelot_irq_unmask_level(struct irq_data *data)
+{
+	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
+	struct ocelot_pinctrl *info = gpiochip_get_data(chip);
+	struct irq_desc *desc = irq_data_to_desc(data);
+	unsigned int gpio = irqd_to_hwirq(data);
+	unsigned int bit = BIT(gpio % 32);
+	bool ack = false, active = false;
+	u8 trigger_level;
+	int val;
+
+	trigger_level = irqd_get_trigger_type(data);
+
+	/* Check if the interrupt line is still active. */
+	regmap_read(info->map, REG(OCELOT_GPIO_IN, info, gpio), &val);
+	if ((!(val & bit) && trigger_level == IRQ_TYPE_LEVEL_LOW) ||
+	      (val & bit && trigger_level == IRQ_TYPE_LEVEL_HIGH))
+		active = true;
+
+	/*
+	 * Check if the interrupt controller has seen any changes in the
+	 * interrupt line.
+	 */
+	regmap_read(info->map, REG(OCELOT_GPIO_INTR, info, gpio), &val);
+	if (val & bit)
+		ack = true;
+
+	/* Try to clear any rising edges */
+	if (!active && ack)
+		regmap_write_bits(info->map, REG(OCELOT_GPIO_INTR, info, gpio),
+				  bit, bit);
+
+	/* Enable the interrupt now */
+	gpiochip_enable_irq(chip, gpio);
+	regmap_update_bits(info->map, REG(OCELOT_GPIO_INTR_ENA, info, gpio),
+			   bit, bit);
+
+	/*
+	 * In case the interrupt line is still active then it means that
+	 * there happen another interrupt while the line was active.
+	 * So we missed that one, so we need to kick the interrupt again
+	 * handler.
+	 */
+	regmap_read(info->map, REG(OCELOT_GPIO_IN, info, gpio), &val);
+	if ((!(val & bit) && trigger_level == IRQ_TYPE_LEVEL_LOW) ||
+	      (val & bit && trigger_level == IRQ_TYPE_LEVEL_HIGH))
+		active = true;
+
+	if (active) {
+		struct ocelot_irq_work *work;
+
+		work = kmalloc(sizeof(*work), GFP_ATOMIC);
+		if (!work)
+			return;
+
+		work->irq_desc = desc;
+		INIT_WORK(&work->irq_work, ocelot_irq_work);
+		queue_work(info->wq, &work->irq_work);
+	}
 }
 
 static void ocelot_irq_unmask(struct irq_data *data)
@@ -1659,6 +2099,7 @@ static void ocelot_irq_unmask(struct irq_data *data)
 	struct ocelot_pinctrl *info = gpiochip_get_data(chip);
 	unsigned int gpio = irqd_to_hwirq(data);
 
+	gpiochip_enable_irq(chip, gpio);
 	regmap_update_bits(info->map, REG(OCELOT_GPIO_INTR_ENA, info, gpio),
 			   BIT(gpio % 32), BIT(gpio % 32));
 }
@@ -1675,13 +2116,14 @@ static void ocelot_irq_ack(struct irq_data *data)
 
 static int ocelot_irq_set_type(struct irq_data *data, unsigned int type);
 
-static struct irq_chip ocelot_eoi_irqchip = {
+static struct irq_chip ocelot_level_irqchip = {
 	.name		= "gpio",
 	.irq_mask	= ocelot_irq_mask,
-	.irq_eoi	= ocelot_irq_ack,
-	.irq_unmask	= ocelot_irq_unmask,
-	.flags          = IRQCHIP_EOI_THREADED | IRQCHIP_EOI_IF_HANDLED,
+	.irq_ack	= ocelot_irq_ack,
+	.irq_unmask	= ocelot_irq_unmask_level,
+	.flags		= IRQCHIP_IMMUTABLE,
 	.irq_set_type	= ocelot_irq_set_type,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS
 };
 
 static struct irq_chip ocelot_irqchip = {
@@ -1690,18 +2132,15 @@ static struct irq_chip ocelot_irqchip = {
 	.irq_ack	= ocelot_irq_ack,
 	.irq_unmask	= ocelot_irq_unmask,
 	.irq_set_type	= ocelot_irq_set_type,
+	.flags          = IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS
 };
 
 static int ocelot_irq_set_type(struct irq_data *data, unsigned int type)
 {
-	type &= IRQ_TYPE_SENSE_MASK;
-
-	if (!(type & (IRQ_TYPE_EDGE_BOTH | IRQ_TYPE_LEVEL_HIGH)))
-		return -EINVAL;
-
-	if (type & IRQ_TYPE_LEVEL_HIGH)
-		irq_set_chip_handler_name_locked(data, &ocelot_eoi_irqchip,
-						 handle_fasteoi_irq, NULL);
+	if (type & (IRQ_TYPE_LEVEL_HIGH | IRQ_TYPE_LEVEL_LOW))
+		irq_set_chip_handler_name_locked(data, &ocelot_level_irqchip,
+						 handle_level_irq, NULL);
 	if (type & IRQ_TYPE_EDGE_BOTH)
 		irq_set_chip_handler_name_locked(data, &ocelot_irqchip,
 						 handle_edge_irq, NULL);
@@ -1718,21 +2157,21 @@ static void ocelot_irq_handler(struct irq_desc *desc)
 	unsigned int reg = 0, irq, i;
 	unsigned long irqs;
 
+	chained_irq_enter(parent_chip, desc);
+
 	for (i = 0; i < info->stride; i++) {
 		regmap_read(info->map, id_reg + 4 * i, &reg);
 		if (!reg)
 			continue;
-
-		chained_irq_enter(parent_chip, desc);
 
 		irqs = reg;
 
 		for_each_set_bit(irq, &irqs,
 				 min(32U, info->desc->npins - 32 * i))
 			generic_handle_domain_irq(chip->irq.domain, irq + 32 * i);
-
-		chained_irq_exit(parent_chip, desc);
 	}
+
+	chained_irq_exit(parent_chip, desc);
 }
 
 static int ocelot_gpiochip_register(struct platform_device *pdev,
@@ -1750,10 +2189,10 @@ static int ocelot_gpiochip_register(struct platform_device *pdev,
 	gc->base = -1;
 	gc->label = "ocelot-gpio";
 
-	irq = irq_of_parse_and_map(gc->of_node, 0);
-	if (irq) {
+	irq = platform_get_irq_optional(pdev, 0);
+	if (irq > 0) {
 		girq = &gc->irq;
-		girq->chip = &ocelot_irqchip;
+		gpio_irq_chip_set_chip(girq, &ocelot_irqchip);
 		girq->parent_handler = ocelot_irq_handler;
 		girq->num_parents = 1;
 		girq->parents = devm_kcalloc(&pdev->dev, 1,
@@ -1774,12 +2213,16 @@ static const struct of_device_id ocelot_pinctrl_of_match[] = {
 	{ .compatible = "mscc,serval-pinctrl", .data = &serval_desc },
 	{ .compatible = "mscc,ocelot-pinctrl", .data = &ocelot_desc },
 	{ .compatible = "mscc,jaguar2-pinctrl", .data = &jaguar2_desc },
+	{ .compatible = "mscc,servalt-pinctrl", .data = &servalt_desc },
 	{ .compatible = "microchip,sparx5-pinctrl", .data = &sparx5_desc },
 	{ .compatible = "microchip,lan966x-pinctrl", .data = &lan966x_desc },
+	{ .compatible = "microchip,lan9691-pinctrl", .data = &lan969x_desc },
 	{},
 };
+MODULE_DEVICE_TABLE(of, ocelot_pinctrl_of_match);
 
-static struct regmap *ocelot_pinctrl_create_pincfg(struct platform_device *pdev)
+static struct regmap *ocelot_pinctrl_create_pincfg(struct platform_device *pdev,
+						   const struct ocelot_pinctrl *info)
 {
 	void __iomem *base;
 
@@ -1787,10 +2230,11 @@ static struct regmap *ocelot_pinctrl_create_pincfg(struct platform_device *pdev)
 		.reg_bits = 32,
 		.val_bits = 32,
 		.reg_stride = 4,
-		.max_register = 32,
+		.max_register = info->desc->npins * 4,
+		.name = "pincfg",
 	};
 
-	base = devm_platform_ioremap_resource(pdev, 0);
+	base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(base)) {
 		dev_dbg(&pdev->dev, "Failed to ioremap config registers (no extended pinconf)\n");
 		return NULL;
@@ -1799,12 +2243,18 @@ static struct regmap *ocelot_pinctrl_create_pincfg(struct platform_device *pdev)
 	return devm_regmap_init_mmio(&pdev->dev, base, &regmap_config);
 }
 
+static void ocelot_destroy_workqueue(void *data)
+{
+	destroy_workqueue(data);
+}
+
 static int ocelot_pinctrl_probe(struct platform_device *pdev)
 {
+	const struct ocelot_match_data *data;
 	struct device *dev = &pdev->dev;
 	struct ocelot_pinctrl *info;
+	struct reset_control *reset;
 	struct regmap *pincfg;
-	void __iomem *base;
 	int ret;
 	struct regmap_config regmap_config = {
 		.reg_bits = 32,
@@ -1816,28 +2266,46 @@ static int ocelot_pinctrl_probe(struct platform_device *pdev)
 	if (!info)
 		return -ENOMEM;
 
-	info->desc = (struct pinctrl_desc *)device_get_match_data(dev);
+	data = device_get_match_data(dev);
+	if (!data)
+		return -EINVAL;
 
-	base = devm_ioremap_resource(dev,
-			platform_get_resource(pdev, IORESOURCE_MEM, 0));
-	if (IS_ERR(base))
-		return PTR_ERR(base);
+	info->desc = devm_kmemdup(dev, &data->desc, sizeof(*info->desc),
+				  GFP_KERNEL);
+	if (!info->desc)
+		return -ENOMEM;
+
+	info->wq = alloc_ordered_workqueue("ocelot_ordered", 0);
+	if (!info->wq)
+		return -ENOMEM;
+
+	ret = devm_add_action_or_reset(dev, ocelot_destroy_workqueue,
+				       info->wq);
+	if (ret)
+		return ret;
+
+	info->pincfg_data = &data->pincfg_data;
+
+	reset = devm_reset_control_get_optional_shared(dev, "switch");
+	if (IS_ERR(reset))
+		return dev_err_probe(dev, PTR_ERR(reset),
+				     "Failed to get reset\n");
+	reset_control_reset(reset);
 
 	info->stride = 1 + (info->desc->npins - 1) / 32;
 
 	regmap_config.max_register = OCELOT_GPIO_SD_MAP * info->stride + 15 * 4;
 
-	info->map = devm_regmap_init_mmio(dev, base, &regmap_config);
-	if (IS_ERR(info->map)) {
-		dev_err(dev, "Failed to create regmap\n");
-		return PTR_ERR(info->map);
-	}
-	dev_set_drvdata(dev, info->map);
+	info->map = ocelot_regmap_from_resource(pdev, 0, &regmap_config);
+	if (IS_ERR(info->map))
+		return dev_err_probe(dev, PTR_ERR(info->map),
+				     "Failed to create regmap\n");
+	dev_set_drvdata(dev, info);
 	info->dev = dev;
 
 	/* Pinconf registers */
 	if (info->desc->confops) {
-		pincfg = ocelot_pinctrl_create_pincfg(pdev);
+		pincfg = ocelot_pinctrl_create_pincfg(pdev, info);
 		if (IS_ERR(pincfg))
 			dev_dbg(dev, "Failed to create pincfg regmap\n");
 		else
@@ -1865,4 +2333,7 @@ static struct platform_driver ocelot_pinctrl_driver = {
 	},
 	.probe = ocelot_pinctrl_probe,
 };
-builtin_platform_driver(ocelot_pinctrl_driver);
+module_platform_driver(ocelot_pinctrl_driver);
+
+MODULE_DESCRIPTION("Ocelot Chip Pinctrl Driver");
+MODULE_LICENSE("Dual MIT/GPL");

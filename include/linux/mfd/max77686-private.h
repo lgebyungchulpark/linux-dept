@@ -152,7 +152,7 @@ enum max77686_rtc_reg {
 	MAX77686_RTC_WEEKDAY		= 0x0A,
 	MAX77686_RTC_MONTH		= 0x0B,
 	MAX77686_RTC_YEAR		= 0x0C,
-	MAX77686_RTC_DATE		= 0x0D,
+	MAX77686_RTC_MONTHDAY		= 0x0D,
 	MAX77686_ALARM1_SEC		= 0x0E,
 	MAX77686_ALARM1_MIN		= 0x0F,
 	MAX77686_ALARM1_HOUR		= 0x10,
@@ -352,7 +352,7 @@ enum max77802_rtc_reg {
 	MAX77802_RTC_WEEKDAY		= 0xCA,
 	MAX77802_RTC_MONTH		= 0xCB,
 	MAX77802_RTC_YEAR		= 0xCC,
-	MAX77802_RTC_DATE		= 0xCD,
+	MAX77802_RTC_MONTHDAY		= 0xCD,
 	MAX77802_RTC_AE1		= 0xCE,
 	MAX77802_ALARM1_SEC		= 0xCF,
 	MAX77802_ALARM1_MIN		= 0xD0,
@@ -440,9 +440,5 @@ enum max77686_types {
 	TYPE_MAX77686,
 	TYPE_MAX77802,
 };
-
-extern int max77686_irq_init(struct max77686_dev *max77686);
-extern void max77686_irq_exit(struct max77686_dev *max77686);
-extern int max77686_irq_resume(struct max77686_dev *max77686);
 
 #endif /*  __LINUX_MFD_MAX77686_PRIV_H */

@@ -178,6 +178,7 @@ my $store_failures;
 my $store_successes;
 my $test_name;
 my $timeout;
+my $run_timeout;
 my $connect_timeout;
 my $config_bisect_exec;
 my $booted_timeout;
@@ -220,6 +221,8 @@ my $build_time;
 my $install_time;
 my $reboot_time;
 my $test_time;
+
+my $warning_found = 0;
 
 my $pwd;
 my $dirname = $FindBin::Bin;
@@ -340,6 +343,7 @@ my %option_map = (
     "STORE_SUCCESSES"		=> \$store_successes,
     "TEST_NAME"			=> \$test_name,
     "TIMEOUT"			=> \$timeout,
+    "RUN_TIMEOUT"		=> \$run_timeout,
     "CONNECT_TIMEOUT"		=> \$connect_timeout,
     "CONFIG_BISECT_EXEC"	=> \$config_bisect_exec,
     "BOOTED_TIMEOUT"		=> \$booted_timeout,
@@ -727,11 +731,18 @@ sub print_times {
 	show_time($test_time);
 	doprint "\n";
     }
+    if ($warning_found) {
+	doprint "\n*** WARNING";
+	doprint "S" if ($warning_found > 1);
+	doprint " found in build: $warning_found ***\n\n";
+    }
+
     # reset for iterations like bisect
     $build_time = 0;
     $install_time = 0;
     $reboot_time = 0;
     $test_time = 0;
+    $warning_found = 0;
 }
 
 sub get_mandatory_configs {
@@ -790,35 +801,46 @@ sub process_variables {
     my $retval = "";
 
     # We want to check for '\', and it is just easier
-    # to check the previous characet of '$' and not need
+    # to check the previous character of '$' and not need
     # to worry if '$' is the first character. By adding
     # a space to $value, we can just check [^\\]\$ and
     # it will still work.
     $value = " $value";
 
-    while ($value =~ /(.*?[^\\])\$\{(.*?)\}(.*)/) {
+    while ($value =~ /(.*?[^\\])\$\{([^\{]*?)\}(.*)/) {
 	my $begin = $1;
 	my $var = $2;
 	my $end = $3;
 	# append beginning of value to retval
 	$retval = "$retval$begin";
-	if (defined($variable{$var})) {
+	if ($var =~ s/^shell\s+//) {
+	    $retval = `$var`;
+	    if ($?) {
+		doprint "WARNING: $var returned an error\n";
+	    } else {
+		chomp $retval;
+	    }
+	} elsif (defined($variable{$var})) {
 	    $retval = "$retval$variable{$var}";
 	} elsif (defined($remove_undef) && $remove_undef) {
 	    # for if statements, any variable that is not defined,
 	    # we simple convert to 0
 	    $retval = "${retval}0";
 	} else {
-	    # put back the origin piece.
-	    $retval = "$retval\$\{$var\}";
+	    # put back the origin piece, but with $#### to not reprocess it
+	    $retval = "$retval\$####\{$var\}";
 	    # This could be an option that is used later, save
 	    # it so we don't warn if this option is not one of
 	    # ktests options.
 	    $used_options{$var} = 1;
 	}
-	$value = $end;
+	$value = "$retval$end";
+	$retval = "";
     }
-    $retval = "$retval$value";
+    $retval = $value;
+
+    # Convert the saved variables with $####{var} back to ${var}
+    $retval =~ s/\$####/\$/g;
 
     # remove the space added in the beginning
     $retval =~ s/ //;
@@ -834,6 +856,7 @@ sub set_value {
     if ($lvalue =~ /^(TEST|BISECT|CONFIG_BISECT)_TYPE(\[.*\])?$/ &&
 	$prvalue !~ /^(config_|)bisect$/ &&
 	$prvalue !~ /^build$/ &&
+	$prvalue !~ /^make_warnings_file$/ &&
 	$buildonly) {
 
 	# Note if a test is something other than build, then we
@@ -1488,7 +1511,8 @@ sub reboot {
 
 	# Still need to wait for the reboot to finish
 	wait_for_monitor($time, $reboot_success_line);
-
+    }
+    if ($powercycle || $time) {
 	end_monitor;
     }
 }
@@ -1527,6 +1551,11 @@ sub dodie {
     # avoid recursion
     return if ($in_die);
     $in_die = 1;
+
+    if ($monitor_cnt) {
+	# restore terminal settings
+	system("stty $stty_orig");
+    }
 
     my $i = $iteration;
 
@@ -1572,11 +1601,6 @@ sub dodie {
 
 	send_email("KTEST: critical failure for test $i [$name]",
 		"Your test started at $script_start_time has failed with:\n@_\n", $log_file);
-    }
-
-    if ($monitor_cnt) {
-	# restore terminal settings
-	system("stty $stty_orig");
     }
 
     if (defined($post_test)) {
@@ -1850,6 +1874,14 @@ sub run_command {
     $command =~ s/\$SSH_USER/$ssh_user/g;
     $command =~ s/\$MACHINE/$machine/g;
 
+    if (!defined($timeout)) {
+	$timeout = $run_timeout;
+    }
+
+    if (!defined($timeout)) {
+	$timeout = -1; # tell wait_for_input to wait indefinitely
+    }
+
     doprint("$command ... ");
     $start_time = time;
 
@@ -1876,13 +1908,10 @@ sub run_command {
 
     while (1) {
 	my $fp = \*CMD;
-	if (defined($timeout)) {
-	    doprint "timeout = $timeout\n";
-	}
 	my $line = wait_for_input($fp, $timeout);
 	if (!defined($line)) {
 	    my $now = time;
-	    if (defined($timeout) && (($now - $start_time) >= $timeout)) {
+	    if ($timeout >= 0 && (($now - $start_time) >= $timeout)) {
 		doprint "Hit timeout of $timeout, killing process\n";
 		$hit_timeout = 1;
 		kill 9, $pid;
@@ -1963,7 +1992,7 @@ sub run_scp_mod {
 
 sub _get_grub_index {
 
-    my ($command, $target, $skip) = @_;
+    my ($command, $target, $skip, $submenu) = @_;
 
     return if (defined($grub_number) && defined($last_grub_menu) &&
 	$last_grub_menu eq $grub_menu && defined($last_machine) &&
@@ -1980,11 +2009,16 @@ sub _get_grub_index {
 
     my $found = 0;
 
+    my $submenu_number = 0;
+
     while (<IN>) {
 	if (/$target/) {
 	    $grub_number++;
 	    $found = 1;
 	    last;
+	} elsif (defined($submenu) && /$submenu/) {
+		$submenu_number++;
+		$grub_number = -1;
 	} elsif (/$skip/) {
 	    $grub_number++;
 	}
@@ -1993,6 +2027,9 @@ sub _get_grub_index {
 
     dodie "Could not find '$grub_menu' through $command on $machine"
 	if (!$found);
+    if ($submenu_number > 0) {
+	$grub_number = "$submenu_number>$grub_number";
+    }
     doprint "$grub_number\n";
     $last_grub_menu = $grub_menu;
     $last_machine = $machine;
@@ -2003,6 +2040,7 @@ sub get_grub_index {
     my $command;
     my $target;
     my $skip;
+    my $submenu;
     my $grub_menu_qt;
 
     if ($reboot_type !~ /^grub/) {
@@ -2017,8 +2055,9 @@ sub get_grub_index {
 	$skip = '^\s*title\s';
     } elsif ($reboot_type eq "grub2") {
 	$command = "cat $grub_file";
-	$target = '^menuentry.*' . $grub_menu_qt;
-	$skip = '^menuentry\s|^submenu\s';
+	$target = '^\s*menuentry.*' . $grub_menu_qt;
+	$skip = '^\s*menuentry\s';
+	$submenu = '^\s*submenu\s';
     } elsif ($reboot_type eq "grub2bls") {
 	$command = $grub_bls_get;
 	$target = '^title=.*' . $grub_menu_qt;
@@ -2027,7 +2066,7 @@ sub get_grub_index {
 	return;
     }
 
-    _get_grub_index($command, $target, $skip);
+    _get_grub_index($command, $target, $skip, $submenu);
 }
 
 sub wait_for_input {
@@ -2042,6 +2081,11 @@ sub wait_for_input {
 
     if (!defined($time)) {
 	$time = $timeout;
+    }
+
+    if ($time < 0) {
+	# Negative number means wait indefinitely
+	undef $time;
     }
 
     $rin = '';
@@ -2090,7 +2134,7 @@ sub reboot_to {
     if ($reboot_type eq "grub") {
 	run_ssh "'(echo \"savedefault --default=$grub_number --once\" | grub --batch)'";
     } elsif (($reboot_type eq "grub2") or ($reboot_type eq "grub2bls")) {
-	run_ssh "$grub_reboot $grub_number";
+	run_ssh "$grub_reboot \"'$grub_number'\"";
     } elsif ($reboot_type eq "syslinux") {
 	run_ssh "$syslinux --once \\\"$syslinux_label\\\" $syslinux_path";
     } elsif (defined $reboot_script) {
@@ -2425,8 +2469,6 @@ sub process_warning_line {
 # Returns 1 if OK
 #         0 otherwise
 sub check_buildlog {
-    return 1 if (!defined $warnings_file);
-
     my %warnings_list;
 
     # Failed builds should not reboot the target
@@ -2447,18 +2489,21 @@ sub check_buildlog {
 	close(IN);
     }
 
-    # If warnings file didn't exist, and WARNINGS_FILE exist,
-    # then we fail on any warning!
-
     open(IN, $buildlog) or dodie "Can't open $buildlog";
     while (<IN>) {
 	if (/$check_build_re/) {
 	    my $warning = process_warning_line $_;
 
 	    if (!defined $warnings_list{$warning}) {
-		fail "New warning found (not in $warnings_file)\n$_\n";
-		$no_reboot = $save_no_reboot;
-		return 0;
+		$warning_found++;
+
+		# If warnings file didn't exist, and WARNINGS_FILE exist,
+		# then we fail on any warning!
+		if (defined $warnings_file) {
+		    fail "New warning found (not in $warnings_file)\n$_\n";
+		    $no_reboot = $save_no_reboot;
+		    return 0;
+		}
 	    }
 	}
     }
@@ -3768,9 +3813,10 @@ sub test_this_config {
     # .config to make sure it is missing the config that
     # we had before
     my %configs = %min_configs;
-    delete $configs{$config};
+    $configs{$config} = "# $config is not set";
     make_new_config ((values %configs), (values %keep_configs));
     make_oldconfig;
+    delete $configs{$config};
     undef %configs;
     assign_configs \%configs, $output_config;
 
@@ -4182,6 +4228,9 @@ sub send_email {
 }
 
 sub cancel_test {
+    if ($monitor_cnt) {
+	end_monitor;
+    }
     if ($email_when_canceled) {
 	my $name = get_test_name;
 	send_email("KTEST: Your [$name] test was cancelled",

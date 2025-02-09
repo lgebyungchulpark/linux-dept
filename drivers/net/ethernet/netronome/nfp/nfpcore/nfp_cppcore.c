@@ -9,7 +9,7 @@
  *          Rolf Neugebauer <rolf.neugebauer@netronome.com>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/ioport.h>
@@ -874,7 +874,6 @@ area_cache_get(struct nfp_cpp *cpp, u32 id,
 	}
 
 	/* Adjust the start address to be cache size aligned */
-	cache->id = id;
 	cache->addr = addr & ~(u64)(cache->size - 1);
 
 	/* Re-init to the new ID and address */
@@ -893,6 +892,8 @@ area_cache_get(struct nfp_cpp *cpp, u32 id,
 		mutex_unlock(&cpp->area_cache_mutex);
 		return NULL;
 	}
+
+	cache->id = id;
 
 exit:
 	/* Adjust offset */

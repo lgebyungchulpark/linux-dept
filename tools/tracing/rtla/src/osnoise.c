@@ -656,6 +656,253 @@ void osnoise_put_print_stack(struct osnoise_context *context)
 }
 
 /*
+ * osnoise_get_tracing_thresh - read and save the original "tracing_thresh"
+ */
+static long long
+osnoise_get_tracing_thresh(struct osnoise_context *context)
+{
+	long long tracing_thresh;
+
+	if (context->tracing_thresh != OSNOISE_OPTION_INIT_VAL)
+		return context->tracing_thresh;
+
+	if (context->orig_tracing_thresh != OSNOISE_OPTION_INIT_VAL)
+		return context->orig_tracing_thresh;
+
+	tracing_thresh = osnoise_read_ll_config("tracing_thresh");
+	if (tracing_thresh < 0)
+		goto out_err;
+
+	context->orig_tracing_thresh = tracing_thresh;
+	return tracing_thresh;
+
+out_err:
+	return OSNOISE_OPTION_INIT_VAL;
+}
+
+/*
+ * osnoise_set_tracing_thresh - set "tracing_thresh"
+ */
+int osnoise_set_tracing_thresh(struct osnoise_context *context, long long tracing_thresh)
+{
+	long long curr_tracing_thresh = osnoise_get_tracing_thresh(context);
+	int retval;
+
+	if (curr_tracing_thresh == OSNOISE_OPTION_INIT_VAL)
+		return -1;
+
+	retval = osnoise_write_ll_config("tracing_thresh", tracing_thresh);
+	if (retval < 0)
+		return -1;
+
+	context->tracing_thresh = tracing_thresh;
+
+	return 0;
+}
+
+/*
+ * osnoise_restore_tracing_thresh - restore the original "tracing_thresh"
+ */
+void osnoise_restore_tracing_thresh(struct osnoise_context *context)
+{
+	int retval;
+
+	if (context->orig_tracing_thresh == OSNOISE_OPTION_INIT_VAL)
+		return;
+
+	if (context->orig_tracing_thresh == context->tracing_thresh)
+		goto out_done;
+
+	retval = osnoise_write_ll_config("tracing_thresh", context->orig_tracing_thresh);
+	if (retval < 0)
+		err_msg("Could not restore original tracing_thresh\n");
+
+out_done:
+	context->tracing_thresh = OSNOISE_OPTION_INIT_VAL;
+}
+
+/*
+ * osnoise_put_tracing_thresh - restore original values and cleanup data
+ */
+void osnoise_put_tracing_thresh(struct osnoise_context *context)
+{
+	osnoise_restore_tracing_thresh(context);
+
+	if (context->orig_tracing_thresh == OSNOISE_OPTION_INIT_VAL)
+		return;
+
+	context->orig_tracing_thresh = OSNOISE_OPTION_INIT_VAL;
+}
+
+static int osnoise_options_get_option(char *option)
+{
+	char *options = tracefs_instance_file_read(NULL, "osnoise/options", NULL);
+	char no_option[128];
+	int retval = 0;
+	char *opt;
+
+	if (!options)
+		return OSNOISE_OPTION_INIT_VAL;
+
+	/*
+	 * Check first if the option is disabled.
+	 */
+	snprintf(no_option, sizeof(no_option), "NO_%s", option);
+
+	opt = strstr(options, no_option);
+	if (opt)
+		goto out_free;
+
+	/*
+	 * Now that it is not disabled, if the string is there, it is
+	 * enabled. If the string is not there, the option does not exist.
+	 */
+	opt = strstr(options, option);
+	if (opt)
+		retval = 1;
+	else
+		retval = OSNOISE_OPTION_INIT_VAL;
+
+out_free:
+	free(options);
+	return retval;
+}
+
+static int osnoise_options_set_option(char *option, bool onoff)
+{
+	char no_option[128];
+
+	if (onoff)
+		return tracefs_instance_file_write(NULL, "osnoise/options", option);
+
+	snprintf(no_option, sizeof(no_option), "NO_%s", option);
+
+	return tracefs_instance_file_write(NULL, "osnoise/options", no_option);
+}
+
+static int osnoise_get_irq_disable(struct osnoise_context *context)
+{
+	if (context->opt_irq_disable != OSNOISE_OPTION_INIT_VAL)
+		return context->opt_irq_disable;
+
+	if (context->orig_opt_irq_disable != OSNOISE_OPTION_INIT_VAL)
+		return context->orig_opt_irq_disable;
+
+	context->orig_opt_irq_disable = osnoise_options_get_option("OSNOISE_IRQ_DISABLE");
+
+	return context->orig_opt_irq_disable;
+}
+
+int osnoise_set_irq_disable(struct osnoise_context *context, bool onoff)
+{
+	int opt_irq_disable = osnoise_get_irq_disable(context);
+	int retval;
+
+	if (opt_irq_disable == OSNOISE_OPTION_INIT_VAL)
+		return -1;
+
+	if (opt_irq_disable == onoff)
+		return 0;
+
+	retval = osnoise_options_set_option("OSNOISE_IRQ_DISABLE", onoff);
+	if (retval < 0)
+		return -1;
+
+	context->opt_irq_disable = onoff;
+
+	return 0;
+}
+
+static void osnoise_restore_irq_disable(struct osnoise_context *context)
+{
+	int retval;
+
+	if (context->orig_opt_irq_disable == OSNOISE_OPTION_INIT_VAL)
+		return;
+
+	if (context->orig_opt_irq_disable == context->opt_irq_disable)
+		goto out_done;
+
+	retval = osnoise_options_set_option("OSNOISE_IRQ_DISABLE", context->orig_opt_irq_disable);
+	if (retval < 0)
+		err_msg("Could not restore original OSNOISE_IRQ_DISABLE option\n");
+
+out_done:
+	context->orig_opt_irq_disable = OSNOISE_OPTION_INIT_VAL;
+}
+
+static void osnoise_put_irq_disable(struct osnoise_context *context)
+{
+	osnoise_restore_irq_disable(context);
+
+	if (context->orig_opt_irq_disable == OSNOISE_OPTION_INIT_VAL)
+		return;
+
+	context->orig_opt_irq_disable = OSNOISE_OPTION_INIT_VAL;
+}
+
+static int osnoise_get_workload(struct osnoise_context *context)
+{
+	if (context->opt_workload != OSNOISE_OPTION_INIT_VAL)
+		return context->opt_workload;
+
+	if (context->orig_opt_workload != OSNOISE_OPTION_INIT_VAL)
+		return context->orig_opt_workload;
+
+	context->orig_opt_workload = osnoise_options_get_option("OSNOISE_WORKLOAD");
+
+	return context->orig_opt_workload;
+}
+
+int osnoise_set_workload(struct osnoise_context *context, bool onoff)
+{
+	int opt_workload = osnoise_get_workload(context);
+	int retval;
+
+	if (opt_workload == OSNOISE_OPTION_INIT_VAL)
+		return -1;
+
+	if (opt_workload == onoff)
+		return 0;
+
+	retval = osnoise_options_set_option("OSNOISE_WORKLOAD", onoff);
+	if (retval < 0)
+		return -1;
+
+	context->opt_workload = onoff;
+
+	return 0;
+}
+
+static void osnoise_restore_workload(struct osnoise_context *context)
+{
+	int retval;
+
+	if (context->orig_opt_workload == OSNOISE_OPTION_INIT_VAL)
+		return;
+
+	if (context->orig_opt_workload == context->opt_workload)
+		goto out_done;
+
+	retval = osnoise_options_set_option("OSNOISE_WORKLOAD", context->orig_opt_workload);
+	if (retval < 0)
+		err_msg("Could not restore original OSNOISE_WORKLOAD option\n");
+
+out_done:
+	context->orig_opt_workload = OSNOISE_OPTION_INIT_VAL;
+}
+
+static void osnoise_put_workload(struct osnoise_context *context)
+{
+	osnoise_restore_workload(context);
+
+	if (context->orig_opt_workload == OSNOISE_OPTION_INIT_VAL)
+		return;
+
+	context->orig_opt_workload = OSNOISE_OPTION_INIT_VAL;
+}
+
+/*
  * enable_osnoise - enable osnoise tracer in the trace_instance
  */
 int enable_osnoise(struct trace_instance *trace)
@@ -716,6 +963,15 @@ struct osnoise_context *osnoise_context_alloc(void)
 	context->orig_print_stack	= OSNOISE_OPTION_INIT_VAL;
 	context->print_stack		= OSNOISE_OPTION_INIT_VAL;
 
+	context->orig_tracing_thresh	= OSNOISE_OPTION_INIT_VAL;
+	context->tracing_thresh		= OSNOISE_OPTION_INIT_VAL;
+
+	context->orig_opt_irq_disable	= OSNOISE_OPTION_INIT_VAL;
+	context->opt_irq_disable	= OSNOISE_OPTION_INIT_VAL;
+
+	context->orig_opt_workload	= OSNOISE_OPTION_INIT_VAL;
+	context->opt_workload		= OSNOISE_OPTION_INIT_VAL;
+
 	osnoise_get_context(context);
 
 	return context;
@@ -741,6 +997,9 @@ void osnoise_put_context(struct osnoise_context *context)
 	osnoise_put_stop_total_us(context);
 	osnoise_put_timerlat_period_us(context);
 	osnoise_put_print_stack(context);
+	osnoise_put_tracing_thresh(context);
+	osnoise_put_irq_disable(context);
+	osnoise_put_workload(context);
 
 	free(context);
 }
@@ -750,6 +1009,9 @@ void osnoise_put_context(struct osnoise_context *context)
  */
 void osnoise_destroy_tool(struct osnoise_tool *top)
 {
+	if (!top)
+		return;
+
 	trace_instance_destroy(&top->trace);
 
 	if (top->context)
@@ -807,7 +1069,7 @@ struct osnoise_tool *osnoise_init_trace_tool(char *tracer)
 
 	retval = enable_tracer_by_name(trace->trace.inst, tracer);
 	if (retval) {
-		err_msg("Could not enable osnoiser tracer for tracing\n");
+		err_msg("Could not enable %s tracer for tracing\n", tracer);
 		goto out_err;
 	}
 
@@ -817,7 +1079,7 @@ out_err:
 	return NULL;
 }
 
-static void osnoise_usage(void)
+static void osnoise_usage(int err)
 {
 	int i;
 
@@ -837,7 +1099,7 @@ static void osnoise_usage(void)
 
 	for (i = 0; msg[i]; i++)
 		fprintf(stderr, "%s\n", msg[i]);
-	exit(1);
+	exit(err);
 }
 
 int osnoise_main(int argc, char *argv[])
@@ -855,8 +1117,7 @@ int osnoise_main(int argc, char *argv[])
 	}
 
 	if ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0)) {
-		osnoise_usage();
-		exit(0);
+		osnoise_usage(0);
 	} else if (strncmp(argv[1], "-", 1) == 0) {
 		/* the user skipped the tool, call the default one */
 		osnoise_top_main(argc, argv);
@@ -870,6 +1131,12 @@ int osnoise_main(int argc, char *argv[])
 	}
 
 usage:
-	osnoise_usage();
+	osnoise_usage(1);
 	exit(1);
+}
+
+int hwnoise_main(int argc, char *argv[])
+{
+	osnoise_top_main(argc, argv);
+	exit(0);
 }

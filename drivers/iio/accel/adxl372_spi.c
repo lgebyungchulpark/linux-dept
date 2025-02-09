@@ -6,9 +6,8 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/regmap.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/spi/spi.h>
 
 #include "adxl372.h"
@@ -59,3 +58,4 @@ module_spi_driver(adxl372_spi_driver);
 MODULE_AUTHOR("Stefan Popa <stefan.popa@analog.com>");
 MODULE_DESCRIPTION("Analog Devices ADXL372 3-axis accelerometer SPI driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_ADXL372");

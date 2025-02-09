@@ -77,6 +77,8 @@ static int marvell_cable_detect(struct ata_port *ap)
 	switch(ap->port_no)
 	{
 	case 0:
+		if (!ap->ioaddr.bmdma_addr)
+			return ATA_CBL_PATA_UNK;
 		if (ioread8(ap->ioaddr.bmdma_addr + 1) & 1)
 			return ATA_CBL_PATA40;
 		return ATA_CBL_PATA80;
@@ -90,7 +92,7 @@ static int marvell_cable_detect(struct ata_port *ap)
 
 /* No PIO or DMA methods needed for this device */
 
-static struct scsi_host_template marvell_sht = {
+static const struct scsi_host_template marvell_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 

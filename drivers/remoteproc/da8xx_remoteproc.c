@@ -84,7 +84,7 @@ struct da8xx_rproc {
  */
 static irqreturn_t handle_event(int irq, void *p)
 {
-	struct rproc *rproc = (struct rproc *)p;
+	struct rproc *rproc = p;
 
 	/* Process incoming buffers on all our vrings */
 	rproc_vq_interrupt(rproc, 0);
@@ -104,8 +104,8 @@ static irqreturn_t handle_event(int irq, void *p)
  */
 static irqreturn_t da8xx_rproc_callback(int irq, void *p)
 {
-	struct rproc *rproc = (struct rproc *)p;
-	struct da8xx_rproc *drproc = (struct da8xx_rproc *)rproc->priv;
+	struct rproc *rproc = p;
+	struct da8xx_rproc *drproc = rproc->priv;
 	u32 chipsig;
 
 	chipsig = readl(drproc->chipsig);
@@ -133,7 +133,7 @@ static irqreturn_t da8xx_rproc_callback(int irq, void *p)
 static int da8xx_rproc_start(struct rproc *rproc)
 {
 	struct device *dev = rproc->dev.parent;
-	struct da8xx_rproc *drproc = (struct da8xx_rproc *)rproc->priv;
+	struct da8xx_rproc *drproc = rproc->priv;
 	struct clk *dsp_clk = drproc->dsp_clk;
 	struct reset_control *dsp_reset = drproc->dsp_reset;
 	int ret;
@@ -183,7 +183,7 @@ static int da8xx_rproc_stop(struct rproc *rproc)
 /* kick a virtqueue */
 static void da8xx_rproc_kick(struct rproc *rproc, int vqid)
 {
-	struct da8xx_rproc *drproc = (struct da8xx_rproc *)rproc->priv;
+	struct da8xx_rproc *drproc = rproc->priv;
 
 	/* Interrupt remote proc */
 	writel(SYSCFG_CHIPSIG2, drproc->chipsig);
@@ -239,8 +239,6 @@ static int da8xx_rproc_probe(struct platform_device *pdev)
 	struct da8xx_rproc *drproc;
 	struct rproc *rproc;
 	struct irq_data *irq_data;
-	struct resource *bootreg_res;
-	struct resource *chipsig_res;
 	struct clk *dsp_clk;
 	struct reset_control *dsp_reset;
 	void __iomem *chipsig;
@@ -253,46 +251,29 @@ static int da8xx_rproc_probe(struct platform_device *pdev)
 		return irq;
 
 	irq_data = irq_get_irq_data(irq);
-	if (!irq_data) {
-		dev_err(dev, "irq_get_irq_data(%d): NULL\n", irq);
-		return -EINVAL;
-	}
+	if (!irq_data)
+		return dev_err_probe(dev, -EINVAL, "irq_get_irq_data(%d): NULL\n", irq);
 
-	bootreg_res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-						   "host1cfg");
-	bootreg = devm_ioremap_resource(dev, bootreg_res);
+	bootreg = devm_platform_ioremap_resource_byname(pdev, "host1cfg");
 	if (IS_ERR(bootreg))
 		return PTR_ERR(bootreg);
 
-	chipsig_res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-						   "chipsig");
-	chipsig = devm_ioremap_resource(dev, chipsig_res);
+	chipsig = devm_platform_ioremap_resource_byname(pdev, "chipsig");
 	if (IS_ERR(chipsig))
 		return PTR_ERR(chipsig);
 
 	dsp_clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(dsp_clk)) {
-		dev_err(dev, "clk_get error: %ld\n", PTR_ERR(dsp_clk));
-
-		return PTR_ERR(dsp_clk);
-	}
+	if (IS_ERR(dsp_clk))
+		return dev_err_probe(dev, PTR_ERR(dsp_clk), "clk_get error\n");
 
 	dsp_reset = devm_reset_control_get_exclusive(dev, NULL);
-	if (IS_ERR(dsp_reset)) {
-		if (PTR_ERR(dsp_reset) != -EPROBE_DEFER)
-			dev_err(dev, "unable to get reset control: %ld\n",
-				PTR_ERR(dsp_reset));
-
-		return PTR_ERR(dsp_reset);
-	}
+	if (IS_ERR(dsp_reset))
+		return dev_err_probe(dev, PTR_ERR(dsp_reset), "unable to get reset control\n");
 
 	if (dev->of_node) {
 		ret = of_reserved_mem_device_init(dev);
-		if (ret) {
-			dev_err(dev, "device does not have specific CMA pool: %d\n",
-				ret);
-			return ret;
-		}
+		if (ret)
+			return dev_err_probe(dev, ret, "device does not have specific CMA pool\n");
 	}
 
 	rproc = rproc_alloc(dev, "dsp", &da8xx_rproc_ops, da8xx_fw_name,
@@ -357,10 +338,10 @@ free_mem:
 	return ret;
 }
 
-static int da8xx_rproc_remove(struct platform_device *pdev)
+static void da8xx_rproc_remove(struct platform_device *pdev)
 {
 	struct rproc *rproc = platform_get_drvdata(pdev);
-	struct da8xx_rproc *drproc = (struct da8xx_rproc *)rproc->priv;
+	struct da8xx_rproc *drproc = rproc->priv;
 	struct device *dev = &pdev->dev;
 
 	/*
@@ -374,8 +355,6 @@ static int da8xx_rproc_remove(struct platform_device *pdev)
 	rproc_free(rproc);
 	if (dev->of_node)
 		of_reserved_mem_device_release(dev);
-
-	return 0;
 }
 
 static const struct of_device_id davinci_rproc_of_match[] __maybe_unused = {

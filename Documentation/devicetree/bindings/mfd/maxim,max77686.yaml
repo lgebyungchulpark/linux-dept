@@ -8,7 +8,7 @@ title: Maxim MAX77686 Power Management IC
 
 maintainers:
   - Chanwoo Choi <cw00.choi@samsung.com>
-  - Krzysztof Kozlowski <krzysztof.kozlowski@canonical.com>
+  - Krzysztof Kozlowski <krzk@kernel.org>
 
 description: |
   This is a part of device tree bindings for Maxim MAX77686 Power Management
@@ -35,7 +35,7 @@ properties:
     maxItems: 1
 
   voltage-regulators:
-    $ref: ../regulator/maxim,max77686.yaml
+    $ref: /schemas/regulator/maxim,max77686.yaml
     description:
       List of child nodes that specify the regulators.
 

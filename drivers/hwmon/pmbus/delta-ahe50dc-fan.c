@@ -14,6 +14,21 @@
 
 #define AHE50DC_PMBUS_READ_TEMP4 0xd0
 
+static int ahe50dc_fan_write_byte(struct i2c_client *client, int page, u8 value)
+{
+	/*
+	 * The CLEAR_FAULTS operation seems to sometimes (unpredictably, perhaps
+	 * 5% of the time or so) trigger a problematic phenomenon in which the
+	 * fan speeds surge momentarily and at least some (perhaps all?) of the
+	 * system's power outputs experience a glitch.
+	 *
+	 * However, according to Delta it should be OK to simply not send any
+	 * CLEAR_FAULTS commands (the device doesn't seem to be capable of
+	 * reporting any faults anyway), so just blackhole them unconditionally.
+	 */
+	return value == PMBUS_CLEAR_FAULTS ? -EOPNOTSUPP : -ENODATA;
+}
+
 static int ahe50dc_fan_read_word_data(struct i2c_client *client, int page, int phase, int reg)
 {
 	/* temp1 in (virtual) page 1 is remapped to mfr-specific temp4 */
@@ -68,6 +83,7 @@ static struct pmbus_driver_info ahe50dc_fan_info = {
 		PMBUS_HAVE_VIN | PMBUS_HAVE_FAN12 | PMBUS_HAVE_FAN34 |
 		PMBUS_HAVE_STATUS_FAN12 | PMBUS_HAVE_STATUS_FAN34 | PMBUS_PAGE_VIRTUAL,
 	.func[1] = PMBUS_HAVE_TEMP | PMBUS_PAGE_VIRTUAL,
+	.write_byte = ahe50dc_fan_write_byte,
 	.read_word_data = ahe50dc_fan_read_word_data,
 };
 
@@ -103,7 +119,7 @@ static struct i2c_driver ahe50dc_fan_driver = {
 		   .name = "ahe50dc_fan",
 		   .of_match_table = of_match_ptr(ahe50dc_fan_of_match),
 	},
-	.probe_new = ahe50dc_fan_probe,
+	.probe = ahe50dc_fan_probe,
 	.id_table = ahe50dc_fan_id,
 };
 module_i2c_driver(ahe50dc_fan_driver);
@@ -111,4 +127,4 @@ module_i2c_driver(ahe50dc_fan_driver);
 MODULE_AUTHOR("Zev Weiss <zev@bewilderbeest.net>");
 MODULE_DESCRIPTION("Driver for Delta AHE-50DC power shelf fan control module");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

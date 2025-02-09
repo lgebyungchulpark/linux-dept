@@ -308,10 +308,9 @@ static int palmas_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int palmas_rtc_remove(struct platform_device *pdev)
+static void palmas_rtc_remove(struct platform_device *pdev)
 {
 	palmas_rtc_alarm_irq_enable(&pdev->dev, 0);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

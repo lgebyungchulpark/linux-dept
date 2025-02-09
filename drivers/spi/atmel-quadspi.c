@@ -21,6 +21,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/spi/spi-mem.h>
 
 /* QSPI register offsets */
@@ -182,7 +183,7 @@ static const char *atmel_qspi_reg_name(u32 offset, char *tmp, size_t sz)
 	case QSPI_MR:
 		return "MR";
 	case QSPI_RD:
-		return "MR";
+		return "RD";
 	case QSPI_TD:
 		return "TD";
 	case QSPI_SR:
@@ -271,24 +272,21 @@ static int atmel_qspi_find_mode(const struct spi_mem_op *op)
 		if (atmel_qspi_is_compatible(op, &atmel_qspi_modes[i]))
 			return i;
 
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static bool atmel_qspi_supports_op(struct spi_mem *mem,
 				   const struct spi_mem_op *op)
 {
+	if (!spi_mem_default_supports_op(mem, op))
+		return false;
+
 	if (atmel_qspi_find_mode(op) < 0)
 		return false;
 
 	/* special case not supported by hardware */
 	if (op->addr.nbytes == 2 && op->cmd.buswidth != op->addr.buswidth &&
-		op->dummy.nbytes == 0)
-		return false;
-
-	/* DTR ops not supported. */
-	if (op->cmd.dtr || op->addr.dtr || op->dummy.dtr || op->data.dtr)
-		return false;
-	if (op->cmd.nbytes != 1)
+	    op->dummy.nbytes == 0)
 		return false;
 
 	return true;
@@ -377,9 +375,9 @@ static int atmel_qspi_set_cfg(struct atmel_qspi *aq,
 	 * If the QSPI controller is set in regular SPI mode, set it in
 	 * Serial Memory Mode (SMM).
 	 */
-	if (aq->mr != QSPI_MR_SMM) {
-		atmel_qspi_write(QSPI_MR_SMM, aq, QSPI_MR);
-		aq->mr = QSPI_MR_SMM;
+	if (!(aq->mr & QSPI_MR_SMM)) {
+		aq->mr |= QSPI_MR_SMM;
+		atmel_qspi_write(aq->mr, aq, QSPI_MR);
 	}
 
 	/* Clear pending interrupts */
@@ -408,7 +406,7 @@ static int atmel_qspi_set_cfg(struct atmel_qspi *aq,
 
 static int atmel_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
-	struct atmel_qspi *aq = spi_controller_get_devdata(mem->spi->master);
+	struct atmel_qspi *aq = spi_controller_get_devdata(mem->spi->controller);
 	u32 sr, offset;
 	int err;
 
@@ -420,9 +418,13 @@ static int atmel_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	if (op->addr.val + op->data.nbytes > aq->mmap_size)
 		return -ENOTSUPP;
 
+	err = pm_runtime_resume_and_get(&aq->pdev->dev);
+	if (err < 0)
+		return err;
+
 	err = atmel_qspi_set_cfg(aq, op, &offset);
 	if (err)
-		return err;
+		goto pm_runtime_put;
 
 	/* Skip to the final steps if there is no data */
 	if (op->data.nbytes) {
@@ -444,7 +446,7 @@ static int atmel_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	/* Poll INSTRuction End status */
 	sr = atmel_qspi_read(aq, QSPI_SR);
 	if ((sr & QSPI_SR_CMD_COMPLETED) == QSPI_SR_CMD_COMPLETED)
-		return err;
+		goto pm_runtime_put;
 
 	/* Wait for INSTRuction End interrupt */
 	reinit_completion(&aq->cmd_completion);
@@ -455,6 +457,9 @@ static int atmel_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		err = -ETIMEDOUT;
 	atmel_qspi_write(QSPI_SR_CMD_COMPLETED, aq, QSPI_IDR);
 
+pm_runtime_put:
+	pm_runtime_mark_last_busy(&aq->pdev->dev);
+	pm_runtime_put_autosuspend(&aq->pdev->dev);
 	return err;
 }
 
@@ -471,10 +476,11 @@ static const struct spi_controller_mem_ops atmel_qspi_mem_ops = {
 
 static int atmel_qspi_setup(struct spi_device *spi)
 {
-	struct spi_controller *ctrl = spi->master;
+	struct spi_controller *ctrl = spi->controller;
 	struct atmel_qspi *aq = spi_controller_get_devdata(ctrl);
 	unsigned long src_rate;
 	u32 scbr;
+	int ret;
 
 	if (ctrl->busy)
 		return -EBUSY;
@@ -491,8 +497,78 @@ static int atmel_qspi_setup(struct spi_device *spi)
 	if (scbr > 0)
 		scbr--;
 
-	aq->scr = QSPI_SCR_SCBR(scbr);
+	ret = pm_runtime_resume_and_get(ctrl->dev.parent);
+	if (ret < 0)
+		return ret;
+
+	aq->scr &= ~QSPI_SCR_SCBR_MASK;
+	aq->scr |= QSPI_SCR_SCBR(scbr);
 	atmel_qspi_write(aq->scr, aq, QSPI_SCR);
+
+	pm_runtime_mark_last_busy(ctrl->dev.parent);
+	pm_runtime_put_autosuspend(ctrl->dev.parent);
+
+	return 0;
+}
+
+static int atmel_qspi_set_cs_timing(struct spi_device *spi)
+{
+	struct spi_controller *ctrl = spi->controller;
+	struct atmel_qspi *aq = spi_controller_get_devdata(ctrl);
+	unsigned long clk_rate;
+	u32 cs_inactive;
+	u32 cs_setup;
+	u32 cs_hold;
+	int delay;
+	int ret;
+
+	clk_rate = clk_get_rate(aq->pclk);
+	if (!clk_rate)
+		return -EINVAL;
+
+	/* hold */
+	delay = spi_delay_to_ns(&spi->cs_hold, NULL);
+	if (aq->mr & QSPI_MR_SMM) {
+		if (delay > 0)
+			dev_warn(&aq->pdev->dev,
+				 "Ignoring cs_hold, must be 0 in Serial Memory Mode.\n");
+		cs_hold = 0;
+	} else {
+		delay = spi_delay_to_ns(&spi->cs_hold, NULL);
+		if (delay < 0)
+			return delay;
+
+		cs_hold = DIV_ROUND_UP((delay * DIV_ROUND_UP(clk_rate, 1000000)), 32000);
+	}
+
+	/* setup */
+	delay = spi_delay_to_ns(&spi->cs_setup, NULL);
+	if (delay < 0)
+		return delay;
+
+	cs_setup = DIV_ROUND_UP((delay * DIV_ROUND_UP(clk_rate, 1000000)),
+				1000);
+
+	/* inactive */
+	delay = spi_delay_to_ns(&spi->cs_inactive, NULL);
+	if (delay < 0)
+		return delay;
+	cs_inactive = DIV_ROUND_UP((delay * DIV_ROUND_UP(clk_rate, 1000000)), 1000);
+
+	ret = pm_runtime_resume_and_get(ctrl->dev.parent);
+	if (ret < 0)
+		return ret;
+
+	aq->scr &= ~QSPI_SCR_DLYBS_MASK;
+	aq->scr |= QSPI_SCR_DLYBS(cs_setup);
+	atmel_qspi_write(aq->scr, aq, QSPI_SCR);
+
+	aq->mr &= ~(QSPI_MR_DLYBCT_MASK | QSPI_MR_DLYCS_MASK);
+	aq->mr |= QSPI_MR_DLYBCT(cs_hold) | QSPI_MR_DLYCS(cs_inactive);
+	atmel_qspi_write(aq->mr, aq, QSPI_MR);
+
+	pm_runtime_mark_last_busy(ctrl->dev.parent);
+	pm_runtime_put_autosuspend(ctrl->dev.parent);
 
 	return 0;
 }
@@ -503,8 +579,8 @@ static void atmel_qspi_init(struct atmel_qspi *aq)
 	atmel_qspi_write(QSPI_CR_SWRST, aq, QSPI_CR);
 
 	/* Set the QSPI controller by default in Serial Memory Mode */
-	atmel_qspi_write(QSPI_MR_SMM, aq, QSPI_MR);
-	aq->mr = QSPI_MR_SMM;
+	aq->mr |= QSPI_MR_SMM;
+	atmel_qspi_write(aq->mr, aq, QSPI_MR);
 
 	/* Enable the QSPI controller */
 	atmel_qspi_write(QSPI_CR_QSPIEN, aq, QSPI_CR);
@@ -536,12 +612,13 @@ static int atmel_qspi_probe(struct platform_device *pdev)
 	struct resource *res;
 	int irq, err = 0;
 
-	ctrl = devm_spi_alloc_master(&pdev->dev, sizeof(*aq));
+	ctrl = devm_spi_alloc_host(&pdev->dev, sizeof(*aq));
 	if (!ctrl)
 		return -ENOMEM;
 
 	ctrl->mode_bits = SPI_RX_DUAL | SPI_RX_QUAD | SPI_TX_DUAL | SPI_TX_QUAD;
 	ctrl->setup = atmel_qspi_setup;
+	ctrl->set_cs_timing = atmel_qspi_set_cs_timing;
 	ctrl->bus_num = -1;
 	ctrl->mem_ops = &atmel_qspi_mem_ops;
 	ctrl->num_chipselect = 1;
@@ -554,20 +631,17 @@ static int atmel_qspi_probe(struct platform_device *pdev)
 	aq->pdev = pdev;
 
 	/* Map the registers */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "qspi_base");
-	aq->regs = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(aq->regs)) {
-		dev_err(&pdev->dev, "missing registers\n");
-		return PTR_ERR(aq->regs);
-	}
+	aq->regs = devm_platform_ioremap_resource_byname(pdev, "qspi_base");
+	if (IS_ERR(aq->regs))
+		return dev_err_probe(&pdev->dev, PTR_ERR(aq->regs),
+				     "missing registers\n");
 
 	/* Map the AHB memory */
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "qspi_mmap");
 	aq->mem = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(aq->mem)) {
-		dev_err(&pdev->dev, "missing AHB memory\n");
-		return PTR_ERR(aq->mem);
-	}
+	if (IS_ERR(aq->mem))
+		return dev_err_probe(&pdev->dev, PTR_ERR(aq->mem),
+				     "missing AHB memory\n");
 
 	aq->mmap_size = resource_size(res);
 
@@ -576,17 +650,15 @@ static int atmel_qspi_probe(struct platform_device *pdev)
 	if (IS_ERR(aq->pclk))
 		aq->pclk = devm_clk_get(&pdev->dev, NULL);
 
-	if (IS_ERR(aq->pclk)) {
-		dev_err(&pdev->dev, "missing peripheral clock\n");
-		return PTR_ERR(aq->pclk);
-	}
+	if (IS_ERR(aq->pclk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(aq->pclk),
+				     "missing peripheral clock\n");
 
 	/* Enable the peripheral clock */
 	err = clk_prepare_enable(aq->pclk);
-	if (err) {
-		dev_err(&pdev->dev, "failed to enable the peripheral clock\n");
-		return err;
-	}
+	if (err)
+		return dev_err_probe(&pdev->dev, err,
+				     "failed to enable the peripheral clock\n");
 
 	aq->caps = of_device_get_match_data(&pdev->dev);
 	if (!aq->caps) {
@@ -624,11 +696,24 @@ static int atmel_qspi_probe(struct platform_device *pdev)
 	if (err)
 		goto disable_qspick;
 
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 500);
+	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_get_noresume(&pdev->dev);
+
 	atmel_qspi_init(aq);
 
 	err = spi_register_controller(ctrl);
-	if (err)
+	if (err) {
+		pm_runtime_put_noidle(&pdev->dev);
+		pm_runtime_disable(&pdev->dev);
+		pm_runtime_set_suspended(&pdev->dev);
+		pm_runtime_dont_use_autosuspend(&pdev->dev);
 		goto disable_qspick;
+	}
+	pm_runtime_mark_last_busy(&pdev->dev);
+	pm_runtime_put_autosuspend(&pdev->dev);
 
 	return 0;
 
@@ -640,26 +725,53 @@ disable_pclk:
 	return err;
 }
 
-static int atmel_qspi_remove(struct platform_device *pdev)
+static void atmel_qspi_remove(struct platform_device *pdev)
 {
 	struct spi_controller *ctrl = platform_get_drvdata(pdev);
 	struct atmel_qspi *aq = spi_controller_get_devdata(ctrl);
+	int ret;
 
 	spi_unregister_controller(ctrl);
-	atmel_qspi_write(QSPI_CR_QSPIDIS, aq, QSPI_CR);
-	clk_disable_unprepare(aq->qspick);
-	clk_disable_unprepare(aq->pclk);
-	return 0;
+
+	ret = pm_runtime_get_sync(&pdev->dev);
+	if (ret >= 0) {
+		atmel_qspi_write(QSPI_CR_QSPIDIS, aq, QSPI_CR);
+		clk_disable(aq->qspick);
+		clk_disable(aq->pclk);
+	} else {
+		/*
+		 * atmel_qspi_runtime_{suspend,resume} just disable and enable
+		 * the two clks respectively. So after resume failed these are
+		 * off, and we skip hardware access and disabling these clks again.
+		 */
+		dev_warn(&pdev->dev, "Failed to resume device on remove\n");
+	}
+
+	clk_unprepare(aq->qspick);
+	clk_unprepare(aq->pclk);
+
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
+	pm_runtime_put_noidle(&pdev->dev);
 }
 
 static int __maybe_unused atmel_qspi_suspend(struct device *dev)
 {
 	struct spi_controller *ctrl = dev_get_drvdata(dev);
 	struct atmel_qspi *aq = spi_controller_get_devdata(ctrl);
+	int ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
 
 	atmel_qspi_write(QSPI_CR_QSPIDIS, aq, QSPI_CR);
-	clk_disable_unprepare(aq->qspick);
-	clk_disable_unprepare(aq->pclk);
+
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_force_suspend(dev);
+
+	clk_unprepare(aq->qspick);
+	clk_unprepare(aq->pclk);
 
 	return 0;
 }
@@ -668,19 +780,65 @@ static int __maybe_unused atmel_qspi_resume(struct device *dev)
 {
 	struct spi_controller *ctrl = dev_get_drvdata(dev);
 	struct atmel_qspi *aq = spi_controller_get_devdata(ctrl);
+	int ret;
 
-	clk_prepare_enable(aq->pclk);
-	clk_prepare_enable(aq->qspick);
+	ret = clk_prepare(aq->pclk);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare(aq->qspick);
+	if (ret) {
+		clk_unprepare(aq->pclk);
+		return ret;
+	}
+
+	ret = pm_runtime_force_resume(dev);
+	if (ret < 0)
+		return ret;
 
 	atmel_qspi_init(aq);
 
 	atmel_qspi_write(aq->scr, aq, QSPI_SCR);
 
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(atmel_qspi_pm_ops, atmel_qspi_suspend,
-			 atmel_qspi_resume);
+static int __maybe_unused atmel_qspi_runtime_suspend(struct device *dev)
+{
+	struct spi_controller *ctrl = dev_get_drvdata(dev);
+	struct atmel_qspi *aq = spi_controller_get_devdata(ctrl);
+
+	clk_disable(aq->qspick);
+	clk_disable(aq->pclk);
+
+	return 0;
+}
+
+static int __maybe_unused atmel_qspi_runtime_resume(struct device *dev)
+{
+	struct spi_controller *ctrl = dev_get_drvdata(dev);
+	struct atmel_qspi *aq = spi_controller_get_devdata(ctrl);
+	int ret;
+
+	ret = clk_enable(aq->pclk);
+	if (ret)
+		return ret;
+
+	ret = clk_enable(aq->qspick);
+	if (ret)
+		clk_disable(aq->pclk);
+
+	return ret;
+}
+
+static const struct dev_pm_ops __maybe_unused atmel_qspi_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(atmel_qspi_suspend, atmel_qspi_resume)
+	SET_RUNTIME_PM_OPS(atmel_qspi_runtime_suspend,
+			   atmel_qspi_runtime_resume, NULL)
+};
 
 static const struct atmel_qspi_caps atmel_sama5d2_qspi_caps = {};
 
@@ -707,7 +865,7 @@ static struct platform_driver atmel_qspi_driver = {
 	.driver = {
 		.name	= "atmel_qspi",
 		.of_match_table	= atmel_qspi_dt_ids,
-		.pm	= &atmel_qspi_pm_ops,
+		.pm	= pm_ptr(&atmel_qspi_pm_ops),
 	},
 	.probe		= atmel_qspi_probe,
 	.remove		= atmel_qspi_remove,

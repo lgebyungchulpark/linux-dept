@@ -34,10 +34,6 @@
 struct ddc;
 struct irq_manager;
 
-enum {
-	MAX_CONTROLLER_NUM = 6
-};
-
 enum dp_power_state {
 	DP_POWER_STATE_D0 = 1,
 	DP_POWER_STATE_D3
@@ -57,32 +53,11 @@ enum {
 	BITS_PER_DP_BYTE = 10,
 	DATA_EFFICIENCY_8b_10b_x10000 = 8000, /* 80% data efficiency */
 	DATA_EFFICIENCY_8b_10b_FEC_EFFICIENCY_x100 = 97, /* 97% data efficiency when FEC is enabled */
-	DATA_EFFICIENCY_128b_132b_x10000 = 9646, /* 96.71% data efficiency x 99.75% downspread factor */
-};
-
-enum link_training_result {
-	LINK_TRAINING_SUCCESS,
-	LINK_TRAINING_CR_FAIL_LANE0,
-	LINK_TRAINING_CR_FAIL_LANE1,
-	LINK_TRAINING_CR_FAIL_LANE23,
-	/* CR DONE bit is cleared during EQ step */
-	LINK_TRAINING_EQ_FAIL_CR,
-	/* other failure during EQ step */
-	LINK_TRAINING_EQ_FAIL_EQ,
-	LINK_TRAINING_LQA_FAIL,
-	/* one of the CR,EQ or symbol lock is dropped */
-	LINK_TRAINING_LINK_LOSS,
-	/* Abort link training (because sink unplugged) */
-	LINK_TRAINING_ABORT,
-#if defined(CONFIG_DRM_AMD_DC_DCN)
-	DP_128b_132b_LT_FAILED,
-	DP_128b_132b_MAX_LOOP_COUNT_REACHED,
-	DP_128b_132b_CHANNEL_EQ_DONE_TIMEOUT,
-	DP_128b_132b_CDS_DONE_TIMEOUT,
-#endif
+	DATA_EFFICIENCY_128b_132b_x10000 = 9641, /* 96.71% data efficiency x 99.7% downspread factor */
 };
 
 enum lttpr_mode {
+	LTTPR_MODE_UNKNOWN,
 	LTTPR_MODE_NON_LTTPR,
 	LTTPR_MODE_TRANSPARENT,
 	LTTPR_MODE_NON_TRANSPARENT,
@@ -94,28 +69,22 @@ struct link_training_settings {
 	/* TODO: turn lane settings below into mandatory fields
 	 * as initial lane configuration
 	 */
-	struct dc_lane_settings lane_settings[LANE_COUNT_DP_MAX];
 	enum dc_voltage_swing *voltage_swing;
 	enum dc_pre_emphasis *pre_emphasis;
 	enum dc_post_cursor2 *post_cursor2;
 	bool should_set_fec_ready;
-#if defined(CONFIG_DRM_AMD_DC_DCN)
-	/* TODO - factor lane_settings out because it changes during LT */
 	union dc_dp_ffe_preset *ffe_preset;
-#endif
 
 	uint16_t cr_pattern_time;
 	uint16_t eq_pattern_time;
 	uint16_t cds_pattern_time;
 	enum dc_dp_training_pattern pattern_for_cr;
 	enum dc_dp_training_pattern pattern_for_eq;
-#if defined(CONFIG_DRM_AMD_DC_DCN)
 	enum dc_dp_training_pattern pattern_for_cds;
 
 	uint32_t eq_wait_time_limit;
 	uint8_t eq_loop_count_limit;
 	uint32_t cds_wait_time_limit;
-#endif
 
 	bool enhanced_framing;
 	enum lttpr_mode lttpr_mode;
@@ -161,7 +130,6 @@ enum dp_test_pattern {
 	DP_TEST_PATTERN_CP2520_2,
 	DP_TEST_PATTERN_HBR2_COMPLIANCE_EYE = DP_TEST_PATTERN_CP2520_2,
 	DP_TEST_PATTERN_CP2520_3,
-#if defined(CONFIG_DRM_AMD_DC_DCN)
 	DP_TEST_PATTERN_128b_132b_TPS1,
 	DP_TEST_PATTERN_128b_132b_TPS2,
 	DP_TEST_PATTERN_PRBS9,
@@ -170,21 +138,21 @@ enum dp_test_pattern {
 	DP_TEST_PATTERN_PRBS23,
 	DP_TEST_PATTERN_PRBS31,
 	DP_TEST_PATTERN_264BIT_CUSTOM,
-	DP_TEST_PATTERN_SQUARE_PULSE,
-#endif
+	DP_TEST_PATTERN_SQUARE_BEGIN,
+	DP_TEST_PATTERN_SQUARE = DP_TEST_PATTERN_SQUARE_BEGIN,
+	DP_TEST_PATTERN_SQUARE_PRESHOOT_DISABLED,
+	DP_TEST_PATTERN_SQUARE_DEEMPHASIS_DISABLED,
+	DP_TEST_PATTERN_SQUARE_PRESHOOT_DEEMPHASIS_DISABLED,
+	DP_TEST_PATTERN_SQUARE_END = DP_TEST_PATTERN_SQUARE_PRESHOOT_DEEMPHASIS_DISABLED,
 
 	/* Link Training Patterns */
 	DP_TEST_PATTERN_TRAINING_PATTERN1,
 	DP_TEST_PATTERN_TRAINING_PATTERN2,
 	DP_TEST_PATTERN_TRAINING_PATTERN3,
 	DP_TEST_PATTERN_TRAINING_PATTERN4,
-#if defined(CONFIG_DRM_AMD_DC_DCN)
 	DP_TEST_PATTERN_128b_132b_TPS1_TRAINING_MODE,
 	DP_TEST_PATTERN_128b_132b_TPS2_TRAINING_MODE,
 	DP_TEST_PATTERN_PHY_PATTERN_END = DP_TEST_PATTERN_128b_132b_TPS2_TRAINING_MODE,
-#else
-	DP_TEST_PATTERN_PHY_PATTERN_END = DP_TEST_PATTERN_TRAINING_PATTERN4,
-#endif
 
 	/* link test patterns*/
 	DP_TEST_PATTERN_COLOR_SQUARES,
@@ -199,6 +167,15 @@ enum dp_test_pattern {
 
 	DP_TEST_PATTERN_UNSUPPORTED
 };
+
+#define IS_DP_PHY_SQUARE_PATTERN(test_pattern)\
+		(DP_TEST_PATTERN_SQUARE_BEGIN <= test_pattern &&\
+		test_pattern <= DP_TEST_PATTERN_SQUARE_END)
+
+#define IS_DP_PHY_PATTERN(test_pattern)\
+		((DP_TEST_PATTERN_PHY_PATTERN_BEGIN <= test_pattern &&\
+		test_pattern <= DP_TEST_PATTERN_PHY_PATTERN_END) ||\
+		test_pattern == DP_TEST_PATTERN_VIDEO_MODE)
 
 enum dp_test_pattern_color_space {
 	DP_TEST_PATTERN_COLOR_SPACE_RGB,
@@ -257,8 +234,16 @@ union dpcd_training_lane_set {
 };
 
 
+/* AMD's copy of various payload data for MST. We have two copies of the payload table (one in DRM,
+ * one in DC) since DRM's MST helpers can't be accessed here. This stream allocation table should
+ * _ONLY_ be filled out from DM and then passed to DC, do NOT use these for _any_ kind of atomic
+ * state calculations in DM, or you will break something.
+ */
+
+struct drm_dp_mst_port;
+
 /* DP MST stream allocation (payload bandwidth number) */
-struct dp_mst_stream_allocation {
+struct dc_dp_mst_stream_allocation {
 	uint8_t vcp_id;
 	/* number of slots required for the DP stream in
 	 * transport packet */
@@ -266,11 +251,11 @@ struct dp_mst_stream_allocation {
 };
 
 /* DP MST stream allocation table */
-struct dp_mst_stream_allocation_table {
+struct dc_dp_mst_stream_allocation_table {
 	/* number of DP video streams */
 	int stream_count;
 	/* array of stream allocations */
-	struct dp_mst_stream_allocation stream_allocations[MAX_CONTROLLER_NUM];
+	struct dc_dp_mst_stream_allocation stream_allocations[MAX_CONTROLLER_NUM];
 };
 
 #endif /*__DAL_LINK_SERVICE_TYPES_H__*/

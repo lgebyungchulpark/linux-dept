@@ -32,11 +32,11 @@ enum {
 	P_SLEEP_CLK,
 };
 
-static struct pll_vco lucid_vco[] = {
+static const struct pll_vco lucid_vco[] = {
 	{ 249600000, 2000000000, 0 },
 };
 
-static struct pll_vco zonda_vco[] = {
+static const struct pll_vco zonda_vco[] = {
 	{ 595200000UL, 3600000000UL, 0 },
 };
 
@@ -2205,6 +2205,8 @@ static struct clk_branch cam_cc_sleep_clk = {
 	},
 };
 
+static struct gdsc titan_top_gdsc;
+
 static struct gdsc bps_gdsc = {
 	.gdscr = 0x7004,
 	.pd = {
@@ -2238,6 +2240,7 @@ static struct gdsc ife_0_gdsc = {
 		.name = "ife_0_gdsc",
 	},
 	.flags = POLL_CFG_GDSCR,
+	.parent = &titan_top_gdsc.pd,
 	.pwrsts = PWRSTS_OFF_ON,
 };
 
@@ -2247,6 +2250,7 @@ static struct gdsc ife_1_gdsc = {
 		.name = "ife_1_gdsc",
 	},
 	.flags = POLL_CFG_GDSCR,
+	.parent = &titan_top_gdsc.pd,
 	.pwrsts = PWRSTS_OFF_ON,
 };
 
@@ -2429,7 +2433,7 @@ static int cam_cc_sm8250_probe(struct platform_device *pdev)
 	clk_lucid_pll_configure(&cam_cc_pll3, regmap, &cam_cc_pll3_config);
 	clk_lucid_pll_configure(&cam_cc_pll4, regmap, &cam_cc_pll4_config);
 
-	return qcom_cc_really_probe(pdev, &cam_cc_sm8250_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &cam_cc_sm8250_desc, regmap);
 }
 
 static struct platform_driver cam_cc_sm8250_driver = {
@@ -2440,17 +2444,7 @@ static struct platform_driver cam_cc_sm8250_driver = {
 	},
 };
 
-static int __init cam_cc_sm8250_init(void)
-{
-	return platform_driver_register(&cam_cc_sm8250_driver);
-}
-subsys_initcall(cam_cc_sm8250_init);
-
-static void __exit cam_cc_sm8250_exit(void)
-{
-	platform_driver_unregister(&cam_cc_sm8250_driver);
-}
-module_exit(cam_cc_sm8250_exit);
+module_platform_driver(cam_cc_sm8250_driver);
 
 MODULE_DESCRIPTION("QTI CAMCC SM8250 Driver");
 MODULE_LICENSE("GPL v2");

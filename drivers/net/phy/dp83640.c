@@ -631,7 +631,6 @@ static void recalibrate(struct dp83640_clock *clock)
 	s64 now, diff;
 	struct phy_txts event_ts;
 	struct timespec64 ts;
-	struct list_head *this;
 	struct dp83640_private *tmp;
 	struct phy_device *master = clock->chosen->phydev;
 	u16 cal_gpio, cfg0, evnt, ptp_trig, trigger, val;
@@ -648,8 +647,7 @@ static void recalibrate(struct dp83640_clock *clock)
 	/*
 	 * enable broadcast, disable status frames, enable ptp clock
 	 */
-	list_for_each(this, &clock->phylist) {
-		tmp = list_entry(this, struct dp83640_private, list);
+	list_for_each_entry(tmp, &clock->phylist, list) {
 		enable_broadcast(tmp->phydev, clock->page, 1);
 		tmp->cfg0 = ext_read(tmp->phydev, PAGE5, PSF_CFG0);
 		ext_write(0, tmp->phydev, PAGE5, PSF_CFG0, 0);
@@ -667,10 +665,8 @@ static void recalibrate(struct dp83640_clock *clock)
 	evnt |= (CAL_EVENT & EVNT_SEL_MASK) << EVNT_SEL_SHIFT;
 	evnt |= (cal_gpio & EVNT_GPIO_MASK) << EVNT_GPIO_SHIFT;
 
-	list_for_each(this, &clock->phylist) {
-		tmp = list_entry(this, struct dp83640_private, list);
+	list_for_each_entry(tmp, &clock->phylist, list)
 		ext_write(0, tmp->phydev, PAGE5, PTP_EVNT, evnt);
-	}
 	ext_write(0, master, PAGE5, PTP_EVNT, evnt);
 
 	/*
@@ -709,8 +705,7 @@ static void recalibrate(struct dp83640_clock *clock)
 	event_ts.sec_hi = ext_read(master, PAGE4, PTP_EDATA);
 	now = phy2txts(&event_ts);
 
-	list_for_each(this, &clock->phylist) {
-		tmp = list_entry(this, struct dp83640_private, list);
+	list_for_each_entry(tmp, &clock->phylist, list) {
 		val = ext_read(tmp->phydev, PAGE4, PTP_STS);
 		phydev_info(tmp->phydev, "slave  PTP_STS  0x%04hx\n", val);
 		val = ext_read(tmp->phydev, PAGE4, PTP_ESTS);
@@ -730,10 +725,8 @@ static void recalibrate(struct dp83640_clock *clock)
 	/*
 	 * restore status frames
 	 */
-	list_for_each(this, &clock->phylist) {
-		tmp = list_entry(this, struct dp83640_private, list);
+	list_for_each_entry(tmp, &clock->phylist, list)
 		ext_write(0, tmp->phydev, PAGE5, PSF_CFG0, tmp->cfg0);
-	}
 	ext_write(0, master, PAGE5, PSF_CFG0, cfg0);
 
 	mutex_unlock(&clock->extreg_lock);
@@ -886,7 +879,7 @@ out:
 	spin_unlock_irqrestore(&dp83640->rx_lock, flags);
 
 	if (shhwtstamps)
-		netif_rx_ni(skb);
+		netif_rx(skb);
 }
 
 static void decode_txts(struct dp83640_private *dp83640,
@@ -968,17 +961,6 @@ static void decode_status_frame(struct dp83640_private *dp83640,
 		}
 		ptr += size;
 	}
-}
-
-static int is_sync(struct sk_buff *skb, int type)
-{
-	struct ptp_header *hdr;
-
-	hdr = ptp_parse_header(skb, type);
-	if (!hdr)
-		return 0;
-
-	return ptp_get_msgtype(hdr, type) == PTP_MSGTYPE_SYNC;
 }
 
 static void dp83640_free_clocks(void)
@@ -1225,22 +1207,20 @@ static irqreturn_t dp83640_handle_interrupt(struct phy_device *phydev)
 	return IRQ_HANDLED;
 }
 
-static int dp83640_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
+static int dp83640_hwtstamp(struct mii_timestamper *mii_ts,
+			    struct kernel_hwtstamp_config *cfg,
+			    struct netlink_ext_ack *extack)
 {
 	struct dp83640_private *dp83640 =
 		container_of(mii_ts, struct dp83640_private, mii_ts);
-	struct hwtstamp_config cfg;
 	u16 txcfg0, rxcfg0;
 
-	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
-		return -EFAULT;
-
-	if (cfg.tx_type < 0 || cfg.tx_type > HWTSTAMP_TX_ONESTEP_SYNC)
+	if (cfg->tx_type < 0 || cfg->tx_type > HWTSTAMP_TX_ONESTEP_SYNC)
 		return -ERANGE;
 
-	dp83640->hwts_tx_en = cfg.tx_type;
+	dp83640->hwts_tx_en = cfg->tx_type;
 
-	switch (cfg.rx_filter) {
+	switch (cfg->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		dp83640->hwts_rx_en = 0;
 		dp83640->layer = 0;
@@ -1252,7 +1232,7 @@ static int dp83640_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
 		dp83640->hwts_rx_en = 1;
 		dp83640->layer = PTP_CLASS_L4;
 		dp83640->version = PTP_CLASS_V1;
-		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_EVENT;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_EVENT;
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
@@ -1260,7 +1240,7 @@ static int dp83640_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
 		dp83640->hwts_rx_en = 1;
 		dp83640->layer = PTP_CLASS_L4;
 		dp83640->version = PTP_CLASS_V2;
-		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_L4_EVENT;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_L4_EVENT;
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
@@ -1268,7 +1248,7 @@ static int dp83640_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
 		dp83640->hwts_rx_en = 1;
 		dp83640->layer = PTP_CLASS_L2;
 		dp83640->version = PTP_CLASS_V2;
-		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
@@ -1276,7 +1256,7 @@ static int dp83640_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
 		dp83640->hwts_rx_en = 1;
 		dp83640->layer = PTP_CLASS_L4 | PTP_CLASS_L2;
 		dp83640->version = PTP_CLASS_V2;
-		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
 		break;
 	default:
 		return -ERANGE;
@@ -1310,7 +1290,7 @@ static int dp83640_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
 
 	mutex_unlock(&dp83640->clock->extreg_lock);
 
-	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+	return 0;
 }
 
 static void rx_timestamp_work(struct work_struct *work)
@@ -1329,7 +1309,7 @@ static void rx_timestamp_work(struct work_struct *work)
 			break;
 		}
 
-		netif_rx_ni(skb);
+		netif_rx(skb);
 	}
 
 	if (!skb_queue_empty(&dp83640->rx_queue))
@@ -1380,7 +1360,7 @@ static bool dp83640_rxtstamp(struct mii_timestamper *mii_ts,
 		skb_queue_tail(&dp83640->rx_queue, skb);
 		schedule_delayed_work(&dp83640->ts_work, SKB_TIMESTAMP_TIMEOUT);
 	} else {
-		netif_rx_ni(skb);
+		netif_rx(skb);
 	}
 
 	return true;
@@ -1396,7 +1376,7 @@ static void dp83640_txtstamp(struct mii_timestamper *mii_ts,
 	switch (dp83640->hwts_tx_en) {
 
 	case HWTSTAMP_TX_ONESTEP_SYNC:
-		if (is_sync(skb, type)) {
+		if (ptp_msg_is_sync(skb, type)) {
 			kfree_skb(skb);
 			return;
 		}
@@ -1415,7 +1395,7 @@ static void dp83640_txtstamp(struct mii_timestamper *mii_ts,
 }
 
 static int dp83640_ts_info(struct mii_timestamper *mii_ts,
-			   struct ethtool_ts_info *info)
+			   struct kernel_ethtool_ts_info *info)
 {
 	struct dp83640_private *dp83640 =
 		container_of(mii_ts, struct dp83640_private, mii_ts);
@@ -1467,6 +1447,8 @@ static int dp83640_probe(struct phy_device *phydev)
 	for (i = 0; i < MAX_RXTS; i++)
 		list_add(&dp83640->rx_pool_data[i].list, &dp83640->rxpool);
 
+	/* Timestamp selected by default to keep legacy API */
+	phydev->default_timestamp = true;
 	phydev->mii_ts = &dp83640->mii_ts;
 	phydev->priv = dp83640;
 

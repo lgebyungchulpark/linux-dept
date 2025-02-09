@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#define _GNU_SOURCE
 #include <test_progs.h>
 #include <network_helpers.h>
 #include "kfree_skb.skel.h"
@@ -36,7 +37,7 @@ static void on_sample(void *ctx, int cpu, void *data, __u32 size)
 		  "cb32_0 %x != %x\n",
 		  meta->cb32_0, cb.cb32[0]))
 		return;
-	if (CHECK(pkt_v6->eth.h_proto != 0xdd86, "check_eth",
+	if (CHECK(pkt_v6->eth.h_proto != htons(ETH_P_IPV6), "check_eth",
 		  "h_proto %x\n", pkt_v6->eth.h_proto))
 		return;
 	if (CHECK(pkt_v6->iph.nexthdr != 6, "check_ip",
@@ -53,24 +54,24 @@ static void on_sample(void *ctx, int cpu, void *data, __u32 size)
 void serial_test_kfree_skb(void)
 {
 	struct __sk_buff skb = {};
-	struct bpf_prog_test_run_attr tattr = {
+	LIBBPF_OPTS(bpf_test_run_opts, topts,
 		.data_in = &pkt_v6,
 		.data_size_in = sizeof(pkt_v6),
 		.ctx_in = &skb,
 		.ctx_size_in = sizeof(skb),
-	};
+	);
 	struct kfree_skb *skel = NULL;
 	struct bpf_link *link;
 	struct bpf_object *obj;
 	struct perf_buffer *pb = NULL;
-	int err;
+	int err, prog_fd;
 	bool passed = false;
 	__u32 duration = 0;
 	const int zero = 0;
 	bool test_ok[2];
 
-	err = bpf_prog_test_load("./test_pkt_access.o", BPF_PROG_TYPE_SCHED_CLS,
-			    &obj, &tattr.prog_fd);
+	err = bpf_prog_test_load("./test_pkt_access.bpf.o", BPF_PROG_TYPE_SCHED_CLS,
+				 &obj, &prog_fd);
 	if (CHECK(err, "prog_load sched cls", "err %d errno %d\n", err, errno))
 		return;
 
@@ -100,11 +101,9 @@ void serial_test_kfree_skb(void)
 		goto close_prog;
 
 	memcpy(skb.cb, &cb, sizeof(cb));
-	err = bpf_prog_test_run_xattr(&tattr);
-	duration = tattr.duration;
-	CHECK(err || tattr.retval, "ipv6",
-	      "err %d errno %d retval %d duration %d\n",
-	      err, errno, tattr.retval, duration);
+	err = bpf_prog_test_run_opts(prog_fd, &topts);
+	ASSERT_OK(err, "ipv6 test_run");
+	ASSERT_OK(topts.retval, "ipv6 test_run retval");
 
 	/* read perf buffer */
 	err = perf_buffer__poll(pb, 100);

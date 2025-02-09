@@ -14,15 +14,14 @@
 #include "../clk-fractional-divider.h"
 #include "clk.h"
 
+#define PCG_PR_MASK		BIT(31)
 #define PCG_PCS_SHIFT	24
 #define PCG_PCS_MASK	0x7
 #define PCG_CGC_SHIFT	30
 #define PCG_FRAC_SHIFT	3
 #define PCG_FRAC_WIDTH	1
-#define PCG_FRAC_MASK	BIT(3)
 #define PCG_PCD_SHIFT	0
 #define PCG_PCD_WIDTH	3
-#define PCG_PCD_MASK	0x7
 
 #define SW_RST		BIT(28)
 
@@ -80,6 +79,12 @@ static struct clk_hw *imx_ulp_clk_hw_composite(const char *name,
 	struct clk_hw *hw;
 	u32 val;
 
+	val = readl(reg);
+	if (!(val & PCG_PR_MASK)) {
+		pr_info("PCC PR is 0 for clk:%s, bypass\n", name);
+		return NULL;
+	}
+
 	if (mux_present) {
 		mux = kzalloc(sizeof(*mux), GFP_KERNEL);
 		if (!mux)
@@ -102,10 +107,8 @@ static struct clk_hw *imx_ulp_clk_hw_composite(const char *name,
 		fd->reg = reg;
 		fd->mshift = PCG_FRAC_SHIFT;
 		fd->mwidth = PCG_FRAC_WIDTH;
-		fd->mmask  = PCG_FRAC_MASK;
 		fd->nshift = PCG_PCD_SHIFT;
 		fd->nwidth = PCG_PCD_WIDTH;
-		fd->nmask = PCG_PCD_MASK;
 		fd->flags = CLK_FRAC_DIVIDER_ZERO_BASED;
 		if (has_swrst)
 			fd->lock = &imx_ccm_lock;

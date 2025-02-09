@@ -86,7 +86,7 @@ static void dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
 		nr_pages = 1;
 
 	pgoff = linear_page_index(vmf->vma,
-			ALIGN(vmf->address, fault_size));
+			ALIGN_DOWN(vmf->address, fault_size));
 
 	for (i = 0; i < nr_pages; i++) {
 		struct page *page = pfn_to_page(pfn_t_to_pfn(pfn) + i);
@@ -228,32 +228,26 @@ static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
 }
 #endif /* !CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD */
 
-static vm_fault_t dev_dax_huge_fault(struct vm_fault *vmf,
-		enum page_entry_size pe_size)
+static vm_fault_t dev_dax_huge_fault(struct vm_fault *vmf, unsigned int order)
 {
 	struct file *filp = vmf->vma->vm_file;
 	vm_fault_t rc = VM_FAULT_SIGBUS;
 	int id;
 	struct dev_dax *dev_dax = filp->private_data;
 
-	dev_dbg(&dev_dax->dev, "%s: %s (%#lx - %#lx) size = %d\n", current->comm,
-			(vmf->flags & FAULT_FLAG_WRITE) ? "write" : "read",
-			vmf->vma->vm_start, vmf->vma->vm_end, pe_size);
+	dev_dbg(&dev_dax->dev, "%s: op=%s addr=%#lx order=%d\n", current->comm,
+		(vmf->flags & FAULT_FLAG_WRITE) ? "write" : "read",
+		vmf->address & ~((1UL << (order + PAGE_SHIFT)) - 1), order);
 
 	id = dax_read_lock();
-	switch (pe_size) {
-	case PE_SIZE_PTE:
+	if (order == 0)
 		rc = __dev_dax_pte_fault(dev_dax, vmf);
-		break;
-	case PE_SIZE_PMD:
+	else if (order == PMD_ORDER)
 		rc = __dev_dax_pmd_fault(dev_dax, vmf);
-		break;
-	case PE_SIZE_PUD:
+	else if (order == PUD_ORDER)
 		rc = __dev_dax_pud_fault(dev_dax, vmf);
-		break;
-	default:
+	else
 		rc = VM_FAULT_SIGBUS;
-	}
 
 	dax_read_unlock(id);
 
@@ -262,7 +256,7 @@ static vm_fault_t dev_dax_huge_fault(struct vm_fault *vmf,
 
 static vm_fault_t dev_dax_fault(struct vm_fault *vmf)
 {
-	return dev_dax_huge_fault(vmf, PE_SIZE_PTE);
+	return dev_dax_huge_fault(vmf, 0);
 }
 
 static int dev_dax_may_split(struct vm_area_struct *vma, unsigned long addr)
@@ -308,7 +302,7 @@ static int dax_mmap(struct file *filp, struct vm_area_struct *vma)
 		return rc;
 
 	vma->vm_ops = &dax_vm_ops;
-	vma->vm_flags |= VM_HUGEPAGE;
+	vm_flags_set(vma, VM_HUGEPAGE);
 	return 0;
 }
 
@@ -335,19 +329,18 @@ static unsigned long dax_get_unmapped_area(struct file *filp,
 	if ((off + len_align) < off)
 		goto out;
 
-	addr_align = current->mm->get_unmapped_area(filp, addr, len_align,
-			pgoff, flags);
+	addr_align = mm_get_unmapped_area(current->mm, filp, addr, len_align,
+					  pgoff, flags);
 	if (!IS_ERR_VALUE(addr_align)) {
 		addr_align += (off - addr_align) & (align - 1);
 		return addr_align;
 	}
  out:
-	return current->mm->get_unmapped_area(filp, addr, len, pgoff, flags);
+	return mm_get_unmapped_area(current->mm, filp, addr, len, pgoff, flags);
 }
 
 static const struct address_space_operations dev_dax_aops = {
-	.set_page_dirty		= __set_page_dirty_no_writeback,
-	.invalidatepage		= noop_invalidatepage,
+	.dirty_folio	= noop_dirty_folio,
 };
 
 static int dax_open(struct inode *inode, struct file *filp)
@@ -384,7 +377,7 @@ static const struct file_operations dax_fops = {
 	.release = dax_release,
 	.get_unmapped_area = dax_get_unmapped_area,
 	.mmap = dax_mmap,
-	.mmap_supported_flags = MAP_SYNC,
+	.fop_flags = FOP_MMAP_SYNC,
 };
 
 static void dev_dax_cdev_del(void *cdev)
@@ -397,7 +390,7 @@ static void dev_dax_kill(void *dev_dax)
 	kill_dev_dax(dev_dax);
 }
 
-int dev_dax_probe(struct dev_dax *dev_dax)
+static int dev_dax_probe(struct dev_dax *dev_dax)
 {
 	struct dax_device *dax_dev = dev_dax->dax_dev;
 	struct device *dev = &dev_dax->dev;
@@ -472,12 +465,10 @@ int dev_dax_probe(struct dev_dax *dev_dax)
 	run_dax(dax_dev);
 	return devm_add_action_or_reset(dev, dev_dax_kill, dev_dax);
 }
-EXPORT_SYMBOL_GPL(dev_dax_probe);
 
 static struct dax_device_driver device_dax_driver = {
 	.probe = dev_dax_probe,
-	/* all probe actions are unwound by devm, so .remove isn't necessary */
-	.match_always = 1,
+	.type = DAXDRV_DEVICE_TYPE,
 };
 
 static int __init dax_init(void)
@@ -491,6 +482,7 @@ static void __exit dax_exit(void)
 }
 
 MODULE_AUTHOR("Intel Corporation");
+MODULE_DESCRIPTION("Device DAX: direct access device driver");
 MODULE_LICENSE("GPL v2");
 module_init(dax_init);
 module_exit(dax_exit);

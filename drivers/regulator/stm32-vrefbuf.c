@@ -10,7 +10,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
@@ -44,11 +44,9 @@ static int stm32_vrefbuf_enable(struct regulator_dev *rdev)
 	u32 val;
 	int ret;
 
-	ret = pm_runtime_get_sync(priv->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(priv->dev);
+	ret = pm_runtime_resume_and_get(priv->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	val = readl_relaxed(priv->base + STM32_VREFBUF_CSR);
 	val = (val & ~STM32_HIZ) | STM32_ENVR;
@@ -81,11 +79,9 @@ static int stm32_vrefbuf_disable(struct regulator_dev *rdev)
 	u32 val;
 	int ret;
 
-	ret = pm_runtime_get_sync(priv->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(priv->dev);
+	ret = pm_runtime_resume_and_get(priv->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	val = readl_relaxed(priv->base + STM32_VREFBUF_CSR);
 	val &= ~STM32_ENVR;
@@ -102,11 +98,9 @@ static int stm32_vrefbuf_is_enabled(struct regulator_dev *rdev)
 	struct stm32_vrefbuf *priv = rdev_get_drvdata(rdev);
 	int ret;
 
-	ret = pm_runtime_get_sync(priv->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(priv->dev);
+	ret = pm_runtime_resume_and_get(priv->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	ret = readl_relaxed(priv->base + STM32_VREFBUF_CSR) & STM32_ENVR;
 
@@ -123,11 +117,9 @@ static int stm32_vrefbuf_set_voltage_sel(struct regulator_dev *rdev,
 	u32 val;
 	int ret;
 
-	ret = pm_runtime_get_sync(priv->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(priv->dev);
+	ret = pm_runtime_resume_and_get(priv->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	val = readl_relaxed(priv->base + STM32_VREFBUF_CSR);
 	val = (val & ~STM32_VRS) | FIELD_PREP(STM32_VRS, sel);
@@ -145,11 +137,9 @@ static int stm32_vrefbuf_get_voltage_sel(struct regulator_dev *rdev)
 	u32 val;
 	int ret;
 
-	ret = pm_runtime_get_sync(priv->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(priv->dev);
+	ret = pm_runtime_resume_and_get(priv->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	val = readl_relaxed(priv->base + STM32_VREFBUF_CSR);
 	ret = FIELD_GET(STM32_VRS, val);
@@ -220,7 +210,7 @@ static int stm32_vrefbuf_probe(struct platform_device *pdev)
 						      pdev->dev.of_node,
 						      &stm32_vrefbuf_regu);
 
-	rdev = regulator_register(&stm32_vrefbuf_regu, &config);
+	rdev = regulator_register(&pdev->dev, &stm32_vrefbuf_regu, &config);
 	if (IS_ERR(rdev)) {
 		ret = PTR_ERR(rdev);
 		dev_err(&pdev->dev, "register failed with error %d\n", ret);
@@ -243,7 +233,7 @@ err_pm_stop:
 	return ret;
 }
 
-static int stm32_vrefbuf_remove(struct platform_device *pdev)
+static void stm32_vrefbuf_remove(struct platform_device *pdev)
 {
 	struct regulator_dev *rdev = platform_get_drvdata(pdev);
 	struct stm32_vrefbuf *priv = rdev_get_drvdata(rdev);
@@ -254,8 +244,6 @@ static int stm32_vrefbuf_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
-
-	return 0;
 };
 
 static int __maybe_unused stm32_vrefbuf_runtime_suspend(struct device *dev)
@@ -295,6 +283,7 @@ static struct platform_driver stm32_vrefbuf_driver = {
 	.remove = stm32_vrefbuf_remove,
 	.driver = {
 		.name  = "stm32-vrefbuf",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(stm32_vrefbuf_of_match),
 		.pm = &stm32_vrefbuf_pm_ops,
 	},

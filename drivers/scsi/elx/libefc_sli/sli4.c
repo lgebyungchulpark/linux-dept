@@ -4,7 +4,7 @@
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.
  */
 
-/**
+/*
  * All common (i.e. transport-independent) SLI-4 functions are implemented
  * in this file.
  */
@@ -2317,12 +2317,8 @@ sli_xmit_bls_rsp64_wqe(struct sli4 *sli, void *buf,
 		SLI4_GENERIC_CONTEXT_VPI << SLI4_BLS_RSP_WQE_CT_SHFT;
 		bls->context_tag = cpu_to_le16(params->vpi);
 
-		if (params->s_id != U32_MAX)
-			bls->local_n_port_id_dword |=
-				cpu_to_le32(params->s_id & 0x00ffffff);
-		else
-			bls->local_n_port_id_dword |=
-				cpu_to_le32(params->s_id & 0x00ffffff);
+		bls->local_n_port_id_dword |=
+			cpu_to_le32(params->s_id & 0x00ffffff);
 
 		dw_ridflags = (dw_ridflags & ~SLI4_BLS_RSP_RID) |
 			       (params->d_id & SLI4_BLS_RSP_RID);
@@ -4127,7 +4123,7 @@ sli_calc_max_qentries(struct sli4 *sli4)
 						  sli4->qinfo.count_mask[q]);
 	}
 
-	/* single, continguous DMA allocations will be called for each queue
+	/* single, contiguous DMA allocations will be called for each queue
 	 * of size (max_qentries * queue entry size); since these can be large,
 	 * check against the OS max DMA allocation size
 	 */

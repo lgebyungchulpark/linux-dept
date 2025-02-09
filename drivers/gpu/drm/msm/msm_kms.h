@@ -60,14 +60,6 @@ struct msm_kms_funcs {
 	void (*disable_commit)(struct msm_kms *kms);
 
 	/**
-	 * If the kms backend supports async commit, it should implement
-	 * this method to return the time of the next vsync.  This is
-	 * used to determine a time slightly before vsync, for the async
-	 * commit timer to run and complete an async commit.
-	 */
-	ktime_t (*vsync_time)(struct msm_kms *kms, struct drm_crtc *crtc);
-
-	/**
 	 * Prepare for atomic commit.  This is called after any previous
 	 * (async or otherwise) commit has completed.
 	 */
@@ -100,23 +92,9 @@ struct msm_kms_funcs {
 	 * Format handling:
 	 */
 
-	/* get msm_format w/ optional format modifiers from drm_mode_fb_cmd2 */
-	const struct msm_format *(*get_format)(struct msm_kms *kms,
-					const uint32_t format,
-					const uint64_t modifiers);
-	/* do format checking on format modified through fb_cmd2 modifiers */
-	int (*check_modified_format)(const struct msm_kms *kms,
-			const struct msm_format *msm_fmt,
-			const struct drm_mode_fb_cmd2 *cmd,
-			struct drm_gem_object **bos);
-
 	/* misc: */
 	long (*round_pixclk)(struct msm_kms *kms, unsigned long rate,
 			struct drm_encoder *encoder);
-	int (*set_split_display)(struct msm_kms *kms,
-			struct drm_encoder *encoder,
-			struct drm_encoder *slave_encoder,
-			bool is_cmd_mode);
 	/* cleanup: */
 	void (*destroy)(struct msm_kms *kms);
 
@@ -148,6 +126,7 @@ struct msm_kms {
 
 	/* irq number to be passed on to msm_irq_install */
 	int irq;
+	bool irq_requested;
 
 	/* mapper-id used to request GEM buffer mapped for scanout: */
 	struct msm_gem_address_space *aspace;
@@ -194,27 +173,6 @@ static inline void msm_kms_destroy(struct msm_kms *kms)
 		msm_atomic_destroy_pending_timer(&kms->pending_timers[i]);
 }
 
-struct msm_kms *mdp4_kms_init(struct drm_device *dev);
-struct msm_kms *mdp5_kms_init(struct drm_device *dev);
-struct msm_kms *dpu_kms_init(struct drm_device *dev);
-
-extern const struct of_device_id dpu_dt_match[];
-extern const struct of_device_id mdp5_dt_match[];
-
-struct msm_mdss_funcs {
-	int (*enable)(struct msm_mdss *mdss);
-	int (*disable)(struct msm_mdss *mdss);
-	void (*destroy)(struct msm_mdss *mdss);
-};
-
-struct msm_mdss {
-	struct device *dev;
-	const struct msm_mdss_funcs *funcs;
-};
-
-int mdp5_mdss_init(struct platform_device *dev);
-int dpu_mdss_init(struct platform_device *dev);
-
 #define for_each_crtc_mask(dev, crtc, crtc_mask) \
 	drm_for_each_crtc(crtc, dev) \
 		for_each_if (drm_crtc_mask(crtc) & (crtc_mask))
@@ -222,5 +180,8 @@ int dpu_mdss_init(struct platform_device *dev);
 #define for_each_crtc_mask_reverse(dev, crtc, crtc_mask) \
 	drm_for_each_crtc_reverse(crtc, dev) \
 		for_each_if (drm_crtc_mask(crtc) & (crtc_mask))
+
+int msm_drm_kms_init(struct device *dev, const struct drm_driver *drv);
+void msm_drm_kms_uninit(struct device *dev);
 
 #endif /* __MSM_KMS_H__ */

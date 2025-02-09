@@ -24,7 +24,7 @@
 
 #include <drm/task_barrier.h>
 #include "amdgpu_psp.h"
-
+#include "amdgpu_ras.h"
 
 struct amdgpu_hive_info {
 	struct kobject kobj;
@@ -33,7 +33,6 @@ struct amdgpu_hive_info {
 	struct list_head node;
 	atomic_t number_devices;
 	struct mutex hive_lock;
-	atomic_t in_reset;
 	int hi_req_count;
 	struct amdgpu_device *hi_req_gpu;
 	struct task_barrier tb;
@@ -42,6 +41,12 @@ struct amdgpu_hive_info {
 		AMDGPU_XGMI_PSTATE_MAX_VEGA20,
 		AMDGPU_XGMI_PSTATE_UNKNOWN
 	} pstate;
+
+	struct amdgpu_reset_domain *reset_domain;
+	atomic_t ras_recovery;
+	struct ras_event_manager event_mgr;
+	struct work_struct reset_on_init_work;
+	atomic_t requested_nps_mode;
 };
 
 struct amdgpu_pcs_ras_field {
@@ -50,7 +55,7 @@ struct amdgpu_pcs_ras_field {
 	uint32_t pcs_err_shift;
 };
 
-extern const struct amdgpu_xgmi_ras_funcs xgmi_ras_funcs;
+extern struct amdgpu_xgmi_ras  xgmi_ras;
 struct amdgpu_hive_info *amdgpu_get_xgmi_hive(struct amdgpu_device *adev);
 void amdgpu_put_xgmi_hive(struct amdgpu_hive_info *hive);
 int amdgpu_xgmi_update_topology(struct amdgpu_hive_info *hive, struct amdgpu_device *adev);
@@ -61,14 +66,25 @@ int amdgpu_xgmi_get_hops_count(struct amdgpu_device *adev,
 		struct amdgpu_device *peer_adev);
 int amdgpu_xgmi_get_num_links(struct amdgpu_device *adev,
 		struct amdgpu_device *peer_adev);
+bool amdgpu_xgmi_get_is_sharing_enabled(struct amdgpu_device *adev,
+					struct amdgpu_device *peer_adev);
 uint64_t amdgpu_xgmi_get_relative_phy_addr(struct amdgpu_device *adev,
 					   uint64_t addr);
 static inline bool amdgpu_xgmi_same_hive(struct amdgpu_device *adev,
 		struct amdgpu_device *bo_adev)
 {
-	return (adev != bo_adev &&
+	return (amdgpu_use_xgmi_p2p &&
+		adev != bo_adev &&
 		adev->gmc.xgmi.hive_id &&
 		adev->gmc.xgmi.hive_id == bo_adev->gmc.xgmi.hive_id);
 }
+int amdgpu_xgmi_ras_sw_init(struct amdgpu_device *adev);
+int amdgpu_xgmi_reset_on_init(struct amdgpu_device *adev);
+
+int amdgpu_xgmi_request_nps_change(struct amdgpu_device *adev,
+				   struct amdgpu_hive_info *hive,
+				   int req_nps_mode);
+int amdgpu_get_xgmi_link_status(struct amdgpu_device *adev,
+				int global_link_num);
 
 #endif

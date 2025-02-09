@@ -3,7 +3,7 @@
 # kbuild file for usr/ - including initramfs image
 #
 
-compress-y					:= shipped
+compress-y					:= copy
 compress-$(CONFIG_INITRAMFS_COMPRESSION_GZIP)	:= gzip
 compress-$(CONFIG_INITRAMFS_COMPRESSION_BZIP2)	:= bzip2
 compress-$(CONFIG_INITRAMFS_COMPRESSION_LZMA)	:= lzma
@@ -22,7 +22,7 @@ cpio-data :=
 # If CONFIG_INITRAMFS_SOURCE is empty, generate a small initramfs with the
 # default contents.
 ifeq ($(ramfs-input),)
-ramfs-input := $(srctree)/$(src)/default_cpio_list
+ramfs-input := $(src)/default_cpio_list
 endif
 
 ifeq ($(words $(ramfs-input)),1)
@@ -37,7 +37,7 @@ endif
 # .cpio.*, use it directly as an initramfs, and avoid double compression.
 ifeq ($(words $(subst .cpio.,$(space),$(ramfs-input))),2)
 cpio-data := $(ramfs-input)
-compress-y := shipped
+compress-y := copy
 endif
 
 endif
@@ -62,8 +62,9 @@ $(deps_initramfs): ;
 quiet_cmd_initfs = GEN     $@
       cmd_initfs = \
 	$(CONFIG_SHELL) $< -o $@ -l $(obj)/.initramfs_data.cpio.d \
-	$(if $(CONFIG_INITRAMFS_ROOT_UID), -u $(CONFIG_INITRAMFS_ROOT_UID)) \
-	$(if $(CONFIG_INITRAMFS_ROOT_GID), -g $(CONFIG_INITRAMFS_ROOT_GID)) \
+	$(addprefix -u , $(CONFIG_INITRAMFS_ROOT_UID)) \
+	$(addprefix -g , $(CONFIG_INITRAMFS_ROOT_GID)) \
+	$(if $(KBUILD_BUILD_TIMESTAMP), -d "$(KBUILD_BUILD_TIMESTAMP)") \
 	$(ramfs-input)
 
 # We rebuild initramfs_data.cpio if:

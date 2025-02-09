@@ -20,6 +20,7 @@
 #include "btf.h"
 #include "libbpf_internal.h"
 #include "strset.h"
+#include "str_error.h"
 
 #define BTF_EXTERN_SEC ".extern"
 
@@ -135,6 +136,7 @@ struct bpf_linker {
 	int fd;
 	Elf *elf;
 	Elf64_Ehdr *elf_hdr;
+	bool swapped_endian;
 
 	/* Output sections metadata */
 	struct dst_sec *secs;
@@ -305,7 +307,7 @@ static int init_output_elf(struct bpf_linker *linker, const char *file)
 	linker->fd = open(file, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 	if (linker->fd < 0) {
 		err = -errno;
-		pr_warn("failed to create '%s': %d\n", file, err);
+		pr_warn("failed to create '%s': %s\n", file, errstr(err));
 		return err;
 	}
 
@@ -324,13 +326,8 @@ static int init_output_elf(struct bpf_linker *linker, const char *file)
 
 	linker->elf_hdr->e_machine = EM_BPF;
 	linker->elf_hdr->e_type = ET_REL;
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-	linker->elf_hdr->e_ident[EI_DATA] = ELFDATA2LSB;
-#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-	linker->elf_hdr->e_ident[EI_DATA] = ELFDATA2MSB;
-#else
-#error "Unknown __BYTE_ORDER__"
-#endif
+	/* Set unknown ELF endianness, assign later from input files */
+	linker->elf_hdr->e_ident[EI_DATA] = ELFDATANONE;
 
 	/* STRTAB */
 	/* initialize strset with an empty string to conform to ELF */
@@ -396,6 +393,8 @@ static int init_output_elf(struct bpf_linker *linker, const char *file)
 		pr_warn_elf("failed to create SYMTAB data");
 		return -EINVAL;
 	}
+	/* Ensure libelf translates byte-order of symbol records */
+	sec->data->d_type = ELF_T_SYM;
 
 	str_off = strset__add_str(linker->strtab_strs, sec->sec_name);
 	if (str_off < 0)
@@ -539,19 +538,21 @@ static int linker_load_obj_file(struct bpf_linker *linker, const char *filename,
 				const struct bpf_linker_file_opts *opts,
 				struct src_obj *obj)
 {
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-	const int host_endianness = ELFDATA2LSB;
-#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-	const int host_endianness = ELFDATA2MSB;
-#else
-#error "Unknown __BYTE_ORDER__"
-#endif
 	int err = 0;
 	Elf_Scn *scn;
 	Elf_Data *data;
 	Elf64_Ehdr *ehdr;
 	Elf64_Shdr *shdr;
 	struct src_sec *sec;
+	unsigned char obj_byteorder;
+	unsigned char link_byteorder = linker->elf_hdr->e_ident[EI_DATA];
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	const unsigned char host_byteorder = ELFDATA2LSB;
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	const unsigned char host_byteorder = ELFDATA2MSB;
+#else
+#error "Unknown __BYTE_ORDER__"
+#endif
 
 	pr_debug("linker: adding object file '%s'...\n", filename);
 
@@ -560,7 +561,7 @@ static int linker_load_obj_file(struct bpf_linker *linker, const char *filename,
 	obj->fd = open(filename, O_RDONLY | O_CLOEXEC);
 	if (obj->fd < 0) {
 		err = -errno;
-		pr_warn("failed to open file '%s': %d\n", filename, err);
+		pr_warn("failed to open file '%s': %s\n", filename, errstr(err));
 		return err;
 	}
 	obj->elf = elf_begin(obj->fd, ELF_C_READ_MMAP, NULL);
@@ -577,11 +578,25 @@ static int linker_load_obj_file(struct bpf_linker *linker, const char *filename,
 		pr_warn_elf("failed to get ELF header for %s", filename);
 		return err;
 	}
-	if (ehdr->e_ident[EI_DATA] != host_endianness) {
+
+	/* Linker output endianness set by first input object */
+	obj_byteorder = ehdr->e_ident[EI_DATA];
+	if (obj_byteorder != ELFDATA2LSB && obj_byteorder != ELFDATA2MSB) {
 		err = -EOPNOTSUPP;
-		pr_warn_elf("unsupported byte order of ELF file %s", filename);
+		pr_warn("unknown byte order of ELF file %s\n", filename);
 		return err;
 	}
+	if (link_byteorder == ELFDATANONE) {
+		linker->elf_hdr->e_ident[EI_DATA] = obj_byteorder;
+		linker->swapped_endian = obj_byteorder != host_byteorder;
+		pr_debug("linker: set %s-endian output byte order\n",
+			 obj_byteorder == ELFDATA2MSB ? "big" : "little");
+	} else if (link_byteorder != obj_byteorder) {
+		err = -EOPNOTSUPP;
+		pr_warn("byte order mismatch with ELF file %s\n", filename);
+		return err;
+	}
+
 	if (ehdr->e_type != ET_REL
 	    || ehdr->e_machine != EM_BPF
 	    || ehdr->e_ident[EI_CLASS] != ELFCLASS64) {
@@ -656,7 +671,8 @@ static int linker_load_obj_file(struct bpf_linker *linker, const char *filename,
 				obj->btf = btf__new(data->d_buf, shdr->sh_size);
 				err = libbpf_get_error(obj->btf);
 				if (err) {
-					pr_warn("failed to parse .BTF from %s: %d\n", filename, err);
+					pr_warn("failed to parse .BTF from %s: %s\n",
+						filename, errstr(err));
 					return err;
 				}
 				sec->skipped = true;
@@ -666,7 +682,8 @@ static int linker_load_obj_file(struct bpf_linker *linker, const char *filename,
 				obj->btf_ext = btf_ext__new(data->d_buf, shdr->sh_size);
 				err = libbpf_get_error(obj->btf_ext);
 				if (err) {
-					pr_warn("failed to parse .BTF.ext from '%s': %d\n", filename, err);
+					pr_warn("failed to parse .BTF.ext from '%s': %s\n",
+						filename, errstr(err));
 					return err;
 				}
 				sec->skipped = true;
@@ -697,11 +714,6 @@ static int linker_load_obj_file(struct bpf_linker *linker, const char *filename,
 	return err;
 }
 
-static bool is_pow_of_2(size_t x)
-{
-	return x && (x & (x - 1)) == 0;
-}
-
 static int linker_sanity_check_elf(struct src_obj *obj)
 {
 	struct src_sec *sec;
@@ -724,13 +736,28 @@ static int linker_sanity_check_elf(struct src_obj *obj)
 			return -EINVAL;
 		}
 
-		if (sec->shdr->sh_addralign && !is_pow_of_2(sec->shdr->sh_addralign))
-			return -EINVAL;
-		if (sec->shdr->sh_addralign != sec->data->d_align)
-			return -EINVAL;
+		if (is_dwarf_sec_name(sec->sec_name))
+			continue;
 
-		if (sec->shdr->sh_size != sec->data->d_size)
+		if (sec->shdr->sh_addralign && !is_pow_of_2(sec->shdr->sh_addralign)) {
+			pr_warn("ELF section #%zu alignment %llu is non pow-of-2 alignment in %s\n",
+				sec->sec_idx, (long long unsigned)sec->shdr->sh_addralign,
+				obj->filename);
 			return -EINVAL;
+		}
+		if (sec->shdr->sh_addralign != sec->data->d_align) {
+			pr_warn("ELF section #%zu has inconsistent alignment addr=%llu != d=%llu in %s\n",
+				sec->sec_idx, (long long unsigned)sec->shdr->sh_addralign,
+				(long long unsigned)sec->data->d_align, obj->filename);
+			return -EINVAL;
+		}
+
+		if (sec->shdr->sh_size != sec->data->d_size) {
+			pr_warn("ELF section #%zu has inconsistent section size sh=%llu != d=%llu in %s\n",
+				sec->sec_idx, (long long unsigned)sec->shdr->sh_size,
+				(long long unsigned)sec->data->d_size, obj->filename);
+			return -EINVAL;
+		}
 
 		switch (sec->shdr->sh_type) {
 		case SHT_SYMTAB:
@@ -742,8 +769,12 @@ static int linker_sanity_check_elf(struct src_obj *obj)
 			break;
 		case SHT_PROGBITS:
 			if (sec->shdr->sh_flags & SHF_EXECINSTR) {
-				if (sec->shdr->sh_size % sizeof(struct bpf_insn) != 0)
+				if (sec->shdr->sh_size % sizeof(struct bpf_insn) != 0) {
+					pr_warn("ELF section #%zu has unexpected size alignment %llu in %s\n",
+						sec->sec_idx, (long long unsigned)sec->shdr->sh_size,
+						obj->filename);
 					return -EINVAL;
+				}
 			}
 			break;
 		case SHT_NOBITS:
@@ -943,19 +974,33 @@ static int check_btf_str_off(__u32 *str_off, void *ctx)
 static int linker_sanity_check_btf(struct src_obj *obj)
 {
 	struct btf_type *t;
-	int i, n, err = 0;
+	int i, n, err;
 
 	if (!obj->btf)
 		return 0;
 
 	n = btf__type_cnt(obj->btf);
 	for (i = 1; i < n; i++) {
+		struct btf_field_iter it;
+		__u32 *type_id, *str_off;
+
 		t = btf_type_by_id(obj->btf, i);
 
-		err = err ?: btf_type_visit_type_ids(t, check_btf_type_id, obj->btf);
-		err = err ?: btf_type_visit_str_offs(t, check_btf_str_off, obj->btf);
+		err = btf_field_iter_init(&it, t, BTF_FIELD_ITER_IDS);
 		if (err)
 			return err;
+		while ((type_id = btf_field_iter_next(&it))) {
+			if (*type_id >= n)
+				return -EINVAL;
+		}
+
+		err = btf_field_iter_init(&it, t, BTF_FIELD_ITER_STRS);
+		if (err)
+			return err;
+		while ((str_off = btf_field_iter_next(&it))) {
+			if (!btf__str_by_offset(obj->btf, *str_off))
+				return -EINVAL;
+		}
 	}
 
 	return 0;
@@ -1081,6 +1126,24 @@ static bool sec_content_is_same(struct dst_sec *dst_sec, struct src_sec *src_sec
 	return true;
 }
 
+static bool is_exec_sec(struct dst_sec *sec)
+{
+	if (!sec || sec->ephemeral)
+		return false;
+	return (sec->shdr->sh_type == SHT_PROGBITS) &&
+	       (sec->shdr->sh_flags & SHF_EXECINSTR);
+}
+
+static void exec_sec_bswap(void *raw_data, int size)
+{
+	const int insn_cnt = size / sizeof(struct bpf_insn);
+	struct bpf_insn *insn = raw_data;
+	int i;
+
+	for (i = 0; i < insn_cnt; i++, insn++)
+		bpf_insn_bswap(insn);
+}
+
 static int extend_sec(struct bpf_linker *linker, struct dst_sec *dst, struct src_sec *src)
 {
 	void *tmp;
@@ -1120,7 +1183,19 @@ static int extend_sec(struct bpf_linker *linker, struct dst_sec *dst, struct src
 
 	if (src->shdr->sh_type != SHT_NOBITS) {
 		tmp = realloc(dst->raw_data, dst_final_sz);
-		if (!tmp)
+		/* If dst_align_sz == 0, realloc() behaves in a special way:
+		 * 1. When dst->raw_data is NULL it returns:
+		 *    "either NULL or a pointer suitable to be passed to free()" [1].
+		 * 2. When dst->raw_data is not-NULL it frees dst->raw_data and returns NULL,
+		 *    thus invalidating any "pointer suitable to be passed to free()" obtained
+		 *    at step (1).
+		 *
+		 * The dst_align_sz > 0 check avoids error exit after (2), otherwise
+		 * dst->raw_data would be freed again in bpf_linker__free().
+		 *
+		 * [1] man 3 realloc
+		 */
+		if (!tmp && dst_align_sz > 0)
 			return -ENOMEM;
 		dst->raw_data = tmp;
 
@@ -1128,6 +1203,10 @@ static int extend_sec(struct bpf_linker *linker, struct dst_sec *dst, struct src
 		memset(dst->raw_data + dst->sec_sz, 0, dst_align_sz - dst->sec_sz);
 		/* now copy src data at a properly aligned offset */
 		memcpy(dst->raw_data + dst_align_sz, src->data->d_buf, src->shdr->sh_size);
+
+		/* convert added bpf insns to native byte-order */
+		if (linker->swapped_endian && is_exec_sec(dst))
+			exec_sec_bswap(dst->raw_data + dst_align_sz, src->shdr->sh_size);
 	}
 
 	dst->sec_sz = dst_final_sz;
@@ -1340,6 +1419,7 @@ recur:
 	case BTF_KIND_STRUCT:
 	case BTF_KIND_UNION:
 	case BTF_KIND_ENUM:
+	case BTF_KIND_ENUM64:
 	case BTF_KIND_FWD:
 	case BTF_KIND_FUNC:
 	case BTF_KIND_VAR:
@@ -1362,6 +1442,7 @@ recur:
 	case BTF_KIND_INT:
 	case BTF_KIND_FLOAT:
 	case BTF_KIND_ENUM:
+	case BTF_KIND_ENUM64:
 		/* ignore encoding for int and enum values for enum */
 		if (t1->size != t2->size) {
 			pr_warn("global '%s': incompatible %s '%s' size %u and %u\n",
@@ -1371,7 +1452,7 @@ recur:
 		return true;
 	case BTF_KIND_PTR:
 		/* just validate overall shape of the referenced type, so no
-		 * contents comparison for struct/union, and allowd fwd vs
+		 * contents comparison for struct/union, and allowed fwd vs
 		 * struct/union
 		 */
 		exact = false;
@@ -1920,7 +2001,7 @@ static int linker_append_elf_sym(struct bpf_linker *linker, struct src_obj *obj,
 
 		/* If existing symbol is a strong resolved symbol, bail out,
 		 * because we lost resolution battle have nothing to
-		 * contribute. We already checked abover that there is no
+		 * contribute. We already checked above that there is no
 		 * strong-strong conflict. We also already tightened binding
 		 * and visibility, so nothing else to contribute at that point.
 		 */
@@ -2000,7 +2081,6 @@ add_sym:
 static int linker_append_elf_relos(struct bpf_linker *linker, struct src_obj *obj)
 {
 	struct src_sec *src_symtab = &obj->secs[obj->symtab_sec_idx];
-	struct dst_sec *dst_symtab;
 	int i, err;
 
 	for (i = 1; i < obj->sec_cnt; i++) {
@@ -2033,9 +2113,6 @@ static int linker_append_elf_relos(struct bpf_linker *linker, struct src_obj *ob
 			return -1;
 		}
 
-		/* add_dst_sec() above could have invalidated linker->secs */
-		dst_symtab = &linker->secs[linker->symtab_sec_idx];
-
 		/* shdr->sh_link points to SYMTAB */
 		dst_sec->shdr->sh_link = linker->symtab_sec_idx;
 
@@ -2052,16 +2129,13 @@ static int linker_append_elf_relos(struct bpf_linker *linker, struct src_obj *ob
 		dst_rel = dst_sec->raw_data + src_sec->dst_off;
 		n = src_sec->shdr->sh_size / src_sec->shdr->sh_entsize;
 		for (j = 0; j < n; j++, src_rel++, dst_rel++) {
-			size_t src_sym_idx = ELF64_R_SYM(src_rel->r_info);
-			size_t sym_type = ELF64_R_TYPE(src_rel->r_info);
-			Elf64_Sym *src_sym, *dst_sym;
-			size_t dst_sym_idx;
+			size_t src_sym_idx, dst_sym_idx, sym_type;
+			Elf64_Sym *src_sym;
 
 			src_sym_idx = ELF64_R_SYM(src_rel->r_info);
 			src_sym = src_symtab->data->d_buf + sizeof(*src_sym) * src_sym_idx;
 
 			dst_sym_idx = obj->sym_map[src_sym_idx];
-			dst_sym = dst_symtab->raw_data + sizeof(*dst_sym) * dst_sym_idx;
 			dst_rel->r_offset += src_linked_sec->dst_off;
 			sym_type = ELF64_R_TYPE(src_rel->r_info);
 			dst_rel->r_info = ELF64_R_INFO(dst_sym_idx, sym_type);
@@ -2192,9 +2266,16 @@ static int linker_fixup_btf(struct src_obj *obj)
 		vi = btf_var_secinfos(t);
 		for (j = 0, m = btf_vlen(t); j < m; j++, vi++) {
 			const struct btf_type *vt = btf__type_by_id(obj->btf, vi->type);
-			const char *var_name = btf__str_by_offset(obj->btf, vt->name_off);
-			int var_linkage = btf_var(vt)->linkage;
+			const char *var_name;
+			int var_linkage;
 			Elf64_Sym *sym;
+
+			/* could be a variable or function */
+			if (!btf_is_var(vt))
+				continue;
+
+			var_name = btf__str_by_offset(obj->btf, vt->name_off);
+			var_linkage = btf_var(vt)->linkage;
 
 			/* no need to patch up static or extern vars */
 			if (var_linkage != BTF_VAR_GLOBAL_ALLOCATED)
@@ -2213,26 +2294,10 @@ static int linker_fixup_btf(struct src_obj *obj)
 	return 0;
 }
 
-static int remap_type_id(__u32 *type_id, void *ctx)
-{
-	int *id_map = ctx;
-	int new_id = id_map[*type_id];
-
-	/* Error out if the type wasn't remapped. Ignore VOID which stays VOID. */
-	if (new_id == 0 && *type_id != 0) {
-		pr_warn("failed to find new ID mapping for original BTF type ID %u\n", *type_id);
-		return -EINVAL;
-	}
-
-	*type_id = id_map[*type_id];
-
-	return 0;
-}
-
 static int linker_append_btf(struct bpf_linker *linker, struct src_obj *obj)
 {
 	const struct btf_type *t;
-	int i, j, n, start_id, id;
+	int i, j, n, start_id, id, err;
 	const char *name;
 
 	if (!obj->btf)
@@ -2303,9 +2368,25 @@ static int linker_append_btf(struct bpf_linker *linker, struct src_obj *obj)
 	n = btf__type_cnt(linker->btf);
 	for (i = start_id; i < n; i++) {
 		struct btf_type *dst_t = btf_type_by_id(linker->btf, i);
+		struct btf_field_iter it;
+		__u32 *type_id;
 
-		if (btf_type_visit_type_ids(dst_t, remap_type_id, obj->btf_type_map))
-			return -EINVAL;
+		err = btf_field_iter_init(&it, dst_t, BTF_FIELD_ITER_IDS);
+		if (err)
+			return err;
+
+		while ((type_id = btf_field_iter_next(&it))) {
+			int new_id = obj->btf_type_map[*type_id];
+
+			/* Error out if the type wasn't remapped. Ignore VOID which stays VOID. */
+			if (new_id == 0 && *type_id != 0) {
+				pr_warn("failed to find new ID mapping for original BTF type ID %u\n",
+					*type_id);
+				return -EINVAL;
+			}
+
+			*type_id = obj->btf_type_map[*type_id];
+		}
 	}
 
 	/* Rewrite VAR/FUNC underlying types (i.e., FUNC's FUNC_PROTO and VAR's
@@ -2372,6 +2453,10 @@ static int linker_append_btf(struct bpf_linker *linker, struct src_obj *obj)
 			 */
 			if (glob_sym && glob_sym->var_idx >= 0) {
 				__s64 sz;
+
+				/* FUNCs don't have size, nothing to update */
+				if (btf_is_func(t))
+					continue;
 
 				dst_var = &dst_sec->sec_vars[glob_sym->var_idx];
 				/* Because underlying BTF type might have
@@ -2586,6 +2671,10 @@ int bpf_linker__finalize(struct bpf_linker *linker)
 		if (!sec->scn)
 			continue;
 
+		/* restore sections with bpf insns to target byte-order */
+		if (linker->swapped_endian && is_exec_sec(sec))
+			exec_sec_bswap(sec->raw_data, sec->sec_sz);
+
 		sec->data->d_buf = sec->raw_data;
 	}
 
@@ -2654,6 +2743,7 @@ static int emit_elf_data_sec(struct bpf_linker *linker, const char *sec_name,
 
 static int finalize_btf(struct bpf_linker *linker)
 {
+	enum btf_endianness link_endianness;
 	LIBBPF_OPTS(btf_dedup_opts, opts);
 	struct btf *btf = linker->btf;
 	const void *raw_data;
@@ -2687,16 +2777,23 @@ static int finalize_btf(struct bpf_linker *linker)
 
 	err = finalize_btf_ext(linker);
 	if (err) {
-		pr_warn(".BTF.ext generation failed: %d\n", err);
+		pr_warn(".BTF.ext generation failed: %s\n", errstr(err));
 		return err;
 	}
 
 	opts.btf_ext = linker->btf_ext;
 	err = btf__dedup(linker->btf, &opts);
 	if (err) {
-		pr_warn("BTF dedup failed: %d\n", err);
+		pr_warn("BTF dedup failed: %s\n", errstr(err));
 		return err;
 	}
+
+	/* Set .BTF and .BTF.ext output byte order */
+	link_endianness = linker->elf_hdr->e_ident[EI_DATA] == ELFDATA2MSB ?
+			  BTF_BIG_ENDIAN : BTF_LITTLE_ENDIAN;
+	btf__set_endianness(linker->btf, link_endianness);
+	if (linker->btf_ext)
+		btf_ext__set_endianness(linker->btf_ext, link_endianness);
 
 	/* Emit .BTF section */
 	raw_data = btf__raw_data(linker->btf, &raw_sz);
@@ -2705,19 +2802,19 @@ static int finalize_btf(struct bpf_linker *linker)
 
 	err = emit_elf_data_sec(linker, BTF_ELF_SEC, 8, raw_data, raw_sz);
 	if (err) {
-		pr_warn("failed to write out .BTF ELF section: %d\n", err);
+		pr_warn("failed to write out .BTF ELF section: %s\n", errstr(err));
 		return err;
 	}
 
 	/* Emit .BTF.ext section */
 	if (linker->btf_ext) {
-		raw_data = btf_ext__get_raw_data(linker->btf_ext, &raw_sz);
+		raw_data = btf_ext__raw_data(linker->btf_ext, &raw_sz);
 		if (!raw_data)
 			return -ENOMEM;
 
 		err = emit_elf_data_sec(linker, BTF_EXT_ELF_SEC, 8, raw_data, raw_sz);
 		if (err) {
-			pr_warn("failed to write out .BTF.ext ELF section: %d\n", err);
+			pr_warn("failed to write out .BTF.ext ELF section: %s\n", errstr(err));
 			return err;
 		}
 	}
@@ -2893,7 +2990,7 @@ static int finalize_btf_ext(struct bpf_linker *linker)
 	err = libbpf_get_error(linker->btf_ext);
 	if (err) {
 		linker->btf_ext = NULL;
-		pr_warn("failed to parse final .BTF.ext data: %d\n", err);
+		pr_warn("failed to parse final .BTF.ext data: %s\n", errstr(err));
 		goto out;
 	}
 

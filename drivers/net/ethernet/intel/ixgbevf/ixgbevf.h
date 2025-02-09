@@ -387,6 +387,8 @@ struct ixgbevf_adapter {
 	u32 *rss_key;
 	u8 rss_indir_tbl[IXGBEVF_X550_VFRETA_SIZE];
 	u32 flags;
+	bool link_state;
+
 #define IXGBEVF_FLAGS_LEGACY_RX		BIT(1)
 
 #ifdef CONFIG_XFRM
@@ -483,9 +485,6 @@ static inline int ixgbevf_ipsec_tx(struct ixgbevf_ring *tx_ring,
 				   struct ixgbevf_ipsec_tx_data *itd)
 { return 0; }
 #endif /* CONFIG_IXGBEVF_IPSEC */
-
-void ixgbe_napi_add_all(struct ixgbevf_adapter *adapter);
-void ixgbe_napi_del_all(struct ixgbevf_adapter *adapter);
 
 #define ixgbevf_hw_to_netdev(hw) \
 	(((struct ixgbevf_adapter *)(hw)->back)->netdev)

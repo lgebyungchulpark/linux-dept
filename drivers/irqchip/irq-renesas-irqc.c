@@ -188,12 +188,13 @@ static int irqc_probe(struct platform_device *pdev)
 	p->gc->reg_base = p->cpu_int_base;
 	p->gc->chip_types[0].regs.enable = IRQC_EN_SET;
 	p->gc->chip_types[0].regs.disable = IRQC_EN_STS;
-	p->gc->chip_types[0].chip.parent_device = dev;
 	p->gc->chip_types[0].chip.irq_mask = irq_gc_mask_disable_reg;
 	p->gc->chip_types[0].chip.irq_unmask = irq_gc_unmask_enable_reg;
 	p->gc->chip_types[0].chip.irq_set_type	= irqc_irq_set_type;
 	p->gc->chip_types[0].chip.irq_set_wake	= irqc_irq_set_wake;
 	p->gc->chip_types[0].chip.flags	= IRQCHIP_MASK_ON_SUSPEND;
+
+	irq_domain_set_pm_device(p->irq_domain, dev);
 
 	/* request interrupts one by one */
 	for (k = 0; k < p->number_of_irqs; k++) {
@@ -217,14 +218,13 @@ err_runtime_pm_disable:
 	return ret;
 }
 
-static int irqc_remove(struct platform_device *pdev)
+static void irqc_remove(struct platform_device *pdev)
 {
 	struct irqc_priv *p = platform_get_drvdata(pdev);
 
 	irq_domain_remove(p->irq_domain);
 	pm_runtime_put(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
 static int __maybe_unused irqc_suspend(struct device *dev)
@@ -249,9 +249,9 @@ static struct platform_driver irqc_device_driver = {
 	.probe		= irqc_probe,
 	.remove		= irqc_remove,
 	.driver		= {
-		.name	= "renesas_irqc",
+		.name		= "renesas_irqc",
 		.of_match_table	= irqc_dt_ids,
-		.pm	= &irqc_pm_ops,
+		.pm		= &irqc_pm_ops,
 	}
 };
 
@@ -269,4 +269,3 @@ module_exit(irqc_exit);
 
 MODULE_AUTHOR("Magnus Damm");
 MODULE_DESCRIPTION("Renesas IRQC Driver");
-MODULE_LICENSE("GPL v2");

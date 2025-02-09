@@ -25,6 +25,14 @@
 #define THREAD_SIZE		(PAGE_SIZE << THREAD_SIZE_ORDER)
 #define THREAD_START_SP		(THREAD_SIZE - 8)
 
+#ifdef CONFIG_VMAP_STACK
+#define THREAD_ALIGN		(2 * THREAD_SIZE)
+#else
+#define THREAD_ALIGN		THREAD_SIZE
+#endif
+
+#define OVERFLOW_STACK_SIZE	SZ_4K
+
 #ifndef __ASSEMBLY__
 
 struct task_struct;
@@ -32,6 +40,7 @@ struct task_struct;
 DECLARE_PER_CPU(struct task_struct *, __entry_task);
 
 #include <asm/types.h>
+#include <asm/traps.h>
 
 struct cpu_context_save {
 	__u32	r4;
@@ -54,14 +63,10 @@ struct cpu_context_save {
 struct thread_info {
 	unsigned long		flags;		/* low level flags */
 	int			preempt_count;	/* 0 => preemptable, <0 => bug */
-#ifndef CONFIG_THREAD_INFO_IN_TASK
-	struct task_struct	*task;		/* main task structure */
-#endif
 	__u32			cpu;		/* cpu */
 	__u32			cpu_domain;	/* cpu domain */
 	struct cpu_context_save	cpu_context;	/* cpu context */
 	__u32			abi_syscall;	/* ABI type and syscall nr */
-	__u8			used_cp[16];	/* thread used copro */
 	unsigned long		tp_value[2];	/* TLS registers */
 	union fp_state		fpstate __attribute__((aligned(8)));
 	union vfp_state		vfpstate;
@@ -72,38 +77,14 @@ struct thread_info {
 
 #define INIT_THREAD_INFO(tsk)						\
 {									\
-	INIT_THREAD_INFO_TASK(tsk)					\
 	.flags		= 0,						\
 	.preempt_count	= INIT_PREEMPT_COUNT,				\
 }
-
-#ifdef CONFIG_THREAD_INFO_IN_TASK
-#define INIT_THREAD_INFO_TASK(tsk)
 
 static inline struct task_struct *thread_task(struct thread_info* ti)
 {
 	return (struct task_struct *)ti;
 }
-
-#else
-#define INIT_THREAD_INFO_TASK(tsk)	.task = &(tsk),
-
-static inline struct task_struct *thread_task(struct thread_info* ti)
-{
-	return ti->task;
-}
-
-/*
- * how to get the thread information struct from C
- */
-static inline struct thread_info *current_thread_info(void) __attribute_const__;
-
-static inline struct thread_info *current_thread_info(void)
-{
-	return (struct thread_info *)
-		(current_stack_pointer & ~(THREAD_SIZE - 1));
-}
-#endif
 
 #define thread_saved_pc(tsk)	\
 	((unsigned long)(task_thread_info(tsk)->cpu_context.pc))
@@ -123,6 +104,21 @@ extern void iwmmxt_task_copy(struct thread_info *, void *);
 extern void iwmmxt_task_restore(struct thread_info *, void *);
 extern void iwmmxt_task_release(struct thread_info *);
 extern void iwmmxt_task_switch(struct thread_info *);
+
+extern int iwmmxt_undef_handler(struct pt_regs *, u32);
+
+static inline void register_iwmmxt_undef_handler(void)
+{
+	static struct undef_hook iwmmxt_undef_hook = {
+		.instr_mask	= 0x0c000e00,
+		.instr_val	= 0x0c000000,
+		.cpsr_mask	= MODE_MASK | PSR_T_BIT,
+		.cpsr_val	= USR_MODE,
+		.fn		= iwmmxt_undef_handler,
+	};
+
+	register_undef_hook(&iwmmxt_undef_hook);
+}
 
 extern void vfp_sync_hwstate(struct thread_info *);
 extern void vfp_flush_hwstate(struct thread_info *);
@@ -147,15 +143,16 @@ extern int vfp_restore_user_hwstate(struct user_vfp *,
 #define TIF_NEED_RESCHED	1	/* rescheduling necessary */
 #define TIF_NOTIFY_RESUME	2	/* callback before returning to user */
 #define TIF_UPROBE		3	/* breakpointed or singlestepping */
-#define TIF_SYSCALL_TRACE	4	/* syscall trace active */
-#define TIF_SYSCALL_AUDIT	5	/* syscall auditing active */
-#define TIF_SYSCALL_TRACEPOINT	6	/* syscall tracepoint instrumentation */
-#define TIF_SECCOMP		7	/* seccomp syscall filtering active */
-#define TIF_NOTIFY_SIGNAL	8	/* signal notifications exist */
+#define TIF_NOTIFY_SIGNAL	4	/* signal notifications exist */
 
 #define TIF_USING_IWMMXT	17
 #define TIF_MEMDIE		18	/* is terminating due to OOM killer */
-#define TIF_RESTORE_SIGMASK	20
+#define TIF_RESTORE_SIGMASK	19
+#define TIF_SYSCALL_TRACE	20	/* syscall trace active */
+#define TIF_SYSCALL_AUDIT	21	/* syscall auditing active */
+#define TIF_SYSCALL_TRACEPOINT	22	/* syscall tracepoint instrumentation */
+#define TIF_SECCOMP		23	/* seccomp syscall filtering active */
+
 
 #define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
 #define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)

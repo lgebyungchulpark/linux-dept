@@ -4,11 +4,17 @@
 
 #include <stdbool.h>
 
+enum {
+	TEST_OK   =  0,
+	TEST_FAIL = -1,
+	TEST_SKIP = -2,
+};
+
 #define TEST_ASSERT_VAL(text, cond)					 \
 do {									 \
 	if (!(cond)) {							 \
 		pr_debug("FAILED %s:%d %s\n", __FILE__, __LINE__, text); \
-		return -1;						 \
+		return TEST_FAIL;					 \
 	}								 \
 } while (0)
 
@@ -17,15 +23,9 @@ do {									 \
 	if (val != expected) {						 \
 		pr_debug("FAILED %s:%d %s (%d != %d)\n",		 \
 			 __FILE__, __LINE__, text, val, expected);	 \
-		return -1;						 \
+		return TEST_FAIL;						 \
 	}								 \
 } while (0)
-
-enum {
-	TEST_OK   =  0,
-	TEST_FAIL = -1,
-	TEST_SKIP = -2,
-};
 
 struct test_suite;
 
@@ -36,6 +36,7 @@ struct test_case {
 	const char *desc;
 	const char *skip_reason;
 	test_fnptr run_case;
+	bool exclusive;
 };
 
 struct test_suite {
@@ -62,6 +63,14 @@ struct test_suite {
 		.skip_reason = _reason,			\
 	}
 
+#define TEST_CASE_EXCLUSIVE(description, _name)		\
+	{						\
+		.name = #_name,				\
+		.desc = description,			\
+		.run_case = test__##_name,		\
+		.exclusive = true,			\
+	}
+
 #define DEFINE_SUITE(description, _name)		\
 	struct test_case tests__##_name[] = {           \
 		TEST_CASE(description, _name),		\
@@ -83,6 +92,8 @@ DECLARE_SUITE(perf_evsel__tp_sched_test);
 DECLARE_SUITE(syscall_openat_tp_fields);
 DECLARE_SUITE(pmu);
 DECLARE_SUITE(pmu_events);
+DECLARE_SUITE(hwmon_pmu);
+DECLARE_SUITE(tool_pmu);
 DECLARE_SUITE(attr);
 DECLARE_SUITE(dso_data);
 DECLARE_SUITE(dso_data_cache);
@@ -113,25 +124,21 @@ DECLARE_SUITE(fdarray__filter);
 DECLARE_SUITE(fdarray__add);
 DECLARE_SUITE(kmod_path__parse);
 DECLARE_SUITE(thread_map);
-DECLARE_SUITE(llvm);
 DECLARE_SUITE(bpf);
 DECLARE_SUITE(session_topology);
 DECLARE_SUITE(thread_map_synthesize);
 DECLARE_SUITE(thread_map_remove);
-DECLARE_SUITE(cpu_map_synthesize);
+DECLARE_SUITE(cpu_map);
 DECLARE_SUITE(synthesize_stat_config);
 DECLARE_SUITE(synthesize_stat);
 DECLARE_SUITE(synthesize_stat_round);
 DECLARE_SUITE(event_update);
 DECLARE_SUITE(event_times);
 DECLARE_SUITE(backward_ring_buffer);
-DECLARE_SUITE(cpu_map_print);
-DECLARE_SUITE(cpu_map_merge);
 DECLARE_SUITE(sdt_event);
 DECLARE_SUITE(is_printable_array);
 DECLARE_SUITE(bitmap_print);
 DECLARE_SUITE(perf_hooks);
-DECLARE_SUITE(clang);
 DECLARE_SUITE(unit_number__scnprint);
 DECLARE_SUITE(mem2node);
 DECLARE_SUITE(maps__merge_in);
@@ -147,6 +154,9 @@ DECLARE_SUITE(expand_cgroup_events);
 DECLARE_SUITE(perf_time_to_tsc);
 DECLARE_SUITE(dlfilter);
 DECLARE_SUITE(sigtrap);
+DECLARE_SUITE(event_groups);
+DECLARE_SUITE(symbols);
+DECLARE_SUITE(util);
 
 /*
  * PowerPC and S390 do not support creation of instruction breakpoints using the
@@ -179,5 +189,36 @@ int test__arch_unwind_sample(struct perf_sample *sample,
 #if defined(__arm__)
 DECLARE_SUITE(vectors_page);
 #endif
+
+/*
+ * Define test workloads to be used in test suites.
+ */
+typedef int (*workload_fnptr)(int argc, const char **argv);
+
+struct test_workload {
+	const char	*name;
+	workload_fnptr	func;
+};
+
+#define DECLARE_WORKLOAD(work) \
+	extern struct test_workload workload__##work
+
+#define DEFINE_WORKLOAD(work) \
+struct test_workload workload__##work = {	\
+	.name = #work,				\
+	.func = work,				\
+}
+
+/* The list of test workloads */
+DECLARE_WORKLOAD(noploop);
+DECLARE_WORKLOAD(thloop);
+DECLARE_WORKLOAD(leafloop);
+DECLARE_WORKLOAD(sqrtloop);
+DECLARE_WORKLOAD(brstack);
+DECLARE_WORKLOAD(datasym);
+DECLARE_WORKLOAD(landlock);
+
+extern const char *dso_to_test;
+extern const char *test_objdump_path;
 
 #endif /* TESTS_H */

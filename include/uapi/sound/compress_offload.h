@@ -5,23 +5,6 @@
  *  Copyright (C) 2011 Intel Corporation
  *  Authors:	Vinod Koul <vinod.koul@linux.intel.com>
  *		Pierre-Louis Bossart <pierre-louis.bossart@linux.intel.com>
- *  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
  */
 #ifndef __COMPRESS_OFFLOAD_H
 #define __COMPRESS_OFFLOAD_H
@@ -31,7 +14,7 @@
 #include <sound/compress_params.h>
 
 
-#define SNDRV_COMPRESS_VERSION SNDRV_PROTOCOL_VERSION(0, 2, 0)
+#define SNDRV_COMPRESS_VERSION SNDRV_PROTOCOL_VERSION(0, 3, 0)
 /**
  * struct snd_compressed_buffer - compressed buffer
  * @fragment_size: size of buffer fragment in bytes
@@ -85,7 +68,8 @@ struct snd_compr_avail {
 
 enum snd_compr_direction {
 	SND_COMPRESS_PLAYBACK = 0,
-	SND_COMPRESS_CAPTURE
+	SND_COMPRESS_CAPTURE,
+	SND_COMPRESS_ACCEL
 };
 
 /**
@@ -123,7 +107,7 @@ struct snd_compr_codec_caps {
 } __attribute__((packed, aligned(4)));
 
 /**
- * enum sndrv_compress_encoder
+ * enum sndrv_compress_encoder - encoder metadata key
  * @SNDRV_COMPRESS_ENCODER_PADDING: no of samples appended by the encoder at the
  * end of the track
  * @SNDRV_COMPRESS_ENCODER_DELAY: no of samples inserted by the encoder at the
@@ -142,6 +126,59 @@ enum sndrv_compress_encoder {
 struct snd_compr_metadata {
 	 __u32 key;
 	 __u32 value[8];
+} __attribute__((packed, aligned(4)));
+
+/* flags for struct snd_compr_task */
+#define SND_COMPRESS_TFLG_NEW_STREAM		(1<<0)	/* mark for the new stream data */
+
+/**
+ * struct snd_compr_task - task primitive for non-realtime operation
+ * @seqno: sequence number (task identifier)
+ * @origin_seqno: previous sequence number (task identifier) - for reuse
+ * @input_fd: data input file descriptor (dma-buf)
+ * @output_fd: data output file descriptor (dma-buf)
+ * @input_size: filled data in bytes (from caller, must not exceed fragment size)
+ * @flags: see SND_COMPRESS_TFLG_* defines
+ * @reserved: reserved for future extension
+ */
+struct snd_compr_task {
+	__u64 seqno;
+	__u64 origin_seqno;
+	int input_fd;
+	int output_fd;
+	__u64 input_size;
+	__u32 flags;
+	__u8 reserved[16];
+} __attribute__((packed, aligned(4)));
+
+/**
+ * enum snd_compr_state - task state
+ * @SND_COMPRESS_TASK_STATE_IDLE: task is not queued
+ * @SND_COMPRESS_TASK_STATE_ACTIVE: task is in the queue
+ * @SND_COMPRESS_TASK_STATE_FINISHED: task was processed, output is available
+ */
+enum snd_compr_state {
+	SND_COMPRESS_TASK_STATE_IDLE = 0,
+	SND_COMPRESS_TASK_STATE_ACTIVE,
+	SND_COMPRESS_TASK_STATE_FINISHED
+};
+
+/**
+ * struct snd_compr_task_status - task status
+ * @seqno: sequence number (task identifier)
+ * @input_size: filled data in bytes (from user space)
+ * @output_size: filled data in bytes (from driver)
+ * @output_flags: reserved for future (all zeros - from driver)
+ * @state: actual task state (SND_COMPRESS_TASK_STATE_*)
+ * @reserved: reserved for future extension
+ */
+struct snd_compr_task_status {
+	__u64 seqno;
+	__u64 input_size;
+	__u64 output_size;
+	__u32 output_flags;
+	__u8 state;
+	__u8 reserved[15];
 } __attribute__((packed, aligned(4)));
 
 /*
@@ -181,6 +218,14 @@ struct snd_compr_metadata {
 #define SNDRV_COMPRESS_DRAIN		_IO('C', 0x34)
 #define SNDRV_COMPRESS_NEXT_TRACK	_IO('C', 0x35)
 #define SNDRV_COMPRESS_PARTIAL_DRAIN	_IO('C', 0x36)
+
+
+#define SNDRV_COMPRESS_TASK_CREATE	_IOWR('C', 0x60, struct snd_compr_task)
+#define SNDRV_COMPRESS_TASK_FREE	_IOW('C', 0x61, __u64)
+#define SNDRV_COMPRESS_TASK_START	_IOWR('C', 0x62, struct snd_compr_task)
+#define SNDRV_COMPRESS_TASK_STOP	_IOW('C', 0x63, __u64)
+#define SNDRV_COMPRESS_TASK_STATUS	_IOWR('C', 0x68, struct snd_compr_task_status)
+
 /*
  * TODO
  * 1. add mmap support

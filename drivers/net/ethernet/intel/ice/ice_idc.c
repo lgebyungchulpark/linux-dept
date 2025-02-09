@@ -6,6 +6,8 @@
 #include "ice_lib.h"
 #include "ice_dcb_lib.h"
 
+static DEFINE_XARRAY_ALLOC1(ice_aux_id);
+
 /**
  * ice_get_auxiliary_drv - retrieve iidc_auxiliary_drv struct
  * @pf: pointer to PF struct
@@ -34,29 +36,20 @@ void ice_send_event_to_aux(struct ice_pf *pf, struct iidc_event *event)
 {
 	struct iidc_auxiliary_drv *iadrv;
 
-	if (!pf->adev)
+	if (WARN_ON_ONCE(!in_task()))
 		return;
+
+	mutex_lock(&pf->adev_mutex);
+	if (!pf->adev)
+		goto finish;
 
 	device_lock(&pf->adev->dev);
 	iadrv = ice_get_auxiliary_drv(pf);
 	if (iadrv && iadrv->event_handler)
 		iadrv->event_handler(pf, event);
 	device_unlock(&pf->adev->dev);
-}
-
-/**
- * ice_find_vsi - Find the VSI from VSI ID
- * @pf: The PF pointer to search in
- * @vsi_num: The VSI ID to search for
- */
-static struct ice_vsi *ice_find_vsi(struct ice_pf *pf, u16 vsi_num)
-{
-	int i;
-
-	ice_for_each_vsi(pf, i)
-		if (pf->vsi[i] && pf->vsi[i]->vsi_num == vsi_num)
-			return  pf->vsi[i];
-	return NULL;
+finish:
+	mutex_unlock(&pf->adev_mutex);
 }
 
 /**
@@ -79,7 +72,7 @@ int ice_add_rdma_qset(struct ice_pf *pf, struct iidc_rdma_qset_params *qset)
 
 	dev = ice_pf_to_dev(pf);
 
-	if (!test_bit(ICE_FLAG_RDMA_ENA, pf->flags))
+	if (!ice_is_rdma_ena(pf))
 		return -EINVAL;
 
 	vsi = ice_get_main_vsi(pf);
@@ -227,26 +220,68 @@ void ice_get_qos_params(struct ice_pf *pf, struct iidc_qos_params *qos)
 
 	for (i = 0; i < IEEE_8021QAZ_MAX_TCS; i++)
 		qos->tc_info[i].rel_bw = dcbx_cfg->etscfg.tcbwtable[i];
+
+	qos->pfc_mode = dcbx_cfg->pfc_mode;
+	if (qos->pfc_mode == IIDC_DSCP_PFC_MODE)
+		for (i = 0; i < IIDC_MAX_DSCP_MAPPING; i++)
+			qos->dscp_map[i] = dcbx_cfg->dscp_map[i];
 }
 EXPORT_SYMBOL_GPL(ice_get_qos_params);
 
 /**
- * ice_reserve_rdma_qvector - Reserve vector resources for RDMA driver
+ * ice_alloc_rdma_qvectors - Allocate vector resources for RDMA driver
  * @pf: board private structure to initialize
  */
-static int ice_reserve_rdma_qvector(struct ice_pf *pf)
+static int ice_alloc_rdma_qvectors(struct ice_pf *pf)
 {
-	if (test_bit(ICE_FLAG_RDMA_ENA, pf->flags)) {
-		int index;
+	if (ice_is_rdma_ena(pf)) {
+		int i;
 
-		index = ice_get_res(pf, pf->irq_tracker, pf->num_rdma_msix,
-				    ICE_RES_RDMA_VEC_ID);
-		if (index < 0)
-			return index;
-		pf->num_avail_sw_msix -= pf->num_rdma_msix;
-		pf->rdma_base_vector = (u16)index;
+		pf->msix_entries = kcalloc(pf->num_rdma_msix,
+					   sizeof(*pf->msix_entries),
+						  GFP_KERNEL);
+		if (!pf->msix_entries)
+			return -ENOMEM;
+
+		/* RDMA is the only user of pf->msix_entries array */
+		pf->rdma_base_vector = 0;
+
+		for (i = 0; i < pf->num_rdma_msix; i++) {
+			struct msix_entry *entry = &pf->msix_entries[i];
+			struct msi_map map;
+
+			map = ice_alloc_irq(pf, false);
+			if (map.index < 0)
+				break;
+
+			entry->entry = map.index;
+			entry->vector = map.virq;
+		}
 	}
 	return 0;
+}
+
+/**
+ * ice_free_rdma_qvector - free vector resources reserved for RDMA driver
+ * @pf: board private structure to initialize
+ */
+static void ice_free_rdma_qvector(struct ice_pf *pf)
+{
+	int i;
+
+	if (!pf->msix_entries)
+		return;
+
+	for (i = 0; i < pf->num_rdma_msix; i++) {
+		struct msi_map map;
+
+		map.index = pf->msix_entries[i].entry;
+		map.virq = pf->msix_entries[i].vector;
+		ice_free_irq(pf, map);
+	}
+
+	kfree(pf->msix_entries);
+	pf->msix_entries = NULL;
 }
 
 /**
@@ -274,7 +309,7 @@ int ice_plug_aux_dev(struct ice_pf *pf)
 	/* if this PF doesn't support a technology that requires auxiliary
 	 * devices, then gracefully exit
 	 */
-	if (!ice_is_aux_ena(pf))
+	if (!ice_is_rdma_ena(pf))
 		return 0;
 
 	iadev = kzalloc(sizeof(*iadev), GFP_KERNEL);
@@ -282,7 +317,6 @@ int ice_plug_aux_dev(struct ice_pf *pf)
 		return -ENOMEM;
 
 	adev = &iadev->adev;
-	pf->adev = adev;
 	iadev->pf = pf;
 
 	adev->id = pf->aux_idx;
@@ -292,17 +326,19 @@ int ice_plug_aux_dev(struct ice_pf *pf)
 
 	ret = auxiliary_device_init(adev);
 	if (ret) {
-		pf->adev = NULL;
 		kfree(iadev);
 		return ret;
 	}
 
 	ret = auxiliary_device_add(adev);
 	if (ret) {
-		pf->adev = NULL;
 		auxiliary_device_uninit(adev);
 		return ret;
 	}
+
+	mutex_lock(&pf->adev_mutex);
+	pf->adev = adev;
+	mutex_unlock(&pf->adev_mutex);
 
 	return 0;
 }
@@ -312,12 +348,17 @@ int ice_plug_aux_dev(struct ice_pf *pf)
  */
 void ice_unplug_aux_dev(struct ice_pf *pf)
 {
-	if (!pf->adev)
-		return;
+	struct auxiliary_device *adev;
 
-	auxiliary_device_delete(pf->adev);
-	auxiliary_device_uninit(pf->adev);
+	mutex_lock(&pf->adev_mutex);
+	adev = pf->adev;
 	pf->adev = NULL;
+	mutex_unlock(&pf->adev_mutex);
+
+	if (adev) {
+		auxiliary_device_delete(adev);
+		auxiliary_device_uninit(adev);
+	}
 }
 
 /**
@@ -329,12 +370,48 @@ int ice_init_rdma(struct ice_pf *pf)
 	struct device *dev = &pf->pdev->dev;
 	int ret;
 
+	if (!ice_is_rdma_ena(pf)) {
+		dev_warn(dev, "RDMA is not supported on this device\n");
+		return 0;
+	}
+
+	ret = xa_alloc(&ice_aux_id, &pf->aux_idx, NULL, XA_LIMIT(1, INT_MAX),
+		       GFP_KERNEL);
+	if (ret) {
+		dev_err(dev, "Failed to allocate device ID for AUX driver\n");
+		return -ENOMEM;
+	}
+
 	/* Reserve vector resources */
-	ret = ice_reserve_rdma_qvector(pf);
+	ret = ice_alloc_rdma_qvectors(pf);
 	if (ret < 0) {
 		dev_err(dev, "failed to reserve vectors for RDMA\n");
-		return ret;
+		goto err_reserve_rdma_qvector;
 	}
 	pf->rdma_mode |= IIDC_RDMA_PROTOCOL_ROCEV2;
-	return ice_plug_aux_dev(pf);
+	ret = ice_plug_aux_dev(pf);
+	if (ret)
+		goto err_plug_aux_dev;
+	return 0;
+
+err_plug_aux_dev:
+	ice_free_rdma_qvector(pf);
+err_reserve_rdma_qvector:
+	pf->adev = NULL;
+	xa_erase(&ice_aux_id, pf->aux_idx);
+	return ret;
+}
+
+/**
+ * ice_deinit_rdma - deinitialize RDMA on PF
+ * @pf: ptr to ice_pf
+ */
+void ice_deinit_rdma(struct ice_pf *pf)
+{
+	if (!ice_is_rdma_ena(pf))
+		return;
+
+	ice_unplug_aux_dev(pf);
+	ice_free_rdma_qvector(pf);
+	xa_erase(&ice_aux_id, pf->aux_idx);
 }

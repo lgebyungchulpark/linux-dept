@@ -12,19 +12,16 @@
 #include "kvm_util.h"
 #include "processor.h"
 
-#define VCPU_ID 0
-
-/* CPUIDs known to differ */
-struct {
-	u32 function;
-	u32 index;
-} mangled_cpuids[] = {
-	/*
-	 * These entries depend on the vCPU's XCR0 register and IA32_XSS MSR,
-	 * which are not controlled for by this test.
-	 */
-	{.function = 0xd, .index = 0},
-	{.function = 0xd, .index = 1},
+struct cpuid_mask {
+	union {
+		struct {
+			u32 eax;
+			u32 ebx;
+			u32 ecx;
+			u32 edx;
+		};
+		u32 regs[4];
+	};
 };
 
 static void test_guest_cpuids(struct kvm_cpuid2 *guest_cpuid)
@@ -33,26 +30,16 @@ static void test_guest_cpuids(struct kvm_cpuid2 *guest_cpuid)
 	u32 eax, ebx, ecx, edx;
 
 	for (i = 0; i < guest_cpuid->nent; i++) {
-		eax = guest_cpuid->entries[i].function;
-		ecx = guest_cpuid->entries[i].index;
+		__cpuid(guest_cpuid->entries[i].function,
+			guest_cpuid->entries[i].index,
+			&eax, &ebx, &ecx, &edx);
 
-		cpuid(&eax, &ebx, &ecx, &edx);
-
-		GUEST_ASSERT(eax == guest_cpuid->entries[i].eax &&
-			     ebx == guest_cpuid->entries[i].ebx &&
-			     ecx == guest_cpuid->entries[i].ecx &&
-			     edx == guest_cpuid->entries[i].edx);
+		GUEST_ASSERT_EQ(eax, guest_cpuid->entries[i].eax);
+		GUEST_ASSERT_EQ(ebx, guest_cpuid->entries[i].ebx);
+		GUEST_ASSERT_EQ(ecx, guest_cpuid->entries[i].ecx);
+		GUEST_ASSERT_EQ(edx, guest_cpuid->entries[i].edx);
 	}
 
-}
-
-static void test_cpuid_40000000(struct kvm_cpuid2 *guest_cpuid)
-{
-	u32 eax = 0x40000000, ebx, ecx = 0, edx;
-
-	cpuid(&eax, &ebx, &ecx, &edx);
-
-	GUEST_ASSERT(eax == 0x40000001);
 }
 
 static void guest_main(struct kvm_cpuid2 *guest_cpuid)
@@ -63,68 +50,80 @@ static void guest_main(struct kvm_cpuid2 *guest_cpuid)
 
 	GUEST_SYNC(2);
 
-	test_cpuid_40000000(guest_cpuid);
+	GUEST_ASSERT_EQ(this_cpu_property(X86_PROPERTY_MAX_KVM_LEAF), 0x40000001);
 
 	GUEST_DONE();
 }
 
-static bool is_cpuid_mangled(struct kvm_cpuid_entry2 *entrie)
+static struct cpuid_mask get_const_cpuid_mask(const struct kvm_cpuid_entry2 *entry)
 {
-	int i;
+	struct cpuid_mask mask;
 
-	for (i = 0; i < sizeof(mangled_cpuids); i++) {
-		if (mangled_cpuids[i].function == entrie->function &&
-		    mangled_cpuids[i].index == entrie->index)
-			return true;
+	memset(&mask, 0xff, sizeof(mask));
+
+	switch (entry->function) {
+	case 0x1:
+		mask.regs[X86_FEATURE_OSXSAVE.reg] &= ~BIT(X86_FEATURE_OSXSAVE.bit);
+		break;
+	case 0x7:
+		mask.regs[X86_FEATURE_OSPKE.reg] &= ~BIT(X86_FEATURE_OSPKE.bit);
+		break;
+	case 0xd:
+		/*
+		 * CPUID.0xD.{0,1}.EBX enumerate XSAVE size based on the current
+		 * XCR0 and IA32_XSS MSR values.
+		 */
+		if (entry->index < 2)
+			mask.ebx = 0;
+		break;
 	}
-
-	return false;
+	return mask;
 }
 
-static void check_cpuid(struct kvm_cpuid2 *cpuid, struct kvm_cpuid_entry2 *entrie)
+static void compare_cpuids(const struct kvm_cpuid2 *cpuid1,
+			   const struct kvm_cpuid2 *cpuid2)
 {
+	const struct kvm_cpuid_entry2 *e1, *e2;
 	int i;
 
-	for (i = 0; i < cpuid->nent; i++) {
-		if (cpuid->entries[i].function == entrie->function &&
-		    cpuid->entries[i].index == entrie->index) {
-			if (is_cpuid_mangled(entrie))
-				return;
+	TEST_ASSERT(cpuid1->nent == cpuid2->nent,
+		    "CPUID nent mismatch: %d vs. %d", cpuid1->nent, cpuid2->nent);
 
-			TEST_ASSERT(cpuid->entries[i].eax == entrie->eax &&
-				    cpuid->entries[i].ebx == entrie->ebx &&
-				    cpuid->entries[i].ecx == entrie->ecx &&
-				    cpuid->entries[i].edx == entrie->edx,
-				    "CPUID 0x%x.%x differ: 0x%x:0x%x:0x%x:0x%x vs 0x%x:0x%x:0x%x:0x%x",
-				    entrie->function, entrie->index,
-				    cpuid->entries[i].eax, cpuid->entries[i].ebx,
-				    cpuid->entries[i].ecx, cpuid->entries[i].edx,
-				    entrie->eax, entrie->ebx, entrie->ecx, entrie->edx);
-			return;
-		}
+	for (i = 0; i < cpuid1->nent; i++) {
+		struct cpuid_mask mask;
+
+		e1 = &cpuid1->entries[i];
+		e2 = &cpuid2->entries[i];
+
+		TEST_ASSERT(e1->function == e2->function &&
+			    e1->index == e2->index && e1->flags == e2->flags,
+			    "CPUID entries[%d] mismtach: 0x%x.%d.%x vs. 0x%x.%d.%x",
+			    i, e1->function, e1->index, e1->flags,
+			    e2->function, e2->index, e2->flags);
+
+		/* Mask off dynamic bits, e.g. OSXSAVE, when comparing entries. */
+		mask = get_const_cpuid_mask(e1);
+
+		TEST_ASSERT((e1->eax & mask.eax) == (e2->eax & mask.eax) &&
+			    (e1->ebx & mask.ebx) == (e2->ebx & mask.ebx) &&
+			    (e1->ecx & mask.ecx) == (e2->ecx & mask.ecx) &&
+			    (e1->edx & mask.edx) == (e2->edx & mask.edx),
+			    "CPUID 0x%x.%x differ: 0x%x:0x%x:0x%x:0x%x vs 0x%x:0x%x:0x%x:0x%x",
+			    e1->function, e1->index,
+			    e1->eax & mask.eax, e1->ebx & mask.ebx,
+			    e1->ecx & mask.ecx, e1->edx & mask.edx,
+			    e2->eax & mask.eax, e2->ebx & mask.ebx,
+			    e2->ecx & mask.ecx, e2->edx & mask.edx);
 	}
-
-	TEST_ASSERT(false, "CPUID 0x%x.%x not found", entrie->function, entrie->index);
 }
 
-static void compare_cpuids(struct kvm_cpuid2 *cpuid1, struct kvm_cpuid2 *cpuid2)
-{
-	int i;
-
-	for (i = 0; i < cpuid1->nent; i++)
-		check_cpuid(cpuid2, &cpuid1->entries[i]);
-
-	for (i = 0; i < cpuid2->nent; i++)
-		check_cpuid(cpuid1, &cpuid2->entries[i]);
-}
-
-static void run_vcpu(struct kvm_vm *vm, uint32_t vcpuid, int stage)
+static void run_vcpu(struct kvm_vcpu *vcpu, int stage)
 {
 	struct ucall uc;
 
-	_vcpu_run(vm, vcpuid);
+	vcpu_run(vcpu);
 
-	switch (get_ucall(vm, vcpuid, &uc)) {
+	switch (get_ucall(vcpu, &uc)) {
 	case UCALL_SYNC:
 		TEST_ASSERT(!strcmp((const char *)uc.args[0], "hello") &&
 			    uc.args[1] == stage + 1,
@@ -134,11 +133,10 @@ static void run_vcpu(struct kvm_vm *vm, uint32_t vcpuid, int stage)
 	case UCALL_DONE:
 		return;
 	case UCALL_ABORT:
-		TEST_ASSERT(false, "%s at %s:%ld\n\tvalues: %#lx, %#lx", (const char *)uc.args[0],
-			    __FILE__, uc.args[1], uc.args[2], uc.args[3]);
+		REPORT_GUEST_ASSERT(uc);
 	default:
 		TEST_ASSERT(false, "Unexpected exit: %s",
-			    exit_reason_str(vcpu_state(vm, vcpuid)->exit_reason));
+			    exit_reason_str(vcpu->run->exit_reason));
 	}
 }
 
@@ -154,56 +152,74 @@ struct kvm_cpuid2 *vcpu_alloc_cpuid(struct kvm_vm *vm, vm_vaddr_t *p_gva, struct
 	return guest_cpuids;
 }
 
-static void set_cpuid_after_run(struct kvm_vm *vm, struct kvm_cpuid2 *cpuid)
+static void set_cpuid_after_run(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *ent;
 	int rc;
 	u32 eax, ebx, x;
 
 	/* Setting unmodified CPUID is allowed */
-	rc = __vcpu_set_cpuid(vm, VCPU_ID, cpuid);
+	rc = __vcpu_set_cpuid(vcpu);
 	TEST_ASSERT(!rc, "Setting unmodified CPUID after KVM_RUN failed: %d", rc);
 
 	/* Changing CPU features is forbidden */
-	ent = get_cpuid(cpuid, 0x7, 0);
+	ent = vcpu_get_cpuid_entry(vcpu, 0x7);
 	ebx = ent->ebx;
 	ent->ebx--;
-	rc = __vcpu_set_cpuid(vm, VCPU_ID, cpuid);
+	rc = __vcpu_set_cpuid(vcpu);
 	TEST_ASSERT(rc, "Changing CPU features should fail");
 	ent->ebx = ebx;
 
 	/* Changing MAXPHYADDR is forbidden */
-	ent = get_cpuid(cpuid, 0x80000008, 0);
+	ent = vcpu_get_cpuid_entry(vcpu, 0x80000008);
 	eax = ent->eax;
 	x = eax & 0xff;
 	ent->eax = (eax & ~0xffu) | (x - 1);
-	rc = __vcpu_set_cpuid(vm, VCPU_ID, cpuid);
+	rc = __vcpu_set_cpuid(vcpu);
 	TEST_ASSERT(rc, "Changing MAXPHYADDR should fail");
 	ent->eax = eax;
 }
 
+static void test_get_cpuid2(struct kvm_vcpu *vcpu)
+{
+	struct kvm_cpuid2 *cpuid = allocate_kvm_cpuid2(vcpu->cpuid->nent + 1);
+	int i, r;
+
+	vcpu_ioctl(vcpu, KVM_GET_CPUID2, cpuid);
+	TEST_ASSERT(cpuid->nent == vcpu->cpuid->nent,
+		    "KVM didn't update nent on success, wanted %u, got %u",
+		    vcpu->cpuid->nent, cpuid->nent);
+
+	for (i = 0; i < vcpu->cpuid->nent; i++) {
+		cpuid->nent = i;
+		r = __vcpu_ioctl(vcpu, KVM_GET_CPUID2, cpuid);
+		TEST_ASSERT(r && errno == E2BIG, KVM_IOCTL_ERROR(KVM_GET_CPUID2, r));
+		TEST_ASSERT(cpuid->nent == i, "KVM modified nent on failure");
+	}
+	free(cpuid);
+}
+
 int main(void)
 {
-	struct kvm_cpuid2 *supp_cpuid, *cpuid2;
+	struct kvm_vcpu *vcpu;
 	vm_vaddr_t cpuid_gva;
 	struct kvm_vm *vm;
 	int stage;
 
-	vm = vm_create_default(VCPU_ID, 0, guest_main);
+	vm = vm_create_with_one_vcpu(&vcpu, guest_main);
 
-	supp_cpuid = kvm_get_supported_cpuid();
-	cpuid2 = vcpu_get_cpuid(vm, VCPU_ID);
+	compare_cpuids(kvm_get_supported_cpuid(), vcpu->cpuid);
 
-	compare_cpuids(supp_cpuid, cpuid2);
+	vcpu_alloc_cpuid(vm, &cpuid_gva, vcpu->cpuid);
 
-	vcpu_alloc_cpuid(vm, &cpuid_gva, cpuid2);
-
-	vcpu_args_set(vm, VCPU_ID, 1, cpuid_gva);
+	vcpu_args_set(vcpu, 1, cpuid_gva);
 
 	for (stage = 0; stage < 3; stage++)
-		run_vcpu(vm, VCPU_ID, stage);
+		run_vcpu(vcpu, stage);
 
-	set_cpuid_after_run(vm, cpuid2);
+	set_cpuid_after_run(vcpu);
+
+	test_get_cpuid2(vcpu);
 
 	kvm_vm_free(vm);
 }

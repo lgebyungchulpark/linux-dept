@@ -101,8 +101,7 @@
 #define MAX_ROCE_EQS		5
 #define MAX_MSIX_VECTORS	32
 #define MIN_MSIX_VECTORS	1
-#define BE_NAPI_WEIGHT		64
-#define MAX_RX_POST		BE_NAPI_WEIGHT /* Frags posted at a time */
+#define MAX_RX_POST		NAPI_POLL_WEIGHT /* Frags posted at a time */
 #define RX_FRAGS_REFILL_WM	(RX_Q_LEN - MAX_RX_POST)
 #define MAX_NUM_POST_ERX_DB	255u
 
@@ -967,9 +966,7 @@ void be_cq_notify(struct be_adapter *adapter, u16 qid, bool arm,
 void be_link_status_update(struct be_adapter *adapter, u8 link_status);
 void be_parse_stats(struct be_adapter *adapter);
 int be_load_fw(struct be_adapter *adapter, u8 *func);
-bool be_is_wol_supported(struct be_adapter *adapter);
 bool be_pause_supported(struct be_adapter *adapter);
-u32 be_get_fw_log_level(struct be_adapter *adapter);
 int be_update_queues(struct be_adapter *adapter);
 int be_poll(struct napi_struct *napi, int budget);
 void be_eqd_update(struct be_adapter *adapter, bool force_update);

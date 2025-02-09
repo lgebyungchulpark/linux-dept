@@ -10,6 +10,7 @@
 
 enum {
 	attr_feature,
+	attr_drop_caches,
 	attr_pointer_ui,
 	attr_pointer_bool,
 };
@@ -57,11 +58,13 @@ static struct erofs_attr erofs_attr_##_name = {			\
 
 #ifdef CONFIG_EROFS_FS_ZIP
 EROFS_ATTR_RW_UI(sync_decompress, erofs_mount_opts);
+EROFS_ATTR_FUNC(drop_caches, 0200);
 #endif
 
 static struct attribute *erofs_attrs[] = {
 #ifdef CONFIG_EROFS_FS_ZIP
 	ATTR_LIST(sync_decompress),
+	ATTR_LIST(drop_caches),
 #endif
 	NULL,
 };
@@ -76,6 +79,8 @@ EROFS_ATTR_FEATURE(device_table);
 EROFS_ATTR_FEATURE(compr_head2);
 EROFS_ATTR_FEATURE(sb_chksum);
 EROFS_ATTR_FEATURE(ztailpacking);
+EROFS_ATTR_FEATURE(fragments);
+EROFS_ATTR_FEATURE(dedupe);
 
 static struct attribute *erofs_feat_attrs[] = {
 	ATTR_LIST(zero_padding),
@@ -86,6 +91,8 @@ static struct attribute *erofs_feat_attrs[] = {
 	ATTR_LIST(compr_head2),
 	ATTR_LIST(sb_chksum),
 	ATTR_LIST(ztailpacking),
+	ATTR_LIST(fragments),
+	ATTR_LIST(dedupe),
 	NULL,
 };
 ATTRIBUTE_GROUPS(erofs_feat);
@@ -159,6 +166,20 @@ static ssize_t erofs_attr_store(struct kobject *kobj, struct attribute *attr,
 			return -EINVAL;
 		*(bool *)ptr = !!t;
 		return len;
+#ifdef CONFIG_EROFS_FS_ZIP
+	case attr_drop_caches:
+		ret = kstrtoul(skip_spaces(buf), 0, &t);
+		if (ret)
+			return ret;
+		if (t < 1 || t > 3)
+			return -EINVAL;
+
+		if (t & 2)
+			z_erofs_shrink_scan(sbi, ~0UL);
+		if (t & 1)
+			invalidate_mapping_pages(MNGD_MAPPING(sbi), 0, -1);
+		return len;
+#endif
 	}
 	return 0;
 }
@@ -175,13 +196,13 @@ static const struct sysfs_ops erofs_attr_ops = {
 	.store	= erofs_attr_store,
 };
 
-static struct kobj_type erofs_sb_ktype = {
+static const struct kobj_type erofs_sb_ktype = {
 	.default_groups = erofs_groups,
 	.sysfs_ops	= &erofs_attr_ops,
 	.release	= erofs_sb_release,
 };
 
-static struct kobj_type erofs_ktype = {
+static const struct kobj_type erofs_ktype = {
 	.sysfs_ops	= &erofs_attr_ops,
 };
 
@@ -189,7 +210,7 @@ static struct kset erofs_root = {
 	.kobj	= {.ktype = &erofs_ktype},
 };
 
-static struct kobj_type erofs_feat_ktype = {
+static const struct kobj_type erofs_feat_ktype = {
 	.default_groups = erofs_feat_groups,
 	.sysfs_ops	= &erofs_attr_ops,
 };
@@ -205,15 +226,12 @@ int erofs_register_sysfs(struct super_block *sb)
 
 	sbi->s_kobj.kset = &erofs_root;
 	init_completion(&sbi->s_kobj_unregister);
-	err = kobject_init_and_add(&sbi->s_kobj, &erofs_sb_ktype, NULL,
-				   "%s", sb->s_id);
-	if (err)
-		goto put_sb_kobj;
-	return 0;
-
-put_sb_kobj:
-	kobject_put(&sbi->s_kobj);
-	wait_for_completion(&sbi->s_kobj_unregister);
+	err = kobject_init_and_add(&sbi->s_kobj, &erofs_sb_ktype, NULL, "%s",
+				   sb->s_sysfs_name);
+	if (err) {
+		kobject_put(&sbi->s_kobj);
+		wait_for_completion(&sbi->s_kobj_unregister);
+	}
 	return err;
 }
 
@@ -221,9 +239,11 @@ void erofs_unregister_sysfs(struct super_block *sb)
 {
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 
-	kobject_del(&sbi->s_kobj);
-	kobject_put(&sbi->s_kobj);
-	wait_for_completion(&sbi->s_kobj_unregister);
+	if (sbi->s_kobj.state_in_sysfs) {
+		kobject_del(&sbi->s_kobj);
+		kobject_put(&sbi->s_kobj);
+		wait_for_completion(&sbi->s_kobj_unregister);
+	}
 }
 
 int __init erofs_init_sysfs(void)

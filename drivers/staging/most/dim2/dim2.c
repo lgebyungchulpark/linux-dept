@@ -8,7 +8,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
-#include <linux/of_platform.h>
 #include <linux/printk.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -21,6 +20,7 @@
 #include <linux/sched.h>
 #include <linux/kthread.h>
 #include <linux/most.h>
+#include <linux/of.h>
 #include "hal.h"
 #include "errors.h"
 #include "sysfs.h"
@@ -44,9 +44,6 @@ module_param(fcnt, byte, 0000);
 MODULE_PARM_DESC(fcnt, "Num of frames per sub-buffer for sync channels as a power of 2");
 
 static DEFINE_SPINLOCK(dim_lock);
-
-static void dim2_tasklet_fn(unsigned long data);
-static DECLARE_TASKLET_OLD(dim2_tasklet, dim2_tasklet_fn);
 
 /**
  * struct hdm_channel - private structure to keep channel specific data
@@ -111,7 +108,10 @@ struct dim2_platform_data {
 	u8 fcnt;
 };
 
-#define iface_to_hdm(iface) container_of(iface, struct dim2_hdm, most_iface)
+static inline struct dim2_hdm *iface_to_hdm(struct most_interface *iface)
+{
+	return container_of(iface, struct dim2_hdm, most_iface);
+}
 
 /* Macro to identify a network status message */
 #define PACKET_IS_NET_INFO(p)  \
@@ -164,7 +164,7 @@ static int try_start_dim_transfer(struct hdm_channel *hdm_ch)
 	struct list_head *head = &hdm_ch->pending_list;
 	struct mbo *mbo;
 	unsigned long flags;
-	struct dim_ch_state_t st;
+	struct dim_ch_state st;
 
 	BUG_ON(!hdm_ch);
 	BUG_ON(!hdm_ch->is_initialized);
@@ -262,7 +262,7 @@ static void retrieve_netinfo(struct dim2_hdm *dev, struct mbo *mbo)
 static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 {
 	struct hdm_channel *hdm_ch = dev->hch + ch_idx;
-	struct dim_ch_state_t st;
+	struct dim_ch_state st;
 	struct list_head *head;
 	struct mbo *mbo;
 	int done_buffers;
@@ -361,15 +361,9 @@ static irqreturn_t dim2_mlb_isr(int irq, void *_dev)
 	return IRQ_HANDLED;
 }
 
-/**
- * dim2_tasklet_fn - tasklet function
- * @data: private data
- *
- * Service each initialized channel, if needed
- */
-static void dim2_tasklet_fn(unsigned long data)
+static irqreturn_t dim2_task_irq(int irq, void *_dev)
 {
-	struct dim2_hdm *dev = (struct dim2_hdm *)data;
+	struct dim2_hdm *dev = _dev;
 	unsigned long flags;
 	int ch_idx;
 
@@ -385,6 +379,8 @@ static void dim2_tasklet_fn(unsigned long data)
 		while (!try_start_dim_transfer(dev->hch + ch_idx))
 			continue;
 	}
+
+	return IRQ_HANDLED;
 }
 
 /**
@@ -392,8 +388,8 @@ static void dim2_tasklet_fn(unsigned long data)
  * @irq: irq number
  * @_dev: private data
  *
- * Acknowledge the interrupt and schedule a tasklet to service channels.
- * Return IRQ_HANDLED.
+ * Acknowledge the interrupt and service each initialized channel,
+ * if needed, in task context.
  */
 static irqreturn_t dim2_ahb_isr(int irq, void *_dev)
 {
@@ -405,9 +401,7 @@ static irqreturn_t dim2_ahb_isr(int irq, void *_dev)
 	dim_service_ahb_int_irq(get_active_channels(dev, buffer));
 	spin_unlock_irqrestore(&dim_lock, flags);
 
-	dim2_tasklet.data = (unsigned long)dev;
-	tasklet_schedule(&dim2_tasklet);
-	return IRQ_HANDLED;
+	return IRQ_WAKE_THREAD;
 }
 
 /**
@@ -654,14 +648,12 @@ static int poison_channel(struct most_interface *most_iface, int ch_idx)
 	if (!hdm_ch->is_initialized)
 		return -EPERM;
 
-	tasklet_disable(&dim2_tasklet);
 	spin_lock_irqsave(&dim_lock, flags);
 	hal_ret = dim_destroy_channel(&hdm_ch->ch);
 	hdm_ch->is_initialized = false;
 	if (ch_idx == dev->atx_idx)
 		dev->atx_idx = -1;
 	spin_unlock_irqrestore(&dim_lock, flags);
-	tasklet_enable(&dim2_tasklet);
 	if (hal_ret != DIM_NO_ERROR) {
 		pr_err("HAL Failed to close channel %s\n", hdm_ch->name);
 		ret = -EFAULT;
@@ -786,8 +778,7 @@ static int dim2_probe(struct platform_device *pdev)
 		goto err_free_dev;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dev->io_base = devm_ioremap_resource(&pdev->dev, res);
+	dev->io_base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(dev->io_base)) {
 		ret = PTR_ERR(dev->io_base);
 		goto err_free_dev;
@@ -821,8 +812,8 @@ static int dim2_probe(struct platform_device *pdev)
 		goto err_shutdown_dim;
 	}
 
-	ret = devm_request_irq(&pdev->dev, irq, dim2_ahb_isr, 0,
-			       "dim2_ahb0_int", dev);
+	ret = devm_request_threaded_irq(&pdev->dev, irq, dim2_ahb_isr,
+					dim2_task_irq, 0, "dim2_ahb0_int", dev);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to request ahb0_int irq %d\n", irq);
 		goto err_shutdown_dim;
@@ -917,13 +908,11 @@ err_free_dev:
  *
  * Unregister the interface from mostcore
  */
-static int dim2_remove(struct platform_device *pdev)
+static void dim2_remove(struct platform_device *pdev)
 {
 	struct dim2_hdm *dev = platform_get_drvdata(pdev);
 
 	most_deregister_interface(&dev->most_iface);
-
-	return 0;
 }
 
 /* platform specific functions [[ */
@@ -997,7 +986,6 @@ static int rcar_gen2_enable(struct platform_device *pdev)
 		/* PLL */
 		writel(0x04, dev->io_base + 0x600);
 	}
-
 
 	/* BBCR = 0b11 */
 	writel(0x03, dev->io_base + 0x500);

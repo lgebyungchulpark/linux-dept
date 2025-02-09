@@ -17,8 +17,8 @@
 #define GMAP_NOTIFY_MPROT	0x1
 
 /* Status bits only for huge segment entries */
-#define _SEGMENT_ENTRY_GMAP_IN		0x8000	/* invalidation notify bit */
-#define _SEGMENT_ENTRY_GMAP_UC		0x4000	/* dirty (migration) */
+#define _SEGMENT_ENTRY_GMAP_IN		0x0800	/* invalidation notify bit */
+#define _SEGMENT_ENTRY_GMAP_UC		0x0002	/* dirty (migration) */
 
 /**
  * struct gmap_struct - guest address space
@@ -107,9 +107,6 @@ void gmap_remove(struct gmap *gmap);
 struct gmap *gmap_get(struct gmap *gmap);
 void gmap_put(struct gmap *gmap);
 
-void gmap_enable(struct gmap *gmap);
-void gmap_disable(struct gmap *gmap);
-struct gmap *gmap_get_enabled(void);
 int gmap_map_segment(struct gmap *gmap, unsigned long from,
 		     unsigned long to, unsigned long len);
 int gmap_unmap_segment(struct gmap *gmap, unsigned long to, unsigned long len);
@@ -146,6 +143,43 @@ int gmap_mprotect_notify(struct gmap *, unsigned long start,
 
 void gmap_sync_dirty_log_pmd(struct gmap *gmap, unsigned long dirty_bitmap[4],
 			     unsigned long gaddr, unsigned long vmaddr);
-int gmap_mark_unmergeable(void);
-void s390_reset_acc(struct mm_struct *mm);
+int s390_disable_cow_sharing(void);
+void s390_unlist_old_asce(struct gmap *gmap);
+int s390_replace_asce(struct gmap *gmap);
+void s390_uv_destroy_pfns(unsigned long count, unsigned long *pfns);
+int __s390_uv_destroy_range(struct mm_struct *mm, unsigned long start,
+			    unsigned long end, bool interruptible);
+
+/**
+ * s390_uv_destroy_range - Destroy a range of pages in the given mm.
+ * @mm: the mm on which to operate on
+ * @start: the start of the range
+ * @end: the end of the range
+ *
+ * This function will call cond_sched, so it should not generate stalls, but
+ * it will otherwise only return when it completed.
+ */
+static inline void s390_uv_destroy_range(struct mm_struct *mm, unsigned long start,
+					 unsigned long end)
+{
+	(void)__s390_uv_destroy_range(mm, start, end, false);
+}
+
+/**
+ * s390_uv_destroy_range_interruptible - Destroy a range of pages in the
+ * given mm, but stop when a fatal signal is received.
+ * @mm: the mm on which to operate on
+ * @start: the start of the range
+ * @end: the end of the range
+ *
+ * This function will call cond_sched, so it should not generate stalls. If
+ * a fatal signal is received, it will return with -EINTR immediately,
+ * without finishing destroying the whole range. Upon successful
+ * completion, 0 is returned.
+ */
+static inline int s390_uv_destroy_range_interruptible(struct mm_struct *mm, unsigned long start,
+						      unsigned long end)
+{
+	return __s390_uv_destroy_range(mm, start, end, true);
+}
 #endif /* _ASM_S390_GMAP_H */

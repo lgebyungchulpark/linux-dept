@@ -54,7 +54,7 @@
 &i2c0 {
 	status = "okay";
 
-	i2c-switch@77 {
+	i2c-mux@77 {
 		compatible = "nxp,pca9547";
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -94,9 +94,6 @@
 			fan-temperature-ctrlr@18 {
 				compatible = "ti,amc6821";
 				reg = <0x18>;
-				cooling-min-state = <0>;
-				cooling-max-state = <9>;
-				#cooling-cells = <2>;
 			};
 		};
 

@@ -16,13 +16,14 @@
 #include <linux/completion.h>
 #include <linux/spinlock.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/workqueue.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/platform_device.h>
 
 #include <asm/io.h>
 #include <asm/pmi.h>
-#include <asm/prom.h>
 
 struct pmi_data {
 	struct list_head	handler;
@@ -172,7 +173,7 @@ out:
 	return rc;
 }
 
-static int pmi_of_remove(struct platform_device *dev)
+static void pmi_of_remove(struct platform_device *dev)
 {
 	struct pmi_handler *handler, *tmp;
 
@@ -188,8 +189,6 @@ static int pmi_of_remove(struct platform_device *dev)
 
 	kfree(data);
 	data = NULL;
-
-	return 0;
 }
 
 static struct platform_driver pmi_of_platform_driver = {

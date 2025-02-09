@@ -26,6 +26,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/random.h>
 #include <linux/slab.h>
 
@@ -196,8 +197,8 @@ static int mpu3050_start_sampling(struct mpu3050 *mpu3050)
 	int i;
 
 	/* Reset */
-	ret = regmap_update_bits(mpu3050->map, MPU3050_PWR_MGM,
-				 MPU3050_PWR_MGM_RESET, MPU3050_PWR_MGM_RESET);
+	ret = regmap_set_bits(mpu3050->map, MPU3050_PWR_MGM,
+			      MPU3050_PWR_MGM_RESET);
 	if (ret)
 		return ret;
 
@@ -512,12 +513,9 @@ static irqreturn_t mpu3050_trigger_handler(int irq, void *p)
 				 "FIFO overflow! Emptying and resetting FIFO\n");
 			fifo_overflow = true;
 			/* Reset and enable the FIFO */
-			ret = regmap_update_bits(mpu3050->map,
-						 MPU3050_USR_CTRL,
-						 MPU3050_USR_CTRL_FIFO_EN |
-						 MPU3050_USR_CTRL_FIFO_RST,
-						 MPU3050_USR_CTRL_FIFO_EN |
-						 MPU3050_USR_CTRL_FIFO_RST);
+			ret = regmap_set_bits(mpu3050->map, MPU3050_USR_CTRL,
+					      MPU3050_USR_CTRL_FIFO_EN |
+					      MPU3050_USR_CTRL_FIFO_RST);
 			if (ret) {
 				dev_info(mpu3050->dev, "error resetting FIFO\n");
 				goto out_trigger_unlock;
@@ -798,10 +796,8 @@ static int mpu3050_hw_init(struct mpu3050 *mpu3050)
 	u64 otp;
 
 	/* Reset */
-	ret = regmap_update_bits(mpu3050->map,
-				 MPU3050_PWR_MGM,
-				 MPU3050_PWR_MGM_RESET,
-				 MPU3050_PWR_MGM_RESET);
+	ret = regmap_set_bits(mpu3050->map, MPU3050_PWR_MGM,
+			      MPU3050_PWR_MGM_RESET);
 	if (ret)
 		return ret;
 
@@ -871,9 +867,10 @@ static int mpu3050_power_up(struct mpu3050 *mpu3050)
 	msleep(200);
 
 	/* Take device out of sleep mode */
-	ret = regmap_update_bits(mpu3050->map, MPU3050_PWR_MGM,
-				 MPU3050_PWR_MGM_SLEEP, 0);
+	ret = regmap_clear_bits(mpu3050->map, MPU3050_PWR_MGM,
+				MPU3050_PWR_MGM_SLEEP);
 	if (ret) {
+		regulator_bulk_disable(ARRAY_SIZE(mpu3050->regs), mpu3050->regs);
 		dev_err(mpu3050->dev, "error setting power mode\n");
 		return ret;
 	}
@@ -893,8 +890,8 @@ static int mpu3050_power_down(struct mpu3050 *mpu3050)
 	 * then we would be wasting power unless we go to sleep mode
 	 * first.
 	 */
-	ret = regmap_update_bits(mpu3050->map, MPU3050_PWR_MGM,
-				 MPU3050_PWR_MGM_SLEEP, MPU3050_PWR_MGM_SLEEP);
+	ret = regmap_set_bits(mpu3050->map, MPU3050_PWR_MGM,
+			      MPU3050_PWR_MGM_SLEEP);
 	if (ret)
 		dev_err(mpu3050->dev, "error putting to sleep\n");
 
@@ -937,7 +934,7 @@ static irqreturn_t mpu3050_irq_thread(int irq, void *p)
 	if (!(val & MPU3050_INT_STATUS_RAW_RDY))
 		return IRQ_NONE;
 
-	iio_trigger_poll_chained(p);
+	iio_trigger_poll_nested(p);
 
 	return IRQ_HANDLED;
 }
@@ -995,11 +992,9 @@ static int mpu3050_drdy_trigger_set_state(struct iio_trigger *trig,
 			return ret;
 
 		/* Reset and enable the FIFO */
-		ret = regmap_update_bits(mpu3050->map, MPU3050_USR_CTRL,
-					 MPU3050_USR_CTRL_FIFO_EN |
-					 MPU3050_USR_CTRL_FIFO_RST,
-					 MPU3050_USR_CTRL_FIFO_EN |
-					 MPU3050_USR_CTRL_FIFO_RST);
+		ret = regmap_set_bits(mpu3050->map, MPU3050_USR_CTRL,
+				      MPU3050_USR_CTRL_FIFO_EN |
+				      MPU3050_USR_CTRL_FIFO_RST);
 		if (ret)
 			return ret;
 
@@ -1050,6 +1045,7 @@ static const struct iio_trigger_ops mpu3050_trigger_ops = {
 static int mpu3050_trigger_probe(struct iio_dev *indio_dev, int irq)
 {
 	struct mpu3050 *mpu3050 = iio_priv(indio_dev);
+	struct device *dev = mpu3050->dev;
 	unsigned long irq_trig;
 	int ret;
 
@@ -1061,15 +1057,14 @@ static int mpu3050_trigger_probe(struct iio_dev *indio_dev, int irq)
 		return -ENOMEM;
 
 	/* Check if IRQ is open drain */
-	if (of_property_read_bool(mpu3050->dev->of_node, "drive-open-drain"))
-		mpu3050->irq_opendrain = true;
+	mpu3050->irq_opendrain = device_property_read_bool(dev, "drive-open-drain");
 
-	irq_trig = irqd_get_trigger_type(irq_get_irq_data(irq));
 	/*
 	 * Configure the interrupt generator hardware to supply whatever
 	 * the interrupt is configured for, edges low/high level low/high,
 	 * we can provide it all.
 	 */
+	irq_trig = irq_get_trigger_type(irq);
 	switch (irq_trig) {
 	case IRQF_TRIGGER_RISING:
 		dev_info(&indio_dev->dev,
@@ -1118,13 +1113,12 @@ static int mpu3050_trigger_probe(struct iio_dev *indio_dev, int irq)
 				   mpu3050->trig->name,
 				   mpu3050->trig);
 	if (ret) {
-		dev_err(mpu3050->dev,
-			"can't get IRQ %d, error %d\n", irq, ret);
+		dev_err(dev, "can't get IRQ %d, error %d\n", irq, ret);
 		return ret;
 	}
 
 	mpu3050->irq = irq;
-	mpu3050->trig->dev.parent = mpu3050->dev;
+	mpu3050->trig->dev.parent = dev;
 	mpu3050->trig->ops = &mpu3050_trigger_ops;
 	iio_trigger_set_drvdata(mpu3050->trig, indio_dev);
 
@@ -1261,9 +1255,8 @@ err_power_down:
 
 	return ret;
 }
-EXPORT_SYMBOL(mpu3050_common_probe);
 
-int mpu3050_common_remove(struct device *dev)
+void mpu3050_common_remove(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct mpu3050 *mpu3050 = iio_priv(indio_dev);
@@ -1276,12 +1269,8 @@ int mpu3050_common_remove(struct device *dev)
 		free_irq(mpu3050->irq, mpu3050);
 	iio_device_unregister(indio_dev);
 	mpu3050_power_down(mpu3050);
-
-	return 0;
 }
-EXPORT_SYMBOL(mpu3050_common_remove);
 
-#ifdef CONFIG_PM
 static int mpu3050_runtime_suspend(struct device *dev)
 {
 	return mpu3050_power_down(iio_priv(dev_get_drvdata(dev)));
@@ -1291,16 +1280,9 @@ static int mpu3050_runtime_resume(struct device *dev)
 {
 	return mpu3050_power_up(iio_priv(dev_get_drvdata(dev)));
 }
-#endif /* CONFIG_PM */
 
-const struct dev_pm_ops mpu3050_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(mpu3050_runtime_suspend,
-			   mpu3050_runtime_resume, NULL)
-};
-EXPORT_SYMBOL(mpu3050_dev_pm_ops);
-
+DEFINE_RUNTIME_DEV_PM_OPS(mpu3050_dev_pm_ops, mpu3050_runtime_suspend,
+			  mpu3050_runtime_resume, NULL);
 MODULE_AUTHOR("Linus Walleij");
 MODULE_DESCRIPTION("MPU3050 gyroscope driver");
 MODULE_LICENSE("GPL");

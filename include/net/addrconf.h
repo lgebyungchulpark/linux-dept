@@ -6,8 +6,11 @@
 #define RTR_SOLICITATION_INTERVAL	(4*HZ)
 #define RTR_SOLICITATION_MAX_INTERVAL	(3600*HZ)	/* 1 hour */
 
-#define TEMP_VALID_LIFETIME		(7*86400)
-#define TEMP_PREFERRED_LIFETIME		(86400)
+#define MIN_VALID_LIFETIME		(2*3600)	/* 2 hours */
+
+#define TEMP_VALID_LIFETIME		(7*86400)       /* 1 week */
+#define TEMP_PREFERRED_LIFETIME		(86400)         /* 24 hours */
+#define REGEN_MIN_ADVANCE		(2)             /* 2 seconds */
 #define REGEN_MAX_RETRY			(3)
 #define MAX_DESYNC_FACTOR		(600)
 
@@ -29,23 +32,35 @@ struct prefix_info {
 	__u8			length;
 	__u8			prefix_len;
 
+	union __packed {
+		__u8		flags;
+		struct __packed {
 #if defined(__BIG_ENDIAN_BITFIELD)
-	__u8			onlink : 1,
-			 	autoconf : 1,
-				reserved : 6;
+			__u8	onlink : 1,
+				autoconf : 1,
+				routeraddr : 1,
+				preferpd : 1,
+				reserved : 4;
 #elif defined(__LITTLE_ENDIAN_BITFIELD)
-	__u8			reserved : 6,
+			__u8	reserved : 4,
+				preferpd : 1,
+				routeraddr : 1,
 				autoconf : 1,
 				onlink : 1;
 #else
 #error "Please fix <asm/byteorder.h>"
 #endif
+		};
+	};
 	__be32			valid;
 	__be32			prefered;
 	__be32			reserved2;
 
 	struct in6_addr		prefix;
 };
+
+/* rfc4861 4.6.2: IPv6 PIO is 32 bytes in size */
+static_assert(sizeof(struct prefix_info) == 32);
 
 #include <linux/ipv6.h>
 #include <linux/netdevice.h>
@@ -61,6 +76,8 @@ struct in6_validator_info {
 struct ifa6_config {
 	const struct in6_addr	*pfx;
 	unsigned int		plen;
+
+	u8			ifa_proto;
 
 	const struct in6_addr	*peer_pfx;
 
@@ -107,8 +124,6 @@ struct inet6_ifaddr *ipv6_get_ifaddr(struct net *net,
 int ipv6_dev_get_saddr(struct net *net, const struct net_device *dev,
 		       const struct in6_addr *daddr, unsigned int srcprefs,
 		       struct in6_addr *saddr);
-int __ipv6_get_lladdr(struct inet6_dev *idev, struct in6_addr *addr,
-		      u32 banned_flags);
 int ipv6_get_lladdr(struct net_device *dev, struct in6_addr *addr,
 		    u32 banned_flags);
 bool inet_rcv_saddr_equal(const struct sock *sk, const struct sock *sk2,
@@ -172,10 +187,12 @@ static inline int addrconf_ifid_eui48(u8 *eui, struct net_device *dev)
 	return 0;
 }
 
+#define INFINITY_LIFE_TIME 0xFFFFFFFF
+
 static inline unsigned long addrconf_timeout_fixup(u32 timeout,
 						   unsigned int unit)
 {
-	if (timeout == 0xffffffff)
+	if (timeout == INFINITY_LIFE_TIME)
 		return ~0UL;
 
 	/*
@@ -221,7 +238,7 @@ int ipv6_sock_mc_drop(struct sock *sk, int ifindex,
 		      const struct in6_addr *addr);
 void __ipv6_sock_mc_close(struct sock *sk);
 void ipv6_sock_mc_close(struct sock *sk);
-bool inet6_mc_check(struct sock *sk, const struct in6_addr *mc_addr,
+bool inet6_mc_check(const struct sock *sk, const struct in6_addr *mc_addr,
 		    const struct in6_addr *src_addr);
 
 int ipv6_dev_mc_inc(struct net_device *dev, const struct in6_addr *addr);
@@ -316,7 +333,7 @@ static inline struct inet6_dev *__in6_dev_get(const struct net_device *dev)
 /**
  * __in6_dev_stats_get - get inet6_dev pointer for stats
  * @dev: network device
- * @skb: skb for original incoming interface if neeeded
+ * @skb: skb for original incoming interface if needed
  *
  * Caller must hold rcu_read_lock or RTNL, because this function
  * does not take a reference on the inet6_dev.
@@ -403,7 +420,10 @@ static inline bool ip6_ignore_linkdown(const struct net_device *dev)
 {
 	const struct inet6_dev *idev = __in6_dev_get(dev);
 
-	return !!idev->cnf.ignore_routes_with_linkdown;
+	if (unlikely(!idev))
+		return true;
+
+	return !!READ_ONCE(idev->cnf.ignore_routes_with_linkdown);
 }
 
 void inet6_ifa_finish_destroy(struct inet6_ifaddr *ifp);
@@ -424,6 +444,10 @@ static inline void in6_ifa_hold(struct inet6_ifaddr *ifp)
 	refcount_inc(&ifp->refcnt);
 }
 
+static inline bool in6_ifa_hold_safe(struct inet6_ifaddr *ifp)
+{
+	return refcount_inc_not_zero(&ifp->refcnt);
+}
 
 /*
  *	compute link-local solicited-node multicast address

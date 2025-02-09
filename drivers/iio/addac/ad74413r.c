@@ -4,11 +4,13 @@
  * Author: Cosmin Tanislav <cosmin.tanislav@analog.com>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/bitfield.h>
+#include <linux/cleanup.h>
 #include <linux/crc8.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
@@ -39,13 +41,14 @@ struct ad74413r_chip_info {
 
 struct ad74413r_channel_config {
 	u32		func;
+	u32		drive_strength;
 	bool		gpo_comparator;
 	bool		initialized;
 };
 
 struct ad74413r_channels {
-	struct iio_chan_spec	*channels;
-	unsigned int		num_channels;
+	const struct iio_chan_spec	*channels;
+	unsigned int			num_channels;
 };
 
 struct ad74413r_state {
@@ -58,7 +61,7 @@ struct ad74413r_state {
 	unsigned int			num_gpo_gpios;
 	unsigned int			num_comparator_gpios;
 	u32				sense_resistor_ohms;
-
+	int				refin_reg_uv;
 	/*
 	 * Synchronize consecutive operations when doing a one-shot
 	 * conversion and when updating the ADC samples SPI message.
@@ -67,7 +70,6 @@ struct ad74413r_state {
 
 	const struct ad74413r_chip_info	*chip_info;
 	struct spi_device		*spi;
-	struct regulator		*refin_reg;
 	struct regmap			*regmap;
 	struct device			*dev;
 	struct iio_trigger		*trig;
@@ -77,13 +79,13 @@ struct ad74413r_state {
 	struct spi_transfer	adc_samples_xfer[AD74413R_CHANNEL_MAX + 1];
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
 	struct {
 		u8 rx_buf[AD74413R_FRAME_SIZE * AD74413R_CHANNEL_MAX];
 		s64 timestamp;
-	} adc_samples_buf ____cacheline_aligned;
+	} adc_samples_buf __aligned(IIO_DMA_MINALIGN);
 
 	u8	adc_samples_tx_buf[AD74413R_FRAME_SIZE * AD74413R_CHANNEL_MAX];
 	u8	reg_tx_buf[AD74413R_FRAME_SIZE];
@@ -98,6 +100,7 @@ struct ad74413r_state {
 #define AD74413R_REG_ADC_CONFIG_X(x)		(0x05 + (x))
 #define AD74413R_ADC_CONFIG_RANGE_MASK		GENMASK(7, 5)
 #define AD74413R_ADC_CONFIG_REJECTION_MASK	GENMASK(4, 3)
+#define AD74413R_ADC_CONFIG_CH_200K_TO_GND	BIT(2)
 #define AD74413R_ADC_RANGE_10V			0b000
 #define AD74413R_ADC_RANGE_2P5V_EXT_POW		0b001
 #define AD74413R_ADC_RANGE_2P5V_INT_POW		0b010
@@ -110,6 +113,7 @@ struct ad74413r_state {
 #define AD74413R_REG_DIN_CONFIG_X(x)	(0x09 + (x))
 #define AD74413R_DIN_DEBOUNCE_MASK	GENMASK(4, 0)
 #define AD74413R_DIN_DEBOUNCE_LEN	BIT(5)
+#define AD74413R_DIN_SINK_MASK		GENMASK(9, 6)
 
 #define AD74413R_REG_DAC_CODE_X(x)	(0x16 + (x))
 #define AD74413R_DAC_CODE_MAX		GENMASK(12, 0)
@@ -134,7 +138,6 @@ struct ad74413r_state {
 #define AD74413R_CH_EN_MASK(x)		BIT(x)
 
 #define AD74413R_REG_DIN_COMP_OUT		0x25
-#define AD74413R_DIN_COMP_OUT_SHIFT_X(x)	x
 
 #define AD74413R_REG_ADC_RESULT_X(x)	(0x26 + (x))
 #define AD74413R_ADC_RESULT_MAX		GENMASK(15, 0)
@@ -261,6 +264,18 @@ static int ad74413r_set_comp_debounce(struct ad74413r_state *st,
 				  val);
 }
 
+static int ad74413r_set_comp_drive_strength(struct ad74413r_state *st,
+					    unsigned int offset,
+					    unsigned int strength)
+{
+	strength = min(strength, 1800U);
+
+	return regmap_update_bits(st->regmap, AD74413R_REG_DIN_CONFIG_X(offset),
+				  AD74413R_DIN_SINK_MASK,
+				  FIELD_PREP(AD74413R_DIN_SINK_MASK, strength / 120));
+}
+
+
 static void ad74413r_gpio_set(struct gpio_chip *chip,
 			      unsigned int offset, int val)
 {
@@ -285,10 +300,10 @@ static void ad74413r_gpio_set_multiple(struct gpio_chip *chip,
 	struct ad74413r_state *st = gpiochip_get_data(chip);
 	unsigned long real_mask = 0;
 	unsigned long real_bits = 0;
-	unsigned int offset = 0;
+	unsigned int offset;
 	int ret;
 
-	for_each_set_bit_from(offset, mask, AD74413R_CHANNEL_MAX) {
+	for_each_set_bit(offset, mask, chip->ngpio) {
 		unsigned int real_offset = st->gpo_gpio_offsets[offset];
 
 		ret = ad74413r_set_gpo_config(st, real_offset,
@@ -316,7 +331,7 @@ static int ad74413r_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	if (ret)
 		return ret;
 
-	status &= AD74413R_DIN_COMP_OUT_SHIFT_X(real_offset);
+	status &= BIT(real_offset);
 
 	return status ? 1 : 0;
 }
@@ -326,7 +341,7 @@ static int ad74413r_gpio_get_multiple(struct gpio_chip *chip,
 				      unsigned long *bits)
 {
 	struct ad74413r_state *st = gpiochip_get_data(chip);
-	unsigned int offset = 0;
+	unsigned int offset;
 	unsigned int val;
 	int ret;
 
@@ -334,11 +349,10 @@ static int ad74413r_gpio_get_multiple(struct gpio_chip *chip,
 	if (ret)
 		return ret;
 
-	for_each_set_bit_from(offset, mask, AD74413R_CHANNEL_MAX) {
+	for_each_set_bit(offset, mask, chip->ngpio) {
 		unsigned int real_offset = st->comp_gpio_offsets[offset];
 
-		if (val & BIT(real_offset))
-			*bits |= offset;
+		__assign_bit(offset, bits, val & BIT(real_offset));
 	}
 
 	return ret;
@@ -393,7 +407,18 @@ static int ad74413r_gpio_set_comp_config(struct gpio_chip *chip,
 
 static int ad74413r_reset(struct ad74413r_state *st)
 {
+	struct gpio_desc *reset_gpio;
 	int ret;
+
+	reset_gpio = devm_gpiod_get_optional(st->dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(reset_gpio))
+		return PTR_ERR(reset_gpio);
+
+	if (reset_gpio) {
+		fsleep(50);
+		gpiod_set_value_cansleep(reset_gpio, 0);
+		return 0;
+	}
 
 	ret = regmap_write(st->regmap, AD74413R_REG_CMD_KEY,
 			   AD74413R_CMD_KEY_RESET1);
@@ -418,9 +443,38 @@ static int ad74413r_set_channel_dac_code(struct ad74413r_state *st,
 static int ad74413r_set_channel_function(struct ad74413r_state *st,
 					 unsigned int channel, u8 func)
 {
-	return regmap_update_bits(st->regmap,
+	int ret;
+
+	ret = regmap_update_bits(st->regmap,
+				 AD74413R_REG_CH_FUNC_SETUP_X(channel),
+				 AD74413R_CH_FUNC_SETUP_MASK,
+				 CH_FUNC_HIGH_IMPEDANCE);
+	if (ret)
+		return ret;
+
+	/* Set DAC code to 0 prior to changing channel function */
+	ret = ad74413r_set_channel_dac_code(st, channel, 0);
+	if (ret)
+		return ret;
+
+	/* Delay required before transition to new desired mode */
+	usleep_range(130, 150);
+
+	ret = regmap_update_bits(st->regmap,
 				  AD74413R_REG_CH_FUNC_SETUP_X(channel),
 				  AD74413R_CH_FUNC_SETUP_MASK, func);
+	if (ret)
+		return ret;
+
+	/* Delay required before updating the new DAC code */
+	usleep_range(150, 170);
+
+	if (func == CH_FUNC_CURRENT_INPUT_LOOP_POWER)
+		ret = regmap_set_bits(st->regmap,
+				      AD74413R_REG_ADC_CONFIG_X(channel),
+				      AD74413R_ADC_CONFIG_CH_200K_TO_GND);
+
+	return ret;
 }
 
 static int ad74413r_set_adc_conv_seq(struct ad74413r_state *st,
@@ -610,7 +664,7 @@ static int ad74413r_get_output_voltage_scale(struct ad74413r_state *st,
 static int ad74413r_get_output_current_scale(struct ad74413r_state *st,
 					     int *val, int *val2)
 {
-	*val = regulator_get_voltage(st->refin_reg);
+	*val = st->refin_reg_uv;
 	*val2 = st->sense_resistor_ohms * AD74413R_DAC_CODE_MAX * 1000;
 
 	return IIO_VAL_FRACTIONAL;
@@ -673,8 +727,8 @@ static int ad74413r_get_input_current_scale(struct ad74413r_state *st,
 	return IIO_VAL_FRACTIONAL;
 }
 
-static int ad74413_get_input_current_offset(struct ad74413r_state *st,
-					    unsigned int channel, int *val)
+static int ad74413r_get_input_current_offset(struct ad74413r_state *st,
+					     unsigned int channel, int *val)
 {
 	unsigned int range;
 	int voltage_range;
@@ -693,7 +747,7 @@ static int ad74413_get_input_current_offset(struct ad74413r_state *st,
 	if (ret)
 		return ret;
 
-	*val = voltage_offset * AD74413R_ADC_RESULT_MAX / voltage_range;
+	*val = voltage_offset * (int)AD74413R_ADC_RESULT_MAX / voltage_range;
 
 	return IIO_VAL_INT;
 }
@@ -811,19 +865,12 @@ static int ad74413r_get_single_adc_result(struct iio_dev *indio_dev,
 					  unsigned int channel, int *val)
 {
 	struct ad74413r_state *st = iio_priv(indio_dev);
-	int ret;
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
-
-	mutex_lock(&st->lock);
-	ret = _ad74413r_get_single_adc_result(st, channel, val);
-	mutex_unlock(&st->lock);
-
-	iio_device_release_direct_mode(indio_dev);
-
-	return ret;
+	iio_device_claim_direct_scoped(return -EBUSY, indio_dev) {
+		guard(mutex)(&st->lock);
+		return _ad74413r_get_single_adc_result(st, channel, val);
+	}
+	unreachable();
 }
 
 static void ad74413r_adc_to_resistance_result(int adc_result, int *val)
@@ -840,12 +887,12 @@ static int ad74413r_update_scan_mode(struct iio_dev *indio_dev,
 {
 	struct ad74413r_state *st = iio_priv(indio_dev);
 	struct spi_transfer *xfer = st->adc_samples_xfer;
-	u8 *rx_buf = &st->adc_samples_buf.rx_buf[-1 * AD74413R_FRAME_SIZE];
+	u8 *rx_buf = st->adc_samples_buf.rx_buf;
 	u8 *tx_buf = st->adc_samples_tx_buf;
 	unsigned int channel;
 	int ret = -EINVAL;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	spi_message_init(&st->adc_samples_msg);
 	st->adc_active_channels = 0;
@@ -853,11 +900,11 @@ static int ad74413r_update_scan_mode(struct iio_dev *indio_dev,
 	for_each_clear_bit(channel, active_scan_mask, AD74413R_CHANNEL_MAX) {
 		ret = ad74413r_set_adc_channel_enable(st, channel, false);
 		if (ret)
-			goto out;
+			return ret;
 	}
 
 	if (*active_scan_mask == 0)
-		goto out;
+		return ret;
 
 	/*
 	 * The read select register is used to select which register's value
@@ -875,7 +922,7 @@ static int ad74413r_update_scan_mode(struct iio_dev *indio_dev,
 	for_each_set_bit(channel, active_scan_mask, AD74413R_CHANNEL_MAX) {
 		ret = ad74413r_set_adc_channel_enable(st, channel, true);
 		if (ret)
-			goto out;
+			return ret;
 
 		st->adc_active_channels++;
 
@@ -894,9 +941,10 @@ static int ad74413r_update_scan_mode(struct iio_dev *indio_dev,
 
 		spi_message_add_tail(xfer, &st->adc_samples_msg);
 
-		xfer++;
 		tx_buf += AD74413R_FRAME_SIZE;
-		rx_buf += AD74413R_FRAME_SIZE;
+		if (xfer != st->adc_samples_xfer)
+			rx_buf += AD74413R_FRAME_SIZE;
+		xfer++;
 	}
 
 	xfer->rx_buf = rx_buf;
@@ -905,11 +953,7 @@ static int ad74413r_update_scan_mode(struct iio_dev *indio_dev,
 	xfer->cs_change = 0;
 
 	spi_message_add_tail(xfer, &st->adc_samples_msg);
-
-out:
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return 0;
 }
 
 static int ad74413r_buffer_postenable(struct iio_dev *indio_dev)
@@ -958,7 +1002,7 @@ static int ad74413r_read_raw(struct iio_dev *indio_dev,
 			return ad74413r_get_input_voltage_offset(st,
 				chan->channel, val);
 		case IIO_CURRENT:
-			return ad74413_get_input_current_offset(st,
+			return ad74413r_get_input_current_offset(st,
 				chan->channel, val);
 		default:
 			return -EINVAL;
@@ -974,7 +1018,7 @@ static int ad74413r_read_raw(struct iio_dev *indio_dev,
 
 		ret = ad74413r_get_single_adc_result(indio_dev, chan->channel,
 						     val);
-		if (ret)
+		if (ret < 0)
 			return ret;
 
 		ad74413r_adc_to_resistance_result(*val, val);
@@ -1087,29 +1131,34 @@ static const struct iio_info ad74413r_info = {
 	AD74413R_ADC_CHANNEL(IIO_CURRENT,  BIT(IIO_CHAN_INFO_SCALE)	\
 			     | BIT(IIO_CHAN_INFO_OFFSET))
 
-static struct iio_chan_spec ad74413r_voltage_output_channels[] = {
+static const struct iio_chan_spec ad74413r_voltage_output_channels[] = {
 	AD74413R_DAC_CHANNEL(IIO_VOLTAGE, BIT(IIO_CHAN_INFO_SCALE)),
 	AD74413R_ADC_CURRENT_CHANNEL,
 };
 
-static struct iio_chan_spec ad74413r_current_output_channels[] = {
+static const struct iio_chan_spec ad74413r_current_output_channels[] = {
 	AD74413R_DAC_CHANNEL(IIO_CURRENT, BIT(IIO_CHAN_INFO_SCALE)),
 	AD74413R_ADC_VOLTAGE_CHANNEL,
 };
 
-static struct iio_chan_spec ad74413r_voltage_input_channels[] = {
+static const struct iio_chan_spec ad74413r_voltage_input_channels[] = {
 	AD74413R_ADC_VOLTAGE_CHANNEL,
 };
 
-static struct iio_chan_spec ad74413r_current_input_channels[] = {
+static const struct iio_chan_spec ad74413r_current_input_channels[] = {
 	AD74413R_ADC_CURRENT_CHANNEL,
 };
 
-static struct iio_chan_spec ad74413r_resistance_input_channels[] = {
+static const struct iio_chan_spec ad74413r_current_input_loop_channels[] = {
+	AD74413R_DAC_CHANNEL(IIO_CURRENT, BIT(IIO_CHAN_INFO_SCALE)),
+	AD74413R_ADC_CURRENT_CHANNEL,
+};
+
+static const struct iio_chan_spec ad74413r_resistance_input_channels[] = {
 	AD74413R_ADC_CHANNEL(IIO_RESISTANCE, BIT(IIO_CHAN_INFO_PROCESSED)),
 };
 
-static struct iio_chan_spec ad74413r_digital_input_channels[] = {
+static const struct iio_chan_spec ad74413r_digital_input_channels[] = {
 	AD74413R_ADC_VOLTAGE_CHANNEL,
 };
 
@@ -1128,7 +1177,7 @@ static const struct ad74413r_channels ad74413r_channels_map[] = {
 	[CH_FUNC_CURRENT_OUTPUT] = AD74413R_CHANNELS(current_output),
 	[CH_FUNC_VOLTAGE_INPUT] = AD74413R_CHANNELS(voltage_input),
 	[CH_FUNC_CURRENT_INPUT_EXT_POWER] = AD74413R_CHANNELS(current_input),
-	[CH_FUNC_CURRENT_INPUT_LOOP_POWER] = AD74413R_CHANNELS(current_input),
+	[CH_FUNC_CURRENT_INPUT_LOOP_POWER] = AD74413R_CHANNELS(current_input_loop),
 	[CH_FUNC_RESISTANCE_INPUT] = AD74413R_CHANNELS(resistance_input),
 	[CH_FUNC_DIGITAL_INPUT_LOGIC] = AD74413R_CHANNELS(digital_input),
 	[CH_FUNC_DIGITAL_INPUT_LOOP_POWER] = AD74413R_CHANNELS(digital_input),
@@ -1183,6 +1232,9 @@ static int ad74413r_parse_channel_config(struct iio_dev *indio_dev,
 	config->gpo_comparator = fwnode_property_read_bool(channel_node,
 		"adi,gpo-comparator");
 
+	fwnode_property_read_u32(channel_node, "drive-strength-microamp",
+				 &config->drive_strength);
+
 	if (!config->gpo_comparator)
 		st->num_gpo_gpios++;
 
@@ -1196,28 +1248,23 @@ static int ad74413r_parse_channel_config(struct iio_dev *indio_dev,
 static int ad74413r_parse_channel_configs(struct iio_dev *indio_dev)
 {
 	struct ad74413r_state *st = iio_priv(indio_dev);
-	struct fwnode_handle *channel_node = NULL;
 	int ret;
 
-	fwnode_for_each_available_child_node(dev_fwnode(st->dev), channel_node) {
+	device_for_each_child_node_scoped(st->dev, channel_node) {
 		ret = ad74413r_parse_channel_config(indio_dev, channel_node);
 		if (ret)
-			goto put_channel_node;
+			return ret;
 	}
 
 	return 0;
-
-put_channel_node:
-	fwnode_handle_put(channel_node);
-
-	return ret;
 }
 
 static int ad74413r_setup_channels(struct iio_dev *indio_dev)
 {
 	struct ad74413r_state *st = iio_priv(indio_dev);
 	struct ad74413r_channel_config *config;
-	struct iio_chan_spec *channels, *chans;
+	const struct iio_chan_spec *chans;
+	struct iio_chan_spec *channels;
 	unsigned int i, num_chans, chan_i;
 	int ret;
 
@@ -1262,6 +1309,7 @@ static int ad74413r_setup_gpios(struct ad74413r_state *st)
 	unsigned int gpo_gpio_i = 0;
 	unsigned int i;
 	u8 gpo_config;
+	u32 strength;
 	int ret;
 
 	for (i = 0; i < AD74413R_CHANNEL_MAX; i++) {
@@ -1275,8 +1323,14 @@ static int ad74413r_setup_gpios(struct ad74413r_state *st)
 		}
 
 		if (config->func == CH_FUNC_DIGITAL_INPUT_LOGIC ||
-		    config->func == CH_FUNC_DIGITAL_INPUT_LOOP_POWER)
+		    config->func == CH_FUNC_DIGITAL_INPUT_LOOP_POWER) {
 			st->comp_gpio_offsets[comp_gpio_i++] = i;
+
+			strength = config->drive_strength;
+			ret = ad74413r_set_comp_drive_strength(st, i, strength);
+			if (ret)
+				return ret;
+		}
 
 		ret = ad74413r_set_gpo_config(st, i, gpo_config);
 		if (ret)
@@ -1284,11 +1338,6 @@ static int ad74413r_setup_gpios(struct ad74413r_state *st)
 	}
 
 	return 0;
-}
-
-static void ad74413r_regulator_disable(void *regulator)
-{
-	regulator_disable(regulator);
 }
 
 static int ad74413r_probe(struct spi_device *spi)
@@ -1305,8 +1354,14 @@ static int ad74413r_probe(struct spi_device *spi)
 
 	st->spi = spi;
 	st->dev = &spi->dev;
-	st->chip_info = device_get_match_data(&spi->dev);
-	mutex_init(&st->lock);
+	st->chip_info = spi_get_device_match_data(spi);
+	if (!st->chip_info)
+		return -EINVAL;
+
+	ret = devm_mutex_init(st->dev, &st->lock);
+	if (ret)
+		return ret;
+
 	init_completion(&st->adc_data_completion);
 
 	st->regmap = devm_regmap_init(st->dev, NULL, st,
@@ -1314,19 +1369,11 @@ static int ad74413r_probe(struct spi_device *spi)
 	if (IS_ERR(st->regmap))
 		return PTR_ERR(st->regmap);
 
-	st->refin_reg = devm_regulator_get(st->dev, "refin");
-	if (IS_ERR(st->refin_reg))
-		return dev_err_probe(st->dev, PTR_ERR(st->refin_reg),
-				     "Failed to get refin regulator\n");
-
-	ret = regulator_enable(st->refin_reg);
-	if (ret)
-		return ret;
-
-	ret = devm_add_action_or_reset(st->dev, ad74413r_regulator_disable,
-				       st->refin_reg);
-	if (ret)
-		return ret;
+	ret = devm_regulator_get_enable_read_voltage(st->dev, "refin");
+	if (ret < 0)
+		return dev_err_probe(st->dev, ret,
+				     "Failed to get refin regulator voltage\n");
+	st->refin_reg_uv = ret;
 
 	st->sense_resistor_ohms = 100000000;
 	device_property_read_u32(st->dev, "shunt-resistor-micro-ohms",
@@ -1458,12 +1505,20 @@ static const struct of_device_id ad74413r_dt_id[] = {
 };
 MODULE_DEVICE_TABLE(of, ad74413r_dt_id);
 
+static const struct spi_device_id ad74413r_spi_id[] = {
+	{ .name = "ad74412r", .driver_data = (kernel_ulong_t)&ad74412r_chip_info_data },
+	{ .name = "ad74413r", .driver_data = (kernel_ulong_t)&ad74413r_chip_info_data },
+	{}
+};
+MODULE_DEVICE_TABLE(spi, ad74413r_spi_id);
+
 static struct spi_driver ad74413r_driver = {
 	.driver = {
 		   .name = "ad74413r",
 		   .of_match_table = ad74413r_dt_id,
 	},
 	.probe = ad74413r_probe,
+	.id_table = ad74413r_spi_id,
 };
 
 module_driver(ad74413r_driver,

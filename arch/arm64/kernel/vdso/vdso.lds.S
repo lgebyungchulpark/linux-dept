@@ -11,6 +11,9 @@
 #include <linux/const.h>
 #include <asm/page.h>
 #include <asm/vdso.h>
+#include <asm/vdso/vsyscall.h>
+#include <asm-generic/vmlinux.lds.h>
+#include <vdso/datapage.h>
 
 OUTPUT_FORMAT("elf64-littleaarch64", "elf64-bigaarch64", "elf64-littleaarch64")
 OUTPUT_ARCH(aarch64)
@@ -18,10 +21,11 @@ OUTPUT_ARCH(aarch64)
 SECTIONS
 {
 	PROVIDE(_vdso_data = . - __VVAR_PAGES * PAGE_SIZE);
+	PROVIDE(_vdso_rng_data = _vdso_data + __VDSO_RND_DATA_OFFSET);
 #ifdef CONFIG_TIME_NS
 	PROVIDE(_timens_data = _vdso_data + PAGE_SIZE);
 #endif
-	. = VDSO_LBASE + SIZEOF_HEADERS;
+	. = SIZEOF_HEADERS;
 
 	.hash		: { *(.hash) }			:text
 	.gnu.hash	: { *(.gnu.hash) }
@@ -47,12 +51,30 @@ SECTIONS
 	PROVIDE (_etext = .);
 	PROVIDE (etext = .);
 
+	. = ALIGN(4);
+	.altinstructions : {
+		*(.altinstructions)
+	}
+
 	.dynamic	: { *(.dynamic) }		:text	:dynamic
 
-	.rodata		: { *(.rodata*) }		:text
+	.rela.dyn	: ALIGN(8) { *(.rela .rela*) }
+
+	.rodata		: {
+		*(.rodata*)
+		*(.got)
+		*(.got.plt)
+		*(.plt)
+		*(.plt.*)
+		*(.iplt)
+		*(.igot .igot.plt)
+	}						:text
 
 	_end = .;
 	PROVIDE(end = .);
+
+	DWARF_DEBUG
+	ELF_DETAILS
 
 	/DISCARD/	: {
 		*(.data .data.* .gnu.linkonce.d.* .sdata*)
@@ -83,6 +105,7 @@ VERSION
 		__kernel_gettimeofday;
 		__kernel_clock_gettime;
 		__kernel_clock_getres;
+		__kernel_getrandom;
 	local: *;
 	};
 }

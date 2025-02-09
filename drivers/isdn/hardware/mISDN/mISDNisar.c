@@ -22,6 +22,7 @@
 #define ISAR_REV	"2.1"
 
 MODULE_AUTHOR("Karsten Keil");
+MODULE_DESCRIPTION("mISDN driver for ISAR (Siemens PSB 7110) specific functions");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(ISAR_REV);
 
@@ -466,7 +467,7 @@ isar_rcv_frame(struct isar_ch *ch)
 		rcv_mbox(ch->is, ptr);
 		if (ch->is->cmsb & HDLC_FED) {
 			if (ch->bch.rx_skb->len < 3) { /* last 2 are the FCS */
-				pr_debug("%s: ISAR frame to short %d\n",
+				pr_debug("%s: ISAR frame too short %d\n",
 					 ch->is->name, ch->bch.rx_skb->len);
 				skb_trim(ch->bch.rx_skb, 0);
 				break;
@@ -542,7 +543,7 @@ isar_rcv_frame(struct isar_ch *ch)
 		rcv_mbox(ch->is, ptr);
 		if (ch->is->cmsb & HDLC_FED) {
 			if (ch->bch.rx_skb->len < 3) { /* last 2 are the FCS */
-				pr_info("%s: ISAR frame to short %d\n",
+				pr_info("%s: ISAR frame too short %d\n",
 					ch->is->name, ch->bch.rx_skb->len);
 				skb_trim(ch->bch.rx_skb, 0);
 				break;

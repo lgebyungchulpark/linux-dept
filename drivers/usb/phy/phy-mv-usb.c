@@ -644,7 +644,7 @@ static const struct attribute_group *mv_otg_groups[] = {
 	NULL,
 };
 
-static int mv_otg_remove(struct platform_device *pdev)
+static void mv_otg_remove(struct platform_device *pdev)
 {
 	struct mv_otg *mvotg = platform_get_drvdata(pdev);
 
@@ -654,8 +654,6 @@ static int mv_otg_remove(struct platform_device *pdev)
 	mv_otg_disable(mvotg);
 
 	usb_remove_phy(&mvotg->phy);
-
-	return 0;
 }
 
 static int mv_otg_probe(struct platform_device *pdev)

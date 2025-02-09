@@ -27,9 +27,6 @@
 #include <linux/etherdevice.h>
 #include <linux/uaccess.h>
 #include <linux/ctype.h>
-
-#include <net/lib80211.h>
-
 #include "libipw.h"
 
 static void libipw_monitor_rx(struct libipw_device *ieee,
@@ -266,7 +263,7 @@ static int libipw_is_eapol_frame(struct libipw_device *ieee,
 /* Called only as a tasklet (software IRQ), by libipw_rx */
 static int
 libipw_rx_frame_decrypt(struct libipw_device *ieee, struct sk_buff *skb,
-			   struct lib80211_crypt_data *crypt)
+			   struct libipw_crypt_data *crypt)
 {
 	struct libipw_hdr_3addr *hdr;
 	int res, hdrlen;
@@ -298,7 +295,7 @@ libipw_rx_frame_decrypt(struct libipw_device *ieee, struct sk_buff *skb,
 static int
 libipw_rx_frame_decrypt_msdu(struct libipw_device *ieee,
 				struct sk_buff *skb, int keyidx,
-				struct lib80211_crypt_data *crypt)
+				struct libipw_crypt_data *crypt)
 {
 	struct libipw_hdr_3addr *hdr;
 	int res, hdrlen;
@@ -345,7 +342,7 @@ int libipw_rx(struct libipw_device *ieee, struct sk_buff *skb,
 #endif
 	u8 dst[ETH_ALEN];
 	u8 src[ETH_ALEN];
-	struct lib80211_crypt_data *crypt = NULL;
+	struct libipw_crypt_data *crypt = NULL;
 	int keyidx = 0;
 	int can_be_decrypted = 0;
 
@@ -396,7 +393,7 @@ int libipw_rx(struct libipw_device *ieee, struct sk_buff *skb,
 			wstats.updated |= IW_QUAL_QUAL_INVALID;
 
 		/* Update spy records */
-		wireless_spy_update(ieee->dev, hdr->addr2, &wstats);
+		libipw_spy_update(ieee->dev, hdr->addr2, &wstats);
 	}
 #endif				/* IW_WIRELESS_SPY */
 #endif				/* CONFIG_WIRELESS_EXT */
@@ -870,8 +867,8 @@ void libipw_rx_any(struct libipw_device *ieee,
 	switch (ieee->iw_mode) {
 	case IW_MODE_ADHOC:
 		/* our BSS and not from/to DS */
-		if (ether_addr_equal(hdr->addr3, ieee->bssid))
-		if ((fc & (IEEE80211_FCTL_TODS+IEEE80211_FCTL_FROMDS)) == 0) {
+		if (ether_addr_equal(hdr->addr3, ieee->bssid) &&
+		    ((fc & (IEEE80211_FCTL_TODS + IEEE80211_FCTL_FROMDS)) == 0)) {
 			/* promisc: get all */
 			if (ieee->dev->flags & IFF_PROMISC)
 				is_packet_for_us = 1;
@@ -885,8 +882,8 @@ void libipw_rx_any(struct libipw_device *ieee,
 		break;
 	case IW_MODE_INFRA:
 		/* our BSS (== from our AP) and from DS */
-		if (ether_addr_equal(hdr->addr2, ieee->bssid))
-		if ((fc & (IEEE80211_FCTL_TODS+IEEE80211_FCTL_FROMDS)) == IEEE80211_FCTL_FROMDS) {
+		if (ether_addr_equal(hdr->addr2, ieee->bssid) &&
+		    ((fc & (IEEE80211_FCTL_TODS + IEEE80211_FCTL_FROMDS)) == IEEE80211_FCTL_FROMDS)) {
 			/* promisc: get all */
 			if (ieee->dev->flags & IFF_PROMISC)
 				is_packet_for_us = 1;
@@ -1329,8 +1326,8 @@ static int libipw_handle_assoc_resp(struct libipw_device *ieee, struct libipw_as
 	network->wpa_ie_len = 0;
 	network->rsn_ie_len = 0;
 
-	if (libipw_parse_info_param
-	    (frame->info_element, stats->len - sizeof(*frame), network))
+	if (libipw_parse_info_param((void *)frame->variable,
+				    stats->len - sizeof(*frame), network))
 		return 1;
 
 	network->mode = 0;
@@ -1389,8 +1386,8 @@ static int libipw_network_init(struct libipw_device *ieee, struct libipw_probe_r
 	network->wpa_ie_len = 0;
 	network->rsn_ie_len = 0;
 
-	if (libipw_parse_info_param
-	    (beacon->info_element, stats->len - sizeof(*beacon), network))
+	if (libipw_parse_info_param((void *)beacon->variable,
+				    stats->len - sizeof(*beacon), network))
 		return 1;
 
 	network->mode = 0;
@@ -1510,7 +1507,7 @@ static void libipw_process_probe_response(struct libipw_device
 	struct libipw_network *target;
 	struct libipw_network *oldest = NULL;
 #ifdef CONFIG_LIBIPW_DEBUG
-	struct libipw_info_element *info_element = beacon->info_element;
+	struct libipw_info_element *info_element = (void *)beacon->variable;
 #endif
 	unsigned long flags;
 

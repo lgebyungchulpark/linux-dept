@@ -1,8 +1,8 @@
 #ifndef __LINUX_SPINLOCK_API_SMP_H
 #define __LINUX_SPINLOCK_API_SMP_H
 
-#ifndef __LINUX_SPINLOCK_H
-# error "please don't include this file directly"
+#ifndef __LINUX_INSIDE_SPINLOCK_H
+# error "Please do not include this file directly."
 #endif
 
 /*

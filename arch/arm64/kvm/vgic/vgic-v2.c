@@ -72,7 +72,7 @@ void vgic_v2_fold_lr_state(struct kvm_vcpu *vcpu)
 			kvm_notify_acked_irq(vcpu->kvm, 0,
 					     intid - VGIC_NR_PRIVATE_IRQS);
 
-		irq = vgic_get_irq(vcpu->kvm, vcpu, intid);
+		irq = vgic_get_vcpu_irq(vcpu, intid);
 
 		raw_spin_lock(&irq->irq_lock);
 
@@ -312,12 +312,6 @@ int vgic_v2_map_resources(struct kvm *kvm)
 		return ret;
 	}
 
-	ret = vgic_register_dist_iodev(kvm, dist->vgic_dist_base, VGIC_V2);
-	if (ret) {
-		kvm_err("Unable to register VGIC MMIO regions\n");
-		return ret;
-	}
-
 	if (!static_branch_unlikely(&vgic_v2_cpuif_trap)) {
 		ret = kvm_phys_addr_ioremap(kvm, dist->vgic_cpu_base,
 					    kvm_vgic_global_state.vcpu_base,
@@ -470,17 +464,10 @@ void vgic_v2_load(struct kvm_vcpu *vcpu)
 		       kvm_vgic_global_state.vctrl_base + GICH_APR);
 }
 
-void vgic_v2_vmcr_sync(struct kvm_vcpu *vcpu)
-{
-	struct vgic_v2_cpu_if *cpu_if = &vcpu->arch.vgic_cpu.vgic_v2;
-
-	cpu_if->vgic_vmcr = readl_relaxed(kvm_vgic_global_state.vctrl_base + GICH_VMCR);
-}
-
 void vgic_v2_put(struct kvm_vcpu *vcpu)
 {
 	struct vgic_v2_cpu_if *cpu_if = &vcpu->arch.vgic_cpu.vgic_v2;
 
-	vgic_v2_vmcr_sync(vcpu);
+	cpu_if->vgic_vmcr = readl_relaxed(kvm_vgic_global_state.vctrl_base + GICH_VMCR);
 	cpu_if->vgic_apr = readl_relaxed(kvm_vgic_global_state.vctrl_base + GICH_APR);
 }

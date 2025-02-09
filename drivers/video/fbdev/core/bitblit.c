@@ -43,6 +43,21 @@ static void update_attr(u8 *dst, u8 *src, int attribute,
 	}
 }
 
+static void bit_bmove(struct vc_data *vc, struct fb_info *info, int sy,
+		      int sx, int dy, int dx, int height, int width)
+{
+	struct fb_copyarea area;
+
+	area.sx = sx * vc->vc_font.width;
+	area.sy = sy * vc->vc_font.height;
+	area.dx = dx * vc->vc_font.width;
+	area.dy = dy * vc->vc_font.height;
+	area.height = height * vc->vc_font.height;
+	area.width = width * vc->vc_font.width;
+
+	info->fbops->fb_copyarea(info, &area);
+}
+
 static void bit_clear(struct vc_data *vc, struct fb_info *info, int sy,
 		      int sx, int height, int width)
 {
@@ -218,7 +233,7 @@ static void bit_clear_margins(struct vc_data *vc, struct fb_info *info,
 	}
 }
 
-static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
+static void bit_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
 		       int fg, int bg)
 {
 	struct fb_cursor cursor;
@@ -231,6 +246,9 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 	char *src;
 
 	cursor.set = 0;
+
+	if (!vc->vc_font.data)
+		return;
 
  	c = scr_readw((u16 *) vc->vc_pos);
 	attribute = get_attribute(info, c);
@@ -330,16 +348,7 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 			mask[i++] = msk;
 	}
 
-	switch (mode) {
-	case CM_ERASE:
-		ops->cursor_state.enable = 0;
-		break;
-	case CM_DRAW:
-	case CM_MOVE:
-	default:
-		ops->cursor_state.enable = (use_sw) ? 0 : 1;
-		break;
-	}
+	ops->cursor_state.enable = enable && !use_sw;
 
 	cursor.image.data = src;
 	cursor.image.fg_color = ops->cursor_state.image.fg_color;
@@ -378,6 +387,7 @@ static int bit_update_start(struct fb_info *info)
 
 void fbcon_set_bitops(struct fbcon_ops *ops)
 {
+	ops->bmove = bit_bmove;
 	ops->clear = bit_clear;
 	ops->putcs = bit_putcs;
 	ops->clear_margins = bit_clear_margins;

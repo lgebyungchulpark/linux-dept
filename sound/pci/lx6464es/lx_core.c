@@ -231,14 +231,14 @@ static void lx_message_dump(struct lx_rmh *rmh)
 	u8 idx = rmh->cmd_idx;
 	int i;
 
-	snd_printk(LXRMH "command %s\n", dsp_commands[idx].dcOpName);
+	pr_debug(LXRMH "command %s\n", dsp_commands[idx].dcOpName);
 
 	for (i = 0; i != rmh->cmd_len; ++i)
-		snd_printk(LXRMH "\tcmd[%d] %08x\n", i, rmh->cmd[i]);
+		pr_debug(LXRMH "\tcmd[%d] %08x\n", i, rmh->cmd[i]);
 
 	for (i = 0; i != rmh->stat_len; ++i)
-		snd_printk(LXRMH "\tstat[%d]: %08x\n", i, rmh->stat[i]);
-	snd_printk("\n");
+		pr_debug(LXRMH "\tstat[%d]: %08x\n", i, rmh->stat[i]);
+	pr_debug("\n");
 }
 #else
 static inline void lx_message_dump(struct lx_rmh *rmh)
@@ -493,12 +493,11 @@ int lx_buffer_ask(struct lx6464es *chip, u32 pipe, int is_capture,
 		dev_dbg(chip->card->dev,
 			"CMD_08_ASK_BUFFERS: needed %d, freed %d\n",
 			    *r_needed, *r_freed);
-		for (i = 0; i < MAX_STREAM_BUFFER; ++i) {
-			for (i = 0; i != chip->rmh.stat_len; ++i)
-				dev_dbg(chip->card->dev,
-					"  stat[%d]: %x, %x\n", i,
-					    chip->rmh.stat[i],
-					    chip->rmh.stat[i] & MASK_DATA_SIZE);
+		for (i = 0; i < MAX_STREAM_BUFFER && i < chip->rmh.stat_len;
+		     ++i) {
+			dev_dbg(chip->card->dev, "  stat[%d]: %x, %x\n", i,
+				chip->rmh.stat[i],
+				chip->rmh.stat[i] & MASK_DATA_SIZE);
 		}
 	}
 

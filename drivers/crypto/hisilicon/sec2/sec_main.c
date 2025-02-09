@@ -2,7 +2,6 @@
 /* Copyright (c) 2019 HiSilicon Limited. */
 
 #include <linux/acpi.h>
-#include <linux/aer.h>
 #include <linux/bitops.h>
 #include <linux/debugfs.h>
 #include <linux/init.h>
@@ -15,20 +14,18 @@
 #include <linux/seq_file.h>
 #include <linux/topology.h>
 #include <linux/uacce.h>
-
 #include "sec.h"
 
+#define CAP_FILE_PERMISSION		0444
 #define SEC_VF_NUM			63
 #define SEC_QUEUE_NUM_V1		4096
-#define SEC_PF_PCI_DEVICE_ID		0xa255
-#define SEC_VF_PCI_DEVICE_ID		0xa256
+#define PCI_DEVICE_ID_HUAWEI_SEC_PF	0xa255
 
 #define SEC_BD_ERR_CHK_EN0		0xEFFFFFFF
 #define SEC_BD_ERR_CHK_EN1		0x7ffff7fd
 #define SEC_BD_ERR_CHK_EN3		0xffffbfff
 
 #define SEC_SQE_SIZE			128
-#define SEC_SQ_SIZE			(SEC_SQE_SIZE * QM_Q_DEPTH)
 #define SEC_PF_DEF_Q_NUM		256
 #define SEC_PF_DEF_Q_BASE		0
 #define SEC_CTX_Q_NUM_DEF		2
@@ -43,16 +40,11 @@
 #define SEC_ECC_NUM			16
 #define SEC_ECC_MASH			0xFF
 #define SEC_CORE_INT_DISABLE		0x0
-#define SEC_CORE_INT_ENABLE		0x7c1ff
-#define SEC_CORE_INT_CLEAR		0x7c1ff
-#define SEC_SAA_ENABLE			0x17f
 
 #define SEC_RAS_CE_REG			0x301050
 #define SEC_RAS_FE_REG			0x301054
 #define SEC_RAS_NFE_REG			0x301058
-#define SEC_RAS_CE_ENB_MSK		0x88
 #define SEC_RAS_FE_ENB_MSK		0x0
-#define SEC_RAS_NFE_ENB_MSK		0x7c177
 #define SEC_OOO_SHUTDOWN_SEL		0x301014
 #define SEC_RAS_DISABLE		0x0
 #define SEC_MEM_START_INIT_REG	0x301100
@@ -62,7 +54,7 @@
 #define SEC_CONTROL_REG		0x301200
 #define SEC_DYNAMIC_GATE_REG		0x30121c
 #define SEC_CORE_AUTO_GATE		0x30212c
-#define SEC_DYNAMIC_GATE_EN		0x7bff
+#define SEC_DYNAMIC_GATE_EN		0x7fff
 #define SEC_CORE_AUTO_GATE_EN		GENMASK(3, 0)
 #define SEC_CLK_GATE_ENABLE		BIT(3)
 #define SEC_CLK_GATE_DISABLE		(~BIT(3))
@@ -90,6 +82,10 @@
 					SEC_USER1_WB_DATA_SSV)
 #define SEC_USER1_SMMU_SVA		(SEC_USER1_SMMU_NORMAL | SEC_USER1_SVA_SET)
 #define SEC_USER1_SMMU_MASK		(~SEC_USER1_SVA_SET)
+#define SEC_INTERFACE_USER_CTRL0_REG_V3	0x302220
+#define SEC_INTERFACE_USER_CTRL1_REG_V3	0x302224
+#define SEC_USER1_SMMU_NORMAL_V3	(BIT(23) | BIT(17) | BIT(11) | BIT(5))
+#define SEC_USER1_SMMU_MASK_V3		0xFF79E79E
 #define SEC_CORE_INT_STATUS_M_ECC	BIT(2)
 
 #define SEC_PREFETCH_CFG		0x301130
@@ -103,9 +99,27 @@
 #define SEC_DBGFS_VAL_MAX_LEN		20
 #define SEC_SINGLE_PORT_MAX_TRANS	0x2060
 
-#define SEC_SQE_MASK_OFFSET		64
-#define SEC_SQE_MASK_LEN		48
+#define SEC_SQE_MASK_OFFSET		16
+#define SEC_SQE_MASK_LEN		108
 #define SEC_SHAPER_TYPE_RATE		400
+
+#define SEC_DFX_BASE		0x301000
+#define SEC_DFX_CORE		0x302100
+#define SEC_DFX_COMMON1		0x301600
+#define SEC_DFX_COMMON2		0x301C00
+#define SEC_DFX_BASE_LEN		0x9D
+#define SEC_DFX_CORE_LEN		0x32B
+#define SEC_DFX_COMMON1_LEN		0x45
+#define SEC_DFX_COMMON2_LEN		0xBA
+
+#define SEC_ALG_BITMAP_SHIFT		32
+
+#define SEC_CIPHER_BITMAP		(GENMASK_ULL(5, 0) | GENMASK_ULL(16, 12) | \
+					GENMASK(24, 21))
+#define SEC_DIGEST_BITMAP		(GENMASK_ULL(11, 8) | GENMASK_ULL(20, 19) | \
+					GENMASK_ULL(42, 25))
+#define SEC_AEAD_BITMAP			(GENMASK_ULL(7, 6) | GENMASK_ULL(18, 17) | \
+					GENMASK_ULL(45, 43))
 
 struct sec_hw_error {
 	u32 int_msk;
@@ -123,6 +137,76 @@ static struct dentry *sec_debugfs_root;
 static struct hisi_qm_list sec_devices = {
 	.register_to_crypto	= sec_register_to_crypto,
 	.unregister_from_crypto	= sec_unregister_from_crypto,
+};
+
+static const struct hisi_qm_cap_info sec_basic_info[] = {
+	{SEC_QM_NFE_MASK_CAP,   0x3124, 0, GENMASK(31, 0), 0x0, 0x1C77, 0x7C77},
+	{SEC_QM_RESET_MASK_CAP, 0x3128, 0, GENMASK(31, 0), 0x0, 0xC77, 0x6C77},
+	{SEC_QM_OOO_SHUTDOWN_MASK_CAP, 0x3128, 0, GENMASK(31, 0), 0x0, 0x4, 0x6C77},
+	{SEC_QM_CE_MASK_CAP,    0x312C, 0, GENMASK(31, 0), 0x0, 0x8, 0x8},
+	{SEC_NFE_MASK_CAP,      0x3130, 0, GENMASK(31, 0), 0x0, 0x177, 0x60177},
+	{SEC_RESET_MASK_CAP,    0x3134, 0, GENMASK(31, 0), 0x0, 0x177, 0x177},
+	{SEC_OOO_SHUTDOWN_MASK_CAP, 0x3134, 0, GENMASK(31, 0), 0x0, 0x4, 0x177},
+	{SEC_CE_MASK_CAP,       0x3138, 0, GENMASK(31, 0), 0x0, 0x88, 0xC088},
+	{SEC_CLUSTER_NUM_CAP, 0x313c, 20, GENMASK(3, 0), 0x1, 0x1, 0x1},
+	{SEC_CORE_TYPE_NUM_CAP, 0x313c, 16, GENMASK(3, 0), 0x1, 0x1, 0x1},
+	{SEC_CORE_NUM_CAP, 0x313c, 8, GENMASK(7, 0), 0x4, 0x4, 0x4},
+	{SEC_CORES_PER_CLUSTER_NUM_CAP, 0x313c, 0, GENMASK(7, 0), 0x4, 0x4, 0x4},
+	{SEC_CORE_ENABLE_BITMAP, 0x3140, 0, GENMASK(31, 0), 0x17F, 0x17F, 0xF},
+	{SEC_DRV_ALG_BITMAP_LOW, 0x3144, 0, GENMASK(31, 0), 0x18050CB, 0x18050CB, 0x18670CF},
+	{SEC_DRV_ALG_BITMAP_HIGH, 0x3148, 0, GENMASK(31, 0), 0x395C, 0x395C, 0x395C},
+	{SEC_DEV_ALG_BITMAP_LOW, 0x314c, 0, GENMASK(31, 0), 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_DEV_ALG_BITMAP_HIGH, 0x3150, 0, GENMASK(31, 0), 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE1_ALG_BITMAP_LOW, 0x3154, 0, GENMASK(31, 0), 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE1_ALG_BITMAP_HIGH, 0x3158, 0, GENMASK(31, 0), 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE2_ALG_BITMAP_LOW, 0x315c, 0, GENMASK(31, 0), 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE2_ALG_BITMAP_HIGH, 0x3160, 0, GENMASK(31, 0), 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE3_ALG_BITMAP_LOW, 0x3164, 0, GENMASK(31, 0), 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE3_ALG_BITMAP_HIGH, 0x3168, 0, GENMASK(31, 0), 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE4_ALG_BITMAP_LOW, 0x316c, 0, GENMASK(31, 0), 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE4_ALG_BITMAP_HIGH, 0x3170, 0, GENMASK(31, 0), 0x3FFF, 0x3FFF, 0x3FFF},
+};
+
+static const struct hisi_qm_cap_query_info sec_cap_query_info[] = {
+	{QM_RAS_NFE_TYPE, "QM_RAS_NFE_TYPE             ", 0x3124, 0x0, 0x1C77, 0x7C77},
+	{QM_RAS_NFE_RESET, "QM_RAS_NFE_RESET            ", 0x3128, 0x0, 0xC77, 0x6C77},
+	{QM_RAS_CE_TYPE, "QM_RAS_CE_TYPE              ", 0x312C, 0x0, 0x8, 0x8},
+	{SEC_RAS_NFE_TYPE, "SEC_RAS_NFE_TYPE            ", 0x3130, 0x0, 0x177, 0x60177},
+	{SEC_RAS_NFE_RESET, "SEC_RAS_NFE_RESET           ", 0x3134, 0x0, 0x177, 0x177},
+	{SEC_RAS_CE_TYPE, "SEC_RAS_CE_TYPE             ", 0x3138, 0x0, 0x88, 0xC088},
+	{SEC_CORE_INFO, "SEC_CORE_INFO               ", 0x313c, 0x110404, 0x110404, 0x110404},
+	{SEC_CORE_EN, "SEC_CORE_EN                 ", 0x3140, 0x17F, 0x17F, 0xF},
+	{SEC_DRV_ALG_BITMAP_LOW_TB, "SEC_DRV_ALG_BITMAP_LOW      ",
+					0x3144, 0x18050CB, 0x18050CB, 0x18670CF},
+	{SEC_DRV_ALG_BITMAP_HIGH_TB, "SEC_DRV_ALG_BITMAP_HIGH     ",
+					0x3148, 0x395C, 0x395C, 0x395C},
+	{SEC_ALG_BITMAP_LOW, "SEC_ALG_BITMAP_LOW          ",
+					0x314c, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_ALG_BITMAP_HIGH, "SEC_ALG_BITMAP_HIGH         ", 0x3150, 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE1_BITMAP_LOW, "SEC_CORE1_BITMAP_LOW        ",
+					0x3154, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE1_BITMAP_HIGH, "SEC_CORE1_BITMAP_HIGH       ", 0x3158, 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE2_BITMAP_LOW, "SEC_CORE2_BITMAP_LOW        ",
+					0x315c, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE2_BITMAP_HIGH, "SEC_CORE2_BITMAP_HIGH       ", 0x3160, 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE3_BITMAP_LOW, "SEC_CORE3_BITMAP_LOW        ",
+					0x3164, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE3_BITMAP_HIGH, "SEC_CORE3_BITMAP_HIGH       ", 0x3168, 0x3FFF, 0x3FFF, 0x3FFF},
+	{SEC_CORE4_BITMAP_LOW, "SEC_CORE4_BITMAP_LOW        ",
+					0x316c, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+	{SEC_CORE4_BITMAP_HIGH, "SEC_CORE4_BITMAP_HIGH       ", 0x3170, 0x3FFF, 0x3FFF, 0x3FFF},
+};
+
+static const struct qm_dev_alg sec_dev_algs[] = { {
+		.alg_msk = SEC_CIPHER_BITMAP,
+		.alg = "cipher\n",
+	}, {
+		.alg_msk = SEC_DIGEST_BITMAP,
+		.alg = "digest\n",
+	}, {
+		.alg_msk = SEC_AEAD_BITMAP,
+		.alg = "aead\n",
+	},
 };
 
 static const struct sec_hw_error sec_hw_errors[] = {
@@ -221,11 +305,47 @@ static const struct debugfs_reg32 sec_dfx_regs[] = {
 	{"SEC_BD_SAA6                   ",  0x301C38},
 	{"SEC_BD_SAA7                   ",  0x301C3C},
 	{"SEC_BD_SAA8                   ",  0x301C40},
+	{"SEC_RAS_CE_ENABLE             ",  0x301050},
+	{"SEC_RAS_FE_ENABLE             ",  0x301054},
+	{"SEC_RAS_NFE_ENABLE            ",  0x301058},
+	{"SEC_REQ_TRNG_TIME_TH          ",  0x30112C},
+	{"SEC_CHANNEL_RNG_REQ_THLD      ",  0x302110},
 };
 
+/* define the SEC's dfx regs region and region length */
+static struct dfx_diff_registers sec_diff_regs[] = {
+	{
+		.reg_offset = SEC_DFX_BASE,
+		.reg_len = SEC_DFX_BASE_LEN,
+	}, {
+		.reg_offset = SEC_DFX_COMMON1,
+		.reg_len = SEC_DFX_COMMON1_LEN,
+	}, {
+		.reg_offset = SEC_DFX_COMMON2,
+		.reg_len = SEC_DFX_COMMON2_LEN,
+	}, {
+		.reg_offset = SEC_DFX_CORE,
+		.reg_len = SEC_DFX_CORE_LEN,
+	},
+};
+
+static int sec_diff_regs_show(struct seq_file *s, void *unused)
+{
+	struct hisi_qm *qm = s->private;
+
+	hisi_qm_acc_diff_regs_dump(qm, s, qm->debug.acc_diff_regs,
+					ARRAY_SIZE(sec_diff_regs));
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(sec_diff_regs);
+
+static bool pf_q_num_flag;
 static int sec_pf_q_num_set(const char *val, const struct kernel_param *kp)
 {
-	return q_num_set(val, kp, SEC_PF_PCI_DEVICE_ID);
+	pf_q_num_flag = true;
+
+	return hisi_qm_q_num_set(val, kp, PCI_DEVICE_ID_HUAWEI_SEC_PF);
 }
 
 static const struct kernel_param_ops sec_pf_q_num_ops = {
@@ -282,7 +402,7 @@ void sec_destroy_qps(struct hisi_qp **qps, int qp_num)
 
 struct hisi_qp **sec_create_qps(void)
 {
-	int node = cpu_to_node(smp_processor_id());
+	int node = cpu_to_node(raw_smp_processor_id());
 	u32 ctx_num = ctx_q_num;
 	struct hisi_qp **qps;
 	int ret;
@@ -299,6 +419,16 @@ struct hisi_qp **sec_create_qps(void)
 	return NULL;
 }
 
+u64 sec_get_alg_bitmap(struct hisi_qm *qm, u32 high, u32 low)
+{
+	u32 cap_val_h, cap_val_l;
+
+	cap_val_h = qm->cap_tables.dev_cap_table[high].cap_val;
+	cap_val_l = qm->cap_tables.dev_cap_table[low].cap_val;
+
+	return ((u64)cap_val_h << SEC_ALG_BITMAP_SHIFT) | (u64)cap_val_l;
+}
+
 static const struct kernel_param_ops sec_uacce_mode_ops = {
 	.set = uacce_mode_set,
 	.get = param_get_int,
@@ -313,8 +443,8 @@ module_param_cb(uacce_mode, &sec_uacce_mode_ops, &uacce_mode, 0444);
 MODULE_PARM_DESC(uacce_mode, UACCE_MODE_DESC);
 
 static const struct pci_device_id sec_dev_ids[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, SEC_PF_PCI_DEVICE_ID) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, SEC_VF_PCI_DEVICE_ID) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, PCI_DEVICE_ID_HUAWEI_SEC_PF) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, PCI_DEVICE_ID_HUAWEI_SEC_VF) },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, sec_dev_ids);
@@ -328,11 +458,45 @@ static void sec_set_endian(struct hisi_qm *qm)
 	if (!IS_ENABLED(CONFIG_64BIT))
 		reg |= BIT(1);
 
-
 	if (!IS_ENABLED(CONFIG_CPU_LITTLE_ENDIAN))
 		reg |= BIT(0);
 
 	writel_relaxed(reg, qm->io_base + SEC_CONTROL_REG);
+}
+
+static void sec_engine_sva_config(struct hisi_qm *qm)
+{
+	u32 reg;
+
+	if (qm->ver > QM_HW_V2) {
+		reg = readl_relaxed(qm->io_base +
+				SEC_INTERFACE_USER_CTRL0_REG_V3);
+		reg |= SEC_USER0_SMMU_NORMAL;
+		writel_relaxed(reg, qm->io_base +
+				SEC_INTERFACE_USER_CTRL0_REG_V3);
+
+		reg = readl_relaxed(qm->io_base +
+				SEC_INTERFACE_USER_CTRL1_REG_V3);
+		reg &= SEC_USER1_SMMU_MASK_V3;
+		reg |= SEC_USER1_SMMU_NORMAL_V3;
+		writel_relaxed(reg, qm->io_base +
+				SEC_INTERFACE_USER_CTRL1_REG_V3);
+	} else {
+		reg = readl_relaxed(qm->io_base +
+				SEC_INTERFACE_USER_CTRL0_REG);
+		reg |= SEC_USER0_SMMU_NORMAL;
+		writel_relaxed(reg, qm->io_base +
+				SEC_INTERFACE_USER_CTRL0_REG);
+		reg = readl_relaxed(qm->io_base +
+				SEC_INTERFACE_USER_CTRL1_REG);
+		reg &= SEC_USER1_SMMU_MASK;
+		if (qm->use_sva)
+			reg |= SEC_USER1_SMMU_SVA;
+		else
+			reg |= SEC_USER1_SMMU_NORMAL;
+		writel_relaxed(reg, qm->io_base +
+				SEC_INTERFACE_USER_CTRL1_REG);
+	}
 }
 
 static void sec_open_sva_prefetch(struct hisi_qm *qm)
@@ -340,7 +504,7 @@ static void sec_open_sva_prefetch(struct hisi_qm *qm)
 	u32 val;
 	int ret;
 
-	if (qm->ver < QM_HW_V3)
+	if (!test_bit(QM_SUPPORT_SVA_PREFETCH, &qm->caps))
 		return;
 
 	/* Enable prefetch */
@@ -360,7 +524,7 @@ static void sec_close_sva_prefetch(struct hisi_qm *qm)
 	u32 val;
 	int ret;
 
-	if (qm->ver < QM_HW_V3)
+	if (!test_bit(QM_SUPPORT_SVA_PREFETCH, &qm->caps))
 		return;
 
 	val = readl_relaxed(qm->io_base + SEC_PREFETCH_CFG);
@@ -426,31 +590,25 @@ static int sec_engine_init(struct hisi_qm *qm)
 	reg |= (0x1 << SEC_TRNG_EN_SHIFT);
 	writel_relaxed(reg, qm->io_base + SEC_CONTROL_REG);
 
-	reg = readl_relaxed(qm->io_base + SEC_INTERFACE_USER_CTRL0_REG);
-	reg |= SEC_USER0_SMMU_NORMAL;
-	writel_relaxed(reg, qm->io_base + SEC_INTERFACE_USER_CTRL0_REG);
-
-	reg = readl_relaxed(qm->io_base + SEC_INTERFACE_USER_CTRL1_REG);
-	reg &= SEC_USER1_SMMU_MASK;
-	if (qm->use_sva && qm->ver == QM_HW_V2)
-		reg |= SEC_USER1_SMMU_SVA;
-	else
-		reg |= SEC_USER1_SMMU_NORMAL;
-	writel_relaxed(reg, qm->io_base + SEC_INTERFACE_USER_CTRL1_REG);
+	sec_engine_sva_config(qm);
 
 	writel(SEC_SINGLE_PORT_MAX_TRANS,
 	       qm->io_base + AM_CFG_SINGLE_PORT_MAX_TRANS);
 
-	writel(SEC_SAA_ENABLE, qm->io_base + SEC_SAA_EN_REG);
+	reg = hisi_qm_get_hw_info(qm, sec_basic_info, SEC_CORE_ENABLE_BITMAP, qm->cap_ver);
+	writel(reg, qm->io_base + SEC_SAA_EN_REG);
 
-	/* Enable sm4 extra mode, as ctr/ecb */
-	writel_relaxed(SEC_BD_ERR_CHK_EN0,
-		       qm->io_base + SEC_BD_ERR_CHK_EN_REG0);
-	/* Enable sm4 xts mode multiple iv */
-	writel_relaxed(SEC_BD_ERR_CHK_EN1,
-		       qm->io_base + SEC_BD_ERR_CHK_EN_REG1);
-	writel_relaxed(SEC_BD_ERR_CHK_EN3,
-		       qm->io_base + SEC_BD_ERR_CHK_EN_REG3);
+	if (qm->ver < QM_HW_V3) {
+		/* HW V2 enable sm4 extra mode, as ctr/ecb */
+		writel_relaxed(SEC_BD_ERR_CHK_EN0,
+			       qm->io_base + SEC_BD_ERR_CHK_EN_REG0);
+
+		/* HW V2 enable sm4 xts mode multiple iv */
+		writel_relaxed(SEC_BD_ERR_CHK_EN1,
+			       qm->io_base + SEC_BD_ERR_CHK_EN_REG1);
+		writel_relaxed(SEC_BD_ERR_CHK_EN3,
+			       qm->io_base + SEC_BD_ERR_CHK_EN_REG3);
+	}
 
 	/* config endian */
 	sec_set_endian(qm);
@@ -508,7 +666,8 @@ static void sec_master_ooo_ctrl(struct hisi_qm *qm, bool enable)
 	val1 = readl(qm->io_base + SEC_CONTROL_REG);
 	if (enable) {
 		val1 |= SEC_AXI_SHUTDOWN_ENABLE;
-		val2 = SEC_RAS_NFE_ENB_MSK;
+		val2 = hisi_qm_get_hw_info(qm, sec_basic_info,
+					   SEC_OOO_SHUTDOWN_MASK_CAP, qm->cap_ver);
 	} else {
 		val1 &= SEC_AXI_SHUTDOWN_DISABLE;
 		val2 = 0x0;
@@ -522,25 +681,30 @@ static void sec_master_ooo_ctrl(struct hisi_qm *qm, bool enable)
 
 static void sec_hw_error_enable(struct hisi_qm *qm)
 {
+	u32 ce, nfe;
+
 	if (qm->ver == QM_HW_V1) {
 		writel(SEC_CORE_INT_DISABLE, qm->io_base + SEC_CORE_INT_MASK);
 		pci_info(qm->pdev, "V1 not support hw error handle\n");
 		return;
 	}
 
+	ce = hisi_qm_get_hw_info(qm, sec_basic_info, SEC_CE_MASK_CAP, qm->cap_ver);
+	nfe = hisi_qm_get_hw_info(qm, sec_basic_info, SEC_NFE_MASK_CAP, qm->cap_ver);
+
 	/* clear SEC hw error source if having */
-	writel(SEC_CORE_INT_CLEAR, qm->io_base + SEC_CORE_INT_SOURCE);
+	writel(ce | nfe | SEC_RAS_FE_ENB_MSK, qm->io_base + SEC_CORE_INT_SOURCE);
 
 	/* enable RAS int */
-	writel(SEC_RAS_CE_ENB_MSK, qm->io_base + SEC_RAS_CE_REG);
+	writel(ce, qm->io_base + SEC_RAS_CE_REG);
 	writel(SEC_RAS_FE_ENB_MSK, qm->io_base + SEC_RAS_FE_REG);
-	writel(SEC_RAS_NFE_ENB_MSK, qm->io_base + SEC_RAS_NFE_REG);
+	writel(nfe, qm->io_base + SEC_RAS_NFE_REG);
 
 	/* enable SEC block master OOO when nfe occurs on Kunpeng930 */
 	sec_master_ooo_ctrl(qm, true);
 
 	/* enable SEC hw error interrupts */
-	writel(SEC_CORE_INT_ENABLE, qm->io_base + SEC_CORE_INT_MASK);
+	writel(ce | nfe | SEC_RAS_FE_ENB_MSK, qm->io_base + SEC_CORE_INT_MASK);
 }
 
 static void sec_hw_error_disable(struct hisi_qm *qm)
@@ -697,8 +861,29 @@ static int sec_regs_show(struct seq_file *s, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(sec_regs);
 
+static int sec_cap_regs_show(struct seq_file *s, void *unused)
+{
+	struct hisi_qm *qm = s->private;
+	u32 i, size;
+
+	size = qm->cap_tables.qm_cap_size;
+	for (i = 0; i < size; i++)
+		seq_printf(s, "%s= 0x%08x\n", qm->cap_tables.qm_cap_table[i].name,
+			   qm->cap_tables.qm_cap_table[i].cap_val);
+
+	size = qm->cap_tables.dev_cap_size;
+	for (i = 0; i < size; i++)
+		seq_printf(s, "%s= 0x%08x\n", qm->cap_tables.dev_cap_table[i].name,
+			   qm->cap_tables.dev_cap_table[i].cap_val);
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(sec_cap_regs);
+
 static int sec_core_debug_init(struct hisi_qm *qm)
 {
+	struct dfx_diff_registers *sec_regs = qm->debug.acc_diff_regs;
 	struct sec_dev *sec = container_of(qm, struct sec_dev, qm);
 	struct device *dev = &qm->pdev->dev;
 	struct sec_dfx *dfx = &sec->debug.dfx;
@@ -717,8 +902,11 @@ static int sec_core_debug_init(struct hisi_qm *qm)
 	regset->base = qm->io_base;
 	regset->dev = dev;
 
-	if (qm->pdev->device == SEC_PF_PCI_DEVICE_ID)
+	if (qm->pdev->device == PCI_DEVICE_ID_HUAWEI_SEC_PF)
 		debugfs_create_file("regs", 0444, tmp_d, regset, &sec_regs_fops);
+	if (qm->fun_type == QM_HW_PF && sec_regs)
+		debugfs_create_file("diff_regs", 0444, tmp_d,
+				      qm, &sec_diff_regs_fops);
 
 	for (i = 0; i < ARRAY_SIZE(sec_dfx_labels); i++) {
 		atomic64_t *data = (atomic64_t *)((uintptr_t)dfx +
@@ -726,6 +914,9 @@ static int sec_core_debug_init(struct hisi_qm *qm)
 		debugfs_create_file(sec_dfx_labels[i].name, 0644,
 				   tmp_d, data, &sec_atomic64_ops);
 	}
+
+	debugfs_create_file("cap_regs", CAP_FILE_PERMISSION,
+			    qm->debug.debug_root, qm, &sec_cap_regs_fops);
 
 	return 0;
 }
@@ -735,7 +926,7 @@ static int sec_debug_init(struct hisi_qm *qm)
 	struct sec_dev *sec = container_of(qm, struct sec_dev, qm);
 	int i;
 
-	if (qm->pdev->device == SEC_PF_PCI_DEVICE_ID) {
+	if (qm->pdev->device == PCI_DEVICE_ID_HUAWEI_SEC_PF) {
 		for (i = SEC_CLEAR_ENABLE; i < SEC_DEBUG_FILE_NUM; i++) {
 			spin_lock_init(&sec->debug.files[i].lock);
 			sec->debug.files[i].index = i;
@@ -756,26 +947,83 @@ static int sec_debugfs_init(struct hisi_qm *qm)
 	struct device *dev = &qm->pdev->dev;
 	int ret;
 
+	ret = hisi_qm_regs_debugfs_init(qm, sec_diff_regs, ARRAY_SIZE(sec_diff_regs));
+	if (ret) {
+		dev_warn(dev, "Failed to init SEC diff regs!\n");
+		return ret;
+	}
+
 	qm->debug.debug_root = debugfs_create_dir(dev_name(dev),
-						  sec_debugfs_root);
+							sec_debugfs_root);
 	qm->debug.sqe_mask_offset = SEC_SQE_MASK_OFFSET;
 	qm->debug.sqe_mask_len = SEC_SQE_MASK_LEN;
+
 	hisi_qm_debug_init(qm);
 
 	ret = sec_debug_init(qm);
 	if (ret)
-		goto failed_to_create;
+		goto debugfs_remove;
 
 	return 0;
 
-failed_to_create:
-	debugfs_remove_recursive(sec_debugfs_root);
+debugfs_remove:
+	debugfs_remove_recursive(qm->debug.debug_root);
+	hisi_qm_regs_debugfs_uninit(qm, ARRAY_SIZE(sec_diff_regs));
 	return ret;
 }
 
 static void sec_debugfs_exit(struct hisi_qm *qm)
 {
 	debugfs_remove_recursive(qm->debug.debug_root);
+
+	hisi_qm_regs_debugfs_uninit(qm, ARRAY_SIZE(sec_diff_regs));
+}
+
+static int sec_show_last_regs_init(struct hisi_qm *qm)
+{
+	struct qm_debug *debug = &qm->debug;
+	int i;
+
+	debug->last_words = kcalloc(ARRAY_SIZE(sec_dfx_regs),
+					sizeof(unsigned int), GFP_KERNEL);
+	if (!debug->last_words)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(sec_dfx_regs); i++)
+		debug->last_words[i] = readl_relaxed(qm->io_base +
+							sec_dfx_regs[i].offset);
+
+	return 0;
+}
+
+static void sec_show_last_regs_uninit(struct hisi_qm *qm)
+{
+	struct qm_debug *debug = &qm->debug;
+
+	if (qm->fun_type == QM_HW_VF || !debug->last_words)
+		return;
+
+	kfree(debug->last_words);
+	debug->last_words = NULL;
+}
+
+static void sec_show_last_dfx_regs(struct hisi_qm *qm)
+{
+	struct qm_debug *debug = &qm->debug;
+	struct pci_dev *pdev = qm->pdev;
+	u32 val;
+	int i;
+
+	if (qm->fun_type == QM_HW_VF || !debug->last_words)
+		return;
+
+	/* dumps last word of the debugging registers during controller reset */
+	for (i = 0; i < ARRAY_SIZE(sec_dfx_regs); i++) {
+		val = readl_relaxed(qm->io_base + sec_dfx_regs[i].offset);
+		if (val != debug->last_words[i])
+			pci_info(pdev, "%s \t= 0x%08x => 0x%08x\n",
+				sec_dfx_regs[i].name, debug->last_words[i], val);
+	}
 }
 
 static void sec_log_hw_error(struct hisi_qm *qm, u32 err_sts)
@@ -811,6 +1059,14 @@ static void sec_clear_hw_err_status(struct hisi_qm *qm, u32 err_sts)
 	writel(err_sts, qm->io_base + SEC_CORE_INT_SOURCE);
 }
 
+static void sec_disable_error_report(struct hisi_qm *qm, u32 err_type)
+{
+	u32 nfe_mask;
+
+	nfe_mask = hisi_qm_get_hw_info(qm, sec_basic_info, SEC_NFE_MASK_CAP, qm->cap_ver);
+	writel(nfe_mask & (~err_type), qm->io_base + SEC_RAS_NFE_REG);
+}
+
 static void sec_open_axi_master_ooo(struct hisi_qm *qm)
 {
 	u32 val;
@@ -820,18 +1076,45 @@ static void sec_open_axi_master_ooo(struct hisi_qm *qm)
 	writel(val | SEC_AXI_SHUTDOWN_ENABLE, qm->io_base + SEC_CONTROL_REG);
 }
 
+static enum acc_err_result sec_get_err_result(struct hisi_qm *qm)
+{
+	u32 err_status;
+
+	err_status = sec_get_hw_err_status(qm);
+	if (err_status) {
+		if (err_status & qm->err_info.ecc_2bits_mask)
+			qm->err_status.is_dev_ecc_mbit = true;
+		sec_log_hw_error(qm, err_status);
+
+		if (err_status & qm->err_info.dev_reset_mask) {
+			/* Disable the same error reporting until device is recovered. */
+			sec_disable_error_report(qm, err_status);
+			return ACC_ERR_NEED_RESET;
+		}
+		sec_clear_hw_err_status(qm, err_status);
+	}
+
+	return ACC_ERR_RECOVERED;
+}
+
 static void sec_err_info_init(struct hisi_qm *qm)
 {
 	struct hisi_qm_err_info *err_info = &qm->err_info;
 
-	err_info->ce = QM_BASE_CE;
-	err_info->fe = 0;
+	err_info->fe = SEC_RAS_FE_ENB_MSK;
+	err_info->ce = hisi_qm_get_hw_info(qm, sec_basic_info, SEC_QM_CE_MASK_CAP, qm->cap_ver);
+	err_info->nfe = hisi_qm_get_hw_info(qm, sec_basic_info, SEC_QM_NFE_MASK_CAP, qm->cap_ver);
 	err_info->ecc_2bits_mask = SEC_CORE_INT_STATUS_M_ECC;
-	err_info->dev_ce_mask = SEC_RAS_CE_ENB_MSK;
+	err_info->qm_shutdown_mask = hisi_qm_get_hw_info(qm, sec_basic_info,
+				     SEC_QM_OOO_SHUTDOWN_MASK_CAP, qm->cap_ver);
+	err_info->dev_shutdown_mask = hisi_qm_get_hw_info(qm, sec_basic_info,
+			SEC_OOO_SHUTDOWN_MASK_CAP, qm->cap_ver);
+	err_info->qm_reset_mask = hisi_qm_get_hw_info(qm, sec_basic_info,
+			SEC_QM_RESET_MASK_CAP, qm->cap_ver);
+	err_info->dev_reset_mask = hisi_qm_get_hw_info(qm, sec_basic_info,
+			SEC_RESET_MASK_CAP, qm->cap_ver);
 	err_info->msi_wr_port = BIT(0);
 	err_info->acpi_rst = "SRST";
-	err_info->nfe = QM_BASE_NFE | QM_ACC_DO_TASK_TIMEOUT |
-			QM_ACC_WB_NOT_READY_TIMEOUT;
 }
 
 static const struct hisi_qm_err_ini sec_err_ini = {
@@ -840,20 +1123,18 @@ static const struct hisi_qm_err_ini sec_err_ini = {
 	.hw_err_disable		= sec_hw_error_disable,
 	.get_dev_hw_err_status	= sec_get_hw_err_status,
 	.clear_dev_hw_err_status = sec_clear_hw_err_status,
-	.log_dev_hw_err		= sec_log_hw_error,
 	.open_axi_master_ooo	= sec_open_axi_master_ooo,
 	.open_sva_prefetch	= sec_open_sva_prefetch,
 	.close_sva_prefetch	= sec_close_sva_prefetch,
+	.show_last_dfx_regs	= sec_show_last_dfx_regs,
 	.err_info_init		= sec_err_info_init,
+	.get_err_result		= sec_get_err_result,
 };
 
 static int sec_pf_probe_init(struct sec_dev *sec)
 {
 	struct hisi_qm *qm = &sec->qm;
 	int ret;
-
-	qm->err_ini = &sec_err_ini;
-	qm->err_ini->err_info_init(qm);
 
 	ret = sec_set_user_domain_and_cache(qm);
 	if (ret)
@@ -862,28 +1143,58 @@ static int sec_pf_probe_init(struct sec_dev *sec)
 	sec_open_sva_prefetch(qm);
 	hisi_qm_dev_err_init(qm);
 	sec_debug_regs_clear(qm);
+	ret = sec_show_last_regs_init(qm);
+	if (ret)
+		pci_err(qm->pdev, "Failed to init last word regs!\n");
+
+	return ret;
+}
+
+static int sec_pre_store_cap_reg(struct hisi_qm *qm)
+{
+	struct hisi_qm_cap_record *sec_cap;
+	struct pci_dev *pdev = qm->pdev;
+	size_t i, size;
+
+	size = ARRAY_SIZE(sec_cap_query_info);
+	sec_cap = devm_kzalloc(&pdev->dev, sizeof(*sec_cap) * size, GFP_KERNEL);
+	if (!sec_cap)
+		return -ENOMEM;
+
+	for (i = 0; i < size; i++) {
+		sec_cap[i].type = sec_cap_query_info[i].type;
+		sec_cap[i].name = sec_cap_query_info[i].name;
+		sec_cap[i].cap_val = hisi_qm_get_cap_value(qm, sec_cap_query_info,
+				     i, qm->cap_ver);
+	}
+
+	qm->cap_tables.dev_cap_table = sec_cap;
+	qm->cap_tables.dev_cap_size = size;
 
 	return 0;
 }
 
 static int sec_qm_init(struct hisi_qm *qm, struct pci_dev *pdev)
 {
+	u64 alg_msk;
 	int ret;
 
 	qm->pdev = pdev;
 	qm->ver = pdev->revision;
-	qm->algs = "cipher\ndigest\naead";
 	qm->mode = uacce_mode;
 	qm->sqe_size = SEC_SQE_SIZE;
 	qm->dev_name = sec_name;
 
-	qm->fun_type = (pdev->device == SEC_PF_PCI_DEVICE_ID) ?
+	qm->fun_type = (pdev->device == PCI_DEVICE_ID_HUAWEI_SEC_PF) ?
 			QM_HW_PF : QM_HW_VF;
 	if (qm->fun_type == QM_HW_PF) {
 		qm->qp_base = SEC_PF_DEF_Q_BASE;
 		qm->qp_num = pf_q_num;
 		qm->debug.curr_qm_qp_num = pf_q_num;
 		qm->qm_list = &sec_devices;
+		qm->err_ini = &sec_err_ini;
+		if (pf_q_num_flag)
+			set_bit(QM_MODULE_PARAM, &qm->misc_ctl);
 	} else if (qm->fun_type == QM_HW_VF && qm->ver == QM_HW_V1) {
 		/*
 		 * have no way to get qm configure in VM in v1 hardware,
@@ -895,23 +1206,25 @@ static int sec_qm_init(struct hisi_qm *qm, struct pci_dev *pdev)
 		qm->qp_num = SEC_QUEUE_NUM_V1 - SEC_PF_DEF_Q_NUM;
 	}
 
-	/*
-	 * WQ_HIGHPRI: SEC request must be low delayed,
-	 * so need a high priority workqueue.
-	 * WQ_UNBOUND: SEC task is likely with long
-	 * running CPU intensive workloads.
-	 */
-	qm->wq = alloc_workqueue("%s", WQ_HIGHPRI | WQ_MEM_RECLAIM |
-				 WQ_UNBOUND, num_online_cpus(),
-				 pci_name(qm->pdev));
-	if (!qm->wq) {
-		pci_err(qm->pdev, "fail to alloc workqueue\n");
-		return -ENOMEM;
+	ret = hisi_qm_init(qm);
+	if (ret) {
+		pci_err(qm->pdev, "Failed to init sec qm configures!\n");
+		return ret;
 	}
 
-	ret = hisi_qm_init(qm);
-	if (ret)
-		destroy_workqueue(qm->wq);
+	/* Fetch and save the value of capability registers */
+	ret = sec_pre_store_cap_reg(qm);
+	if (ret) {
+		pci_err(qm->pdev, "Failed to pre-store capability registers!\n");
+		hisi_qm_uninit(qm);
+		return ret;
+	}
+	alg_msk = sec_get_alg_bitmap(qm, SEC_ALG_BITMAP_HIGH, SEC_ALG_BITMAP_LOW);
+	ret = hisi_qm_set_algs(qm, alg_msk, sec_dev_algs, ARRAY_SIZE(sec_dev_algs));
+	if (ret) {
+		pci_err(qm->pdev, "Failed to set sec algs!\n");
+		hisi_qm_uninit(qm);
+	}
 
 	return ret;
 }
@@ -943,9 +1256,13 @@ static int sec_probe_init(struct sec_dev *sec)
 
 static void sec_probe_uninit(struct hisi_qm *qm)
 {
-	hisi_qm_dev_err_uninit(qm);
+	if (qm->fun_type == QM_HW_VF)
+		return;
 
-	destroy_workqueue(qm->wq);
+	sec_debug_regs_clear(qm);
+	sec_show_last_regs_uninit(qm);
+	sec_close_sva_prefetch(qm);
+	hisi_qm_dev_err_uninit(qm);
 }
 
 static void sec_iommu_used_check(struct sec_dev *sec)
@@ -1001,15 +1318,11 @@ static int sec_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		pci_warn(pdev, "Failed to init debugfs!\n");
 
-	if (qm->qp_num >= ctx_q_num) {
-		ret = hisi_qm_alg_register(qm, &sec_devices);
-		if (ret < 0) {
-			pr_err("Failed to register driver to crypto.\n");
-			goto err_qm_stop;
-		}
-	} else {
-		pci_warn(qm->pdev,
-			"Failed to use kernel mode, qp not enough!\n");
+	hisi_qm_add_list(qm, &sec_devices);
+	ret = hisi_qm_alg_register(qm, &sec_devices, ctx_q_num);
+	if (ret < 0) {
+		pr_err("Failed to register driver to crypto.\n");
+		goto err_qm_del_list;
 	}
 
 	if (qm->uacce) {
@@ -1031,9 +1344,9 @@ static int sec_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	return 0;
 
 err_alg_unregister:
-	if (qm->qp_num >= ctx_q_num)
-		hisi_qm_alg_unregister(qm, &sec_devices);
-err_qm_stop:
+	hisi_qm_alg_unregister(qm, &sec_devices, ctx_q_num);
+err_qm_del_list:
+	hisi_qm_del_list(qm, &sec_devices);
 	sec_debugfs_exit(qm);
 	hisi_qm_stop(qm, QM_NORMAL);
 err_probe_uninit:
@@ -1049,8 +1362,8 @@ static void sec_remove(struct pci_dev *pdev)
 
 	hisi_qm_pm_uninit(qm);
 	hisi_qm_wait_task_finish(qm, &sec_devices);
-	if (qm->qp_num >= ctx_q_num)
-		hisi_qm_alg_unregister(qm, &sec_devices);
+	hisi_qm_alg_unregister(qm, &sec_devices, ctx_q_num);
+	hisi_qm_del_list(qm, &sec_devices);
 
 	if (qm->fun_type == QM_HW_PF && qm->vfs_num)
 		hisi_qm_sriov_disable(pdev, true);
@@ -1058,10 +1371,6 @@ static void sec_remove(struct pci_dev *pdev)
 	sec_debugfs_exit(qm);
 
 	(void)hisi_qm_stop(qm, QM_NORMAL);
-
-	if (qm->fun_type == QM_HW_PF)
-		sec_debug_regs_clear(qm);
-
 	sec_probe_uninit(qm);
 
 	sec_qm_uninit(qm);
@@ -1084,10 +1393,17 @@ static struct pci_driver sec_pci_driver = {
 	.probe = sec_probe,
 	.remove = sec_remove,
 	.err_handler = &sec_err_handler,
-	.sriov_configure = hisi_qm_sriov_configure,
+	.sriov_configure = IS_ENABLED(CONFIG_PCI_IOV) ?
+				hisi_qm_sriov_configure : NULL,
 	.shutdown = hisi_qm_dev_shutdown,
 	.driver.pm = &sec_pm_ops,
 };
+
+struct pci_driver *hisi_sec_get_pf_driver(void)
+{
+	return &sec_pci_driver;
+}
+EXPORT_SYMBOL_GPL(hisi_sec_get_pf_driver);
 
 static void sec_register_debugfs(void)
 {

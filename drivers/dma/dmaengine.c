@@ -172,7 +172,7 @@ static ssize_t memcpy_count_show(struct device *dev,
 	if (chan) {
 		for_each_possible_cpu(i)
 			count += per_cpu_ptr(chan->local, i)->memcpy_count;
-		err = sprintf(buf, "%lu\n", count);
+		err = sysfs_emit(buf, "%lu\n", count);
 	} else
 		err = -ENODEV;
 	mutex_unlock(&dma_list_mutex);
@@ -194,7 +194,7 @@ static ssize_t bytes_transferred_show(struct device *dev,
 	if (chan) {
 		for_each_possible_cpu(i)
 			count += per_cpu_ptr(chan->local, i)->bytes_transferred;
-		err = sprintf(buf, "%lu\n", count);
+		err = sysfs_emit(buf, "%lu\n", count);
 	} else
 		err = -ENODEV;
 	mutex_unlock(&dma_list_mutex);
@@ -212,7 +212,7 @@ static ssize_t in_use_show(struct device *dev, struct device_attribute *attr,
 	mutex_lock(&dma_list_mutex);
 	chan = dev_to_dma_chan(dev);
 	if (chan)
-		err = sprintf(buf, "%d\n", chan->client_count);
+		err = sysfs_emit(buf, "%d\n", chan->client_count);
 	else
 		err = -ENODEV;
 	mutex_unlock(&dma_list_mutex);
@@ -451,7 +451,8 @@ static int dma_chan_get(struct dma_chan *chan)
 	/* The channel is already in use, update client count */
 	if (chan->client_count) {
 		__module_get(owner);
-		goto out;
+		chan->client_count++;
+		return 0;
 	}
 
 	if (!try_module_get(owner))
@@ -470,11 +471,11 @@ static int dma_chan_get(struct dma_chan *chan)
 			goto err_out;
 	}
 
+	chan->client_count++;
+
 	if (!dma_has_cap(DMA_PRIVATE, chan->device->cap_mask))
 		balance_ref_count(chan);
 
-out:
-	chan->client_count++;
 	return 0;
 
 err_out:
@@ -1036,7 +1037,8 @@ static int get_dma_id(struct dma_device *device)
 }
 
 static int __dma_async_device_channel_register(struct dma_device *device,
-					       struct dma_chan *chan)
+					       struct dma_chan *chan,
+					       const char *name)
 {
 	int rc;
 
@@ -1053,9 +1055,7 @@ static int __dma_async_device_channel_register(struct dma_device *device,
 	 * When the chan_id is a negative value, we are dynamically adding
 	 * the channel. Otherwise we are static enumerating.
 	 */
-	mutex_lock(&device->chan_mutex);
 	chan->chan_id = ida_alloc(&device->chan_ida, GFP_KERNEL);
-	mutex_unlock(&device->chan_mutex);
 	if (chan->chan_id < 0) {
 		pr_err("%s: unable to alloc ida for chan: %d\n",
 		       __func__, chan->chan_id);
@@ -1067,8 +1067,10 @@ static int __dma_async_device_channel_register(struct dma_device *device,
 	chan->dev->device.parent = device->dev;
 	chan->dev->chan = chan;
 	chan->dev->dev_id = device->dev_id;
-	dev_set_name(&chan->dev->device, "dma%dchan%d",
-		     device->dev_id, chan->chan_id);
+	if (!name)
+		dev_set_name(&chan->dev->device, "dma%dchan%d", device->dev_id, chan->chan_id);
+	else
+		dev_set_name(&chan->dev->device, "%s", name);
 	rc = device_register(&chan->dev->device);
 	if (rc)
 		goto err_out_ida;
@@ -1078,9 +1080,7 @@ static int __dma_async_device_channel_register(struct dma_device *device,
 	return 0;
 
  err_out_ida:
-	mutex_lock(&device->chan_mutex);
 	ida_free(&device->chan_ida, chan->chan_id);
-	mutex_unlock(&device->chan_mutex);
  err_free_dev:
 	kfree(chan->dev);
  err_free_local:
@@ -1090,11 +1090,12 @@ static int __dma_async_device_channel_register(struct dma_device *device,
 }
 
 int dma_async_device_channel_register(struct dma_device *device,
-				      struct dma_chan *chan)
+				      struct dma_chan *chan,
+				      const char *name)
 {
 	int rc;
 
-	rc = __dma_async_device_channel_register(device, chan);
+	rc = __dma_async_device_channel_register(device, chan, name);
 	if (rc < 0)
 		return rc;
 
@@ -1106,6 +1107,9 @@ EXPORT_SYMBOL_GPL(dma_async_device_channel_register);
 static void __dma_async_device_channel_unregister(struct dma_device *device,
 						  struct dma_chan *chan)
 {
+	if (chan->local == NULL)
+		return;
+
 	WARN_ONCE(!device->device_release && chan->client_count,
 		  "%s called while %d clients hold a reference\n",
 		  __func__, chan->client_count);
@@ -1113,9 +1117,7 @@ static void __dma_async_device_channel_unregister(struct dma_device *device,
 	device->chancnt--;
 	chan->dev->chan = NULL;
 	mutex_unlock(&dma_list_mutex);
-	mutex_lock(&device->chan_mutex);
 	ida_free(&device->chan_ida, chan->chan_id);
-	mutex_unlock(&device->chan_mutex);
 	device_unregister(&chan->dev->device);
 	free_percpu(chan->local);
 }
@@ -1152,76 +1154,27 @@ int dma_async_device_register(struct dma_device *device)
 
 	device->owner = device->dev->driver->owner;
 
-	if (dma_has_cap(DMA_MEMCPY, device->cap_mask) && !device->device_prep_dma_memcpy) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_MEMCPY");
-		return -EIO;
-	}
+#define CHECK_CAP(_name, _type)								\
+{											\
+	if (dma_has_cap(_type, device->cap_mask) && !device->device_prep_##_name) {	\
+		dev_err(device->dev,							\
+			"Device claims capability %s, but op is not defined\n",		\
+			__stringify(_type));						\
+		return -EIO;								\
+	}										\
+}
 
-	if (dma_has_cap(DMA_MEMCPY_SG, device->cap_mask) && !device->device_prep_dma_memcpy_sg) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_MEMCPY_SG");
-		return -EIO;
-	}
+	CHECK_CAP(dma_memcpy,      DMA_MEMCPY);
+	CHECK_CAP(dma_xor,         DMA_XOR);
+	CHECK_CAP(dma_xor_val,     DMA_XOR_VAL);
+	CHECK_CAP(dma_pq,          DMA_PQ);
+	CHECK_CAP(dma_pq_val,      DMA_PQ_VAL);
+	CHECK_CAP(dma_memset,      DMA_MEMSET);
+	CHECK_CAP(dma_interrupt,   DMA_INTERRUPT);
+	CHECK_CAP(dma_cyclic,      DMA_CYCLIC);
+	CHECK_CAP(interleaved_dma, DMA_INTERLEAVE);
 
-	if (dma_has_cap(DMA_XOR, device->cap_mask) && !device->device_prep_dma_xor) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_XOR");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_XOR_VAL, device->cap_mask) && !device->device_prep_dma_xor_val) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_XOR_VAL");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_PQ, device->cap_mask) && !device->device_prep_dma_pq) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_PQ");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_PQ_VAL, device->cap_mask) && !device->device_prep_dma_pq_val) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_PQ_VAL");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_MEMSET, device->cap_mask) && !device->device_prep_dma_memset) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_MEMSET");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_INTERRUPT, device->cap_mask) && !device->device_prep_dma_interrupt) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_INTERRUPT");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_CYCLIC, device->cap_mask) && !device->device_prep_dma_cyclic) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_CYCLIC");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_INTERLEAVE, device->cap_mask) && !device->device_prep_interleaved_dma) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_INTERLEAVE");
-		return -EIO;
-	}
-
+#undef CHECK_CAP
 
 	if (!device->device_tx_status) {
 		dev_err(device->dev, "Device tx_status is not defined\n");
@@ -1250,12 +1203,11 @@ int dma_async_device_register(struct dma_device *device)
 	if (rc != 0)
 		return rc;
 
-	mutex_init(&device->chan_mutex);
 	ida_init(&device->chan_ida);
 
 	/* represent channels in sysfs. Probably want devs too */
 	list_for_each_entry(chan, &device->channels, device_node) {
-		rc = __dma_async_device_channel_register(device, chan);
+		rc = __dma_async_device_channel_register(device, chan, NULL);
 		if (rc < 0)
 			goto err_out;
 	}
@@ -1336,11 +1288,8 @@ void dma_async_device_unregister(struct dma_device *device)
 }
 EXPORT_SYMBOL(dma_async_device_unregister);
 
-static void dmam_device_release(struct device *dev, void *res)
+static void dmaenginem_async_device_unregister(void *device)
 {
-	struct dma_device *device;
-
-	device = *(struct dma_device **)res;
 	dma_async_device_unregister(device);
 }
 
@@ -1352,22 +1301,13 @@ static void dmam_device_release(struct device *dev, void *res)
  */
 int dmaenginem_async_device_register(struct dma_device *device)
 {
-	void *p;
 	int ret;
 
-	p = devres_alloc(dmam_device_release, sizeof(void *), GFP_KERNEL);
-	if (!p)
-		return -ENOMEM;
-
 	ret = dma_async_device_register(device);
-	if (!ret) {
-		*(struct dma_device **)p = device;
-		devres_add(device->dev, p);
-	} else {
-		devres_free(p);
-	}
+	if (ret)
+		return ret;
 
-	return ret;
+	return devm_add_action_or_reset(device->dev, dmaenginem_async_device_unregister, device);
 }
 EXPORT_SYMBOL(dmaenginem_async_device_register);
 

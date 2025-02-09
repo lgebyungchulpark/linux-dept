@@ -13,7 +13,6 @@
 #include <sched.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
-#include <sys/resource.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <time.h>
@@ -41,11 +40,6 @@ static inline void INIT_LIST_HEAD(struct list_head *list)
 {
 	list->next = list;
 	list->prev = list;
-}
-
-static inline int list_empty(const struct list_head *head)
-{
-	return head->next == head;
 }
 
 static inline void __list_add(struct list_head *new,
@@ -524,7 +518,7 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	for (f = 0; f < sizeof(map_flags) / sizeof(*map_flags); f++) {
+	for (f = 0; f < ARRAY_SIZE(map_flags); f++) {
 		test_lru_loss0(BPF_MAP_TYPE_LRU_HASH, map_flags[f]);
 		test_lru_loss1(BPF_MAP_TYPE_LRU_HASH, map_flags[f]);
 		test_parallel_lru_loss(BPF_MAP_TYPE_LRU_HASH, map_flags[f],

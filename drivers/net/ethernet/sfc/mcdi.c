@@ -10,7 +10,6 @@
 #include "net_driver.h"
 #include "nic.h"
 #include "io.h"
-#include "farch_regs.h"
 #include "mcdi_pcol.h"
 
 /**************************************************************************
@@ -99,14 +98,12 @@ int efx_mcdi_init(struct efx_nic *efx)
 	 */
 	rc = efx_mcdi_drv_attach(efx, true, &already_attached);
 	if (rc) {
-		netif_err(efx, probe, efx->net_dev,
-			  "Unable to register driver with MCPU\n");
+		pci_err(efx->pci_dev, "Unable to register driver with MCPU\n");
 		goto fail2;
 	}
 	if (already_attached)
 		/* Not a fatal error */
-		netif_err(efx, probe, efx->net_dev,
-			  "Host already registered with MCPU\n");
+		pci_err(efx->pci_dev, "Host already registered with MCPU\n");
 
 	if (efx->mcdi->fn_flags &
 	    (1 << MC_CMD_DRV_ATTACH_EXT_OUT_FLAG_PRIMARY))
@@ -163,9 +160,9 @@ static void efx_mcdi_send_request(struct efx_nic *efx, unsigned cmd,
 	/* Serialise with efx_mcdi_ev_cpl() and efx_mcdi_ev_death() */
 	spin_lock_bh(&mcdi->iface_lock);
 	++mcdi->seqno;
+	seqno = mcdi->seqno & SEQ_MASK;
 	spin_unlock_bh(&mcdi->iface_lock);
 
-	seqno = mcdi->seqno & SEQ_MASK;
 	xflags = 0;
 	if (mcdi->mode == MCDI_MODE_EVENTS)
 		xflags |= MCDI_HEADER_XFLAGS_EVREQ;
@@ -1054,29 +1051,12 @@ efx_mcdi_rpc_async(struct efx_nic *efx, unsigned int cmd,
 				   cookie, false);
 }
 
-int efx_mcdi_rpc_async_quiet(struct efx_nic *efx, unsigned int cmd,
-			     const efx_dword_t *inbuf, size_t inlen,
-			     size_t outlen, efx_mcdi_async_completer *complete,
-			     unsigned long cookie)
-{
-	return _efx_mcdi_rpc_async(efx, cmd, inbuf, inlen, outlen, complete,
-				   cookie, true);
-}
-
 int efx_mcdi_rpc_finish(struct efx_nic *efx, unsigned cmd, size_t inlen,
 			efx_dword_t *outbuf, size_t outlen,
 			size_t *outlen_actual)
 {
 	return _efx_mcdi_rpc_finish(efx, cmd, inlen, outbuf, outlen,
 				    outlen_actual, false, NULL, NULL);
-}
-
-int efx_mcdi_rpc_finish_quiet(struct efx_nic *efx, unsigned cmd, size_t inlen,
-			      efx_dword_t *outbuf, size_t outlen,
-			      size_t *outlen_actual)
-{
-	return _efx_mcdi_rpc_finish(efx, cmd, inlen, outbuf, outlen,
-				    outlen_actual, true, NULL, NULL);
 }
 
 void efx_mcdi_display_error(struct efx_nic *efx, unsigned cmd,
@@ -1261,7 +1241,7 @@ static void efx_mcdi_ev_death(struct efx_nic *efx, int rc)
 }
 
 /* The MC is going down in to BIST mode. set the BIST flag to block
- * new MCDI, cancel any outstanding MCDI and and schedule a BIST-type reset
+ * new MCDI, cancel any outstanding MCDI and schedule a BIST-type reset
  * (which doesn't actually execute a reset, it waits for the controlling
  * function to reset it).
  */
@@ -1355,12 +1335,6 @@ void efx_mcdi_process_event(struct efx_channel *channel,
 	case MCDI_EVENT_CODE_MAC_STATS_DMA:
 		/* MAC stats are gather lazily.  We can ignore this. */
 		break;
-	case MCDI_EVENT_CODE_FLR:
-		if (efx->type->sriov_flr)
-			efx->type->sriov_flr(efx,
-					     MCDI_EVENT_FIELD(*event, FLR_VF));
-		break;
-	case MCDI_EVENT_CODE_PTP_RX:
 	case MCDI_EVENT_CODE_PTP_FAULT:
 	case MCDI_EVENT_CODE_PTP_PPS:
 		efx_ptp_event(efx, event);
@@ -1447,7 +1421,7 @@ void efx_mcdi_print_fwver(struct efx_nic *efx, char *buf, size_t len)
 	return;
 
 fail:
-	netif_err(efx, probe, efx->net_dev, "%s: failed rc=%d\n", __func__, rc);
+	pci_err(efx->pci_dev, "%s: failed rc=%d\n", __func__, rc);
 	buf[0] = 0;
 }
 
@@ -1471,8 +1445,9 @@ static int efx_mcdi_drv_attach(struct efx_nic *efx, bool driver_operating,
 	 * care what firmware we get.
 	 */
 	if (rc == -EPERM) {
-		netif_dbg(efx, probe, efx->net_dev,
-			  "efx_mcdi_drv_attach with fw-variant setting failed EPERM, trying without it\n");
+		pci_dbg(efx->pci_dev,
+			"%s with fw-variant setting failed EPERM, trying without it\n",
+			__func__);
 		MCDI_SET_DWORD(inbuf, DRV_ATTACH_IN_FIRMWARE_ID,
 			       MC_CMD_FW_DONT_CARE);
 		rc = efx_mcdi_rpc_quiet(efx, MC_CMD_DRV_ATTACH, inbuf,
@@ -1514,7 +1489,7 @@ static int efx_mcdi_drv_attach(struct efx_nic *efx, bool driver_operating,
 	return 0;
 
 fail:
-	netif_err(efx, probe, efx->net_dev, "%s: failed rc=%d\n", __func__, rc);
+	pci_err(efx->pci_dev, "%s: failed rc=%d\n", __func__, rc);
 	return rc;
 }
 
@@ -1990,33 +1965,6 @@ efx_mcdi_wol_filter_set_magic(struct efx_nic *efx,  const u8 *mac, int *id_out)
 }
 
 
-int efx_mcdi_wol_filter_get_magic(struct efx_nic *efx, int *id_out)
-{
-	MCDI_DECLARE_BUF(outbuf, MC_CMD_WOL_FILTER_GET_OUT_LEN);
-	size_t outlen;
-	int rc;
-
-	rc = efx_mcdi_rpc(efx, MC_CMD_WOL_FILTER_GET, NULL, 0,
-			  outbuf, sizeof(outbuf), &outlen);
-	if (rc)
-		goto fail;
-
-	if (outlen < MC_CMD_WOL_FILTER_GET_OUT_LEN) {
-		rc = -EIO;
-		goto fail;
-	}
-
-	*id_out = (int)MCDI_DWORD(outbuf, WOL_FILTER_GET_OUT_FILTER_ID);
-
-	return 0;
-
-fail:
-	*id_out = -1;
-	netif_err(efx, hw, efx->net_dev, "%s: failed rc=%d\n", __func__, rc);
-	return rc;
-}
-
-
 int efx_mcdi_wol_filter_remove(struct efx_nic *efx, int id)
 {
 	MCDI_DECLARE_BUF(inbuf, MC_CMD_WOL_FILTER_REMOVE_IN_LEN);
@@ -2026,38 +1974,6 @@ int efx_mcdi_wol_filter_remove(struct efx_nic *efx, int id)
 
 	rc = efx_mcdi_rpc(efx, MC_CMD_WOL_FILTER_REMOVE, inbuf, sizeof(inbuf),
 			  NULL, 0, NULL);
-	return rc;
-}
-
-int efx_mcdi_flush_rxqs(struct efx_nic *efx)
-{
-	struct efx_channel *channel;
-	struct efx_rx_queue *rx_queue;
-	MCDI_DECLARE_BUF(inbuf,
-			 MC_CMD_FLUSH_RX_QUEUES_IN_LEN(EFX_MAX_CHANNELS));
-	int rc, count;
-
-	BUILD_BUG_ON(EFX_MAX_CHANNELS >
-		     MC_CMD_FLUSH_RX_QUEUES_IN_QID_OFST_MAXNUM);
-
-	count = 0;
-	efx_for_each_channel(channel, efx) {
-		efx_for_each_channel_rx_queue(rx_queue, channel) {
-			if (rx_queue->flush_pending) {
-				rx_queue->flush_pending = false;
-				atomic_dec(&efx->rxq_flush_pending);
-				MCDI_SET_ARRAY_DWORD(
-					inbuf, FLUSH_RX_QUEUES_IN_QID_OFST,
-					count, efx_rx_queue_index(rx_queue));
-				count++;
-			}
-		}
-	}
-
-	rc = efx_mcdi_rpc(efx, MC_CMD_FLUSH_RX_QUEUES, inbuf,
-			  MC_CMD_FLUSH_RX_QUEUES_IN_LEN(count), NULL, 0, NULL);
-	WARN_ON(rc < 0);
-
 	return rc;
 }
 
@@ -2127,6 +2043,123 @@ fail:
 	 */
 	netif_cond_dbg(efx, hw, efx->net_dev, rc == -ENOSYS, err,
 		       "%s: failed rc=%d\n", __func__, rc);
+	return rc;
+}
+
+/* Failure to read a privilege mask is never fatal, because we can always
+ * carry on as though we didn't have the privilege we were interested in.
+ * So use efx_mcdi_rpc_quiet().
+ */
+int efx_mcdi_get_privilege_mask(struct efx_nic *efx, u32 *mask)
+{
+	MCDI_DECLARE_BUF(fi_outbuf, MC_CMD_GET_FUNCTION_INFO_OUT_LEN);
+	MCDI_DECLARE_BUF(pm_inbuf, MC_CMD_PRIVILEGE_MASK_IN_LEN);
+	MCDI_DECLARE_BUF(pm_outbuf, MC_CMD_PRIVILEGE_MASK_OUT_LEN);
+	size_t outlen;
+	u16 pf, vf;
+	int rc;
+
+	if (!efx || !mask)
+		return -EINVAL;
+
+	/* Get our function number */
+	rc = efx_mcdi_rpc_quiet(efx, MC_CMD_GET_FUNCTION_INFO, NULL, 0,
+				fi_outbuf, MC_CMD_GET_FUNCTION_INFO_OUT_LEN,
+				&outlen);
+	if (rc != 0)
+		return rc;
+	if (outlen < MC_CMD_GET_FUNCTION_INFO_OUT_LEN)
+		return -EIO;
+
+	pf = MCDI_DWORD(fi_outbuf, GET_FUNCTION_INFO_OUT_PF);
+	vf = MCDI_DWORD(fi_outbuf, GET_FUNCTION_INFO_OUT_VF);
+
+	MCDI_POPULATE_DWORD_2(pm_inbuf, PRIVILEGE_MASK_IN_FUNCTION,
+			      PRIVILEGE_MASK_IN_FUNCTION_PF, pf,
+			      PRIVILEGE_MASK_IN_FUNCTION_VF, vf);
+
+	rc = efx_mcdi_rpc_quiet(efx, MC_CMD_PRIVILEGE_MASK,
+				pm_inbuf, sizeof(pm_inbuf),
+				pm_outbuf, sizeof(pm_outbuf), &outlen);
+
+	if (rc != 0)
+		return rc;
+	if (outlen < MC_CMD_PRIVILEGE_MASK_OUT_LEN)
+		return -EIO;
+
+	*mask = MCDI_DWORD(pm_outbuf, PRIVILEGE_MASK_OUT_OLD_MASK);
+
+	return 0;
+}
+
+int efx_mcdi_nvram_metadata(struct efx_nic *efx, unsigned int type,
+			    u32 *subtype, u16 version[4], char *desc,
+			    size_t descsize)
+{
+	MCDI_DECLARE_BUF(inbuf, MC_CMD_NVRAM_METADATA_IN_LEN);
+	efx_dword_t *outbuf;
+	size_t outlen;
+	u32 flags;
+	int rc;
+
+	outbuf = kzalloc(MC_CMD_NVRAM_METADATA_OUT_LENMAX_MCDI2, GFP_KERNEL);
+	if (!outbuf)
+		return -ENOMEM;
+
+	MCDI_SET_DWORD(inbuf, NVRAM_METADATA_IN_TYPE, type);
+
+	rc = efx_mcdi_rpc_quiet(efx, MC_CMD_NVRAM_METADATA, inbuf,
+				sizeof(inbuf), outbuf,
+				MC_CMD_NVRAM_METADATA_OUT_LENMAX_MCDI2,
+				&outlen);
+	if (rc)
+		goto out_free;
+	if (outlen < MC_CMD_NVRAM_METADATA_OUT_LENMIN) {
+		rc = -EIO;
+		goto out_free;
+	}
+
+	flags = MCDI_DWORD(outbuf, NVRAM_METADATA_OUT_FLAGS);
+
+	if (desc && descsize > 0) {
+		if (flags & BIT(MC_CMD_NVRAM_METADATA_OUT_DESCRIPTION_VALID_LBN)) {
+			if (descsize <=
+			    MC_CMD_NVRAM_METADATA_OUT_DESCRIPTION_NUM(outlen)) {
+				rc = -E2BIG;
+				goto out_free;
+			}
+
+			strscpy(desc,
+				MCDI_PTR(outbuf, NVRAM_METADATA_OUT_DESCRIPTION),
+				MC_CMD_NVRAM_METADATA_OUT_DESCRIPTION_NUM(outlen));
+		} else {
+			desc[0] = '\0';
+		}
+	}
+
+	if (subtype) {
+		if (flags & BIT(MC_CMD_NVRAM_METADATA_OUT_SUBTYPE_VALID_LBN))
+			*subtype = MCDI_DWORD(outbuf, NVRAM_METADATA_OUT_SUBTYPE);
+		else
+			*subtype = 0;
+	}
+
+	if (version) {
+		if (flags & BIT(MC_CMD_NVRAM_METADATA_OUT_VERSION_VALID_LBN)) {
+			version[0] = MCDI_WORD(outbuf, NVRAM_METADATA_OUT_VERSION_W);
+			version[1] = MCDI_WORD(outbuf, NVRAM_METADATA_OUT_VERSION_X);
+			version[2] = MCDI_WORD(outbuf, NVRAM_METADATA_OUT_VERSION_Y);
+			version[3] = MCDI_WORD(outbuf, NVRAM_METADATA_OUT_VERSION_Z);
+		} else {
+			version[0] = 0;
+			version[1] = 0;
+			version[2] = 0;
+			version[3] = 0;
+		}
+	}
+
+out_free:
+	kfree(outbuf);
 	return rc;
 }
 

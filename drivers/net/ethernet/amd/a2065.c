@@ -695,7 +695,7 @@ static int a2065_init_one(struct zorro_dev *z,
 	}
 
 	dev = alloc_etherdev(sizeof(struct lance_private));
-	if (dev == NULL) {
+	if (!dev) {
 		release_mem_region(base_addr, sizeof(struct lance_regs));
 		release_mem_region(mem_start, A2065_RAM_SIZE);
 		return -ENOMEM;
@@ -781,4 +781,5 @@ static void __exit a2065_cleanup_module(void)
 module_init(a2065_init_module);
 module_exit(a2065_cleanup_module);
 
+MODULE_DESCRIPTION("Commodore A2065 Ethernet driver");
 MODULE_LICENSE("GPL");

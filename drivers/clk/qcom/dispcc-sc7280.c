@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/clk-provider.h>
@@ -787,6 +787,9 @@ static struct clk_branch disp_cc_sleep_clk = {
 
 static struct gdsc disp_cc_mdss_core_gdsc = {
 	.gdscr = 0x1004,
+	.en_rest_wait_val = 0x2,
+	.en_few_wait_val = 0x2,
+	.clk_dis_wait_val = 0xf,
 	.pd = {
 		.name = "disp_cc_mdss_core_gdsc",
 	},
@@ -875,13 +878,10 @@ static int disp_cc_sc7280_probe(struct platform_device *pdev)
 
 	clk_lucid_pll_configure(&disp_cc_pll0, regmap, &disp_cc_pll0_config);
 
-	/*
-	 * Keep the clocks always-ON
-	 * DISP_CC_XO_CLK
-	 */
-	regmap_update_bits(regmap, 0x5008, BIT(0), BIT(0));
+	/* Keep some clocks always-on */
+	qcom_branch_set_clk_en(regmap, 0x5008); /* DISP_CC_XO_CLK */
 
-	return qcom_cc_really_probe(pdev, &disp_cc_sc7280_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &disp_cc_sc7280_desc, regmap);
 }
 
 static struct platform_driver disp_cc_sc7280_driver = {
@@ -892,17 +892,7 @@ static struct platform_driver disp_cc_sc7280_driver = {
 	},
 };
 
-static int __init disp_cc_sc7280_init(void)
-{
-	return platform_driver_register(&disp_cc_sc7280_driver);
-}
-subsys_initcall(disp_cc_sc7280_init);
-
-static void __exit disp_cc_sc7280_exit(void)
-{
-	platform_driver_unregister(&disp_cc_sc7280_driver);
-}
-module_exit(disp_cc_sc7280_exit);
+module_platform_driver(disp_cc_sc7280_driver);
 
 MODULE_DESCRIPTION("QTI DISP_CC sc7280 Driver");
 MODULE_LICENSE("GPL v2");

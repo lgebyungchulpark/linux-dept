@@ -49,7 +49,7 @@ struct hi8435_priv {
 
 	unsigned threshold_lo[2]; /* GND-Open and Supply-Open thresholds */
 	unsigned threshold_hi[2]; /* GND-Open and Supply-Open thresholds */
-	u8 reg_buffer[3] ____cacheline_aligned;
+	u8 reg_buffer[3] __aligned(IIO_DMA_MINALIGN);
 };
 
 static int hi8435_readb(struct hi8435_priv *priv, u8 reg, u8 *val)
@@ -132,7 +132,7 @@ static int hi8435_read_event_config(struct iio_dev *idev,
 static int hi8435_write_event_config(struct iio_dev *idev,
 				     const struct iio_chan_spec *chan,
 				     enum iio_event_type type,
-				     enum iio_event_direction dir, int state)
+				     enum iio_event_direction dir, bool state)
 {
 	struct hi8435_priv *priv = iio_priv(idev);
 	int ret;
@@ -524,12 +524,12 @@ static int hi8435_probe(struct spi_device *spi)
 
 static const struct of_device_id hi8435_dt_ids[] = {
 	{ .compatible = "holt,hi8435" },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, hi8435_dt_ids);
 
 static const struct spi_device_id hi8435_id[] = {
-	{ "hi8435", 0},
+	{ "hi8435", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, hi8435_id);

@@ -16,7 +16,6 @@
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
-#include <linux/gpio.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -595,7 +594,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt1016 = {
 	.set_pll = rt1016_set_component_pll,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt1016_regmap = {
@@ -610,7 +608,7 @@ static const struct regmap_config rt1016_regmap = {
 };
 
 static const struct i2c_device_id rt1016_i2c_id[] = {
-	{ "rt1016", 0 },
+	{ "rt1016" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1016_i2c_id);
@@ -631,8 +629,7 @@ static const struct acpi_device_id rt1016_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, rt1016_acpi_match);
 #endif
 
-static int rt1016_i2c_probe(struct i2c_client *i2c,
-	const struct i2c_device_id *id)
+static int rt1016_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt1016_priv *rt1016;
 	int ret;

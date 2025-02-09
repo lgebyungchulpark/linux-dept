@@ -46,8 +46,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/spinlock.h>
 #include <linux/timer.h>
-
-#include <mach/hardware.h>
+#include <linux/pci.h>
 
 #include "soc_common.h"
 
@@ -205,14 +204,8 @@ static int soc_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 
 	for (i = 0; i < ARRAY_SIZE(skt->stat); i++) {
 		if (gpio_is_valid(skt->stat[i].gpio)) {
-			unsigned long flags = GPIOF_IN;
-
-			/* CD is active low by default */
-			if (i == SOC_STAT_CD)
-				flags |= GPIOF_ACTIVE_LOW;
-
 			ret = devm_gpio_request_one(skt->socket.dev.parent,
-						    skt->stat[i].gpio, flags,
+						    skt->stat[i].gpio, GPIOF_IN,
 						    skt->stat[i].name);
 			if (ret) {
 				__soc_pcmcia_hw_shutdown(skt, i);
@@ -220,6 +213,10 @@ static int soc_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 			}
 
 			skt->stat[i].desc = gpio_to_desc(skt->stat[i].gpio);
+
+			/* CD is active low by default */
+			if ((i == SOC_STAT_CD) ^ gpiod_is_active_low(skt->stat[i].desc))
+				gpiod_toggle_active_low(skt->stat[i].desc);
 		}
 
 		if (i < SOC_STAT_VS1 && skt->stat[i].desc) {
@@ -784,8 +781,7 @@ void soc_pcmcia_remove_one(struct soc_pcmcia_socket *skt)
 	/* should not be required; violates some lowlevel drivers */
 	soc_common_pcmcia_config_skt(skt, &dead_socket);
 
-	iounmap(skt->virt_io);
-	skt->virt_io = NULL;
+	iounmap(PCI_IOBASE + skt->res_io_io.start);
 	release_resource(&skt->res_attr);
 	release_resource(&skt->res_mem);
 	release_resource(&skt->res_io);
@@ -818,11 +814,12 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 	if (ret)
 		goto out_err_4;
 
-	skt->virt_io = ioremap(skt->res_io.start, 0x10000);
-	if (skt->virt_io == NULL) {
-		ret = -ENOMEM;
+	skt->res_io_io = (struct resource)
+		 DEFINE_RES_IO_NAMED(skt->nr * 0x1000 + 0x10000, 0x1000,
+				     "PCMCIA I/O");
+	ret = pci_remap_iospace(&skt->res_io_io, skt->res_io.start);
+	if (ret)
 		goto out_err_5;
-	}
 
 	/*
 	 * We initialize default socket timing here, because
@@ -840,7 +837,7 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 	skt->socket.resource_ops = &pccard_static_ops;
 	skt->socket.irq_mask = 0;
 	skt->socket.map_size = PAGE_SIZE;
-	skt->socket.io_offset = (unsigned long)skt->virt_io;
+	skt->socket.io_offset = (unsigned long)skt->res_io_io.start;
 
 	skt->status = soc_common_pcmcia_skt_state(skt);
 
@@ -874,7 +871,7 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
  out_err_7:
 	soc_pcmcia_hw_shutdown(skt);
  out_err_6:
-	iounmap(skt->virt_io);
+	iounmap(PCI_IOBASE + skt->res_io_io.start);
  out_err_5:
 	release_resource(&skt->res_attr);
  out_err_4:

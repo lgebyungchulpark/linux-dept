@@ -3,7 +3,7 @@
 #define __LINUX_ENTRYKVM_H
 
 #include <linux/static_call_types.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 #include <linux/syscalls.h>
 #include <linux/seccomp.h>
 #include <linux/sched.h>
@@ -17,8 +17,9 @@
 #endif
 
 #define XFER_TO_GUEST_MODE_WORK						\
-	(_TIF_NEED_RESCHED | _TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL |	\
-	 _TIF_NOTIFY_RESUME | ARCH_XFER_TO_GUEST_MODE_WORK)
+	(_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY | _TIF_SIGPENDING | \
+	 _TIF_NOTIFY_SIGNAL | _TIF_NOTIFY_RESUME |			\
+	 ARCH_XFER_TO_GUEST_MODE_WORK)
 
 struct kvm_vcpu;
 

@@ -17,21 +17,22 @@
 #include "msm_gem.h"
 #include "msm_gpu_trace.h"
 
+/* For userspace errors, use DRM_UT_DRIVER.. so that userspace can enable
+ * error msgs for debugging, but we don't spam dmesg by default
+ */
+#define SUBMIT_ERROR(submit, fmt, ...) \
+	DRM_DEV_DEBUG_DRIVER((submit)->dev->dev, fmt, ##__VA_ARGS__)
+
 /*
  * Cmdstream submission:
  */
-
-/* make sure these don't conflict w/ MSM_SUBMIT_BO_x */
-#define BO_VALID    0x8000   /* is current addr in cmdstream correct/valid? */
-#define BO_LOCKED   0x4000   /* obj lock is held */
-#define BO_ACTIVE   0x2000   /* active refcnt is held */
-#define BO_PINNED   0x1000   /* obj is pinned and on active list */
 
 static struct msm_gem_submit *submit_create(struct drm_device *dev,
 		struct msm_gpu *gpu,
 		struct msm_gpu_submitqueue *queue, uint32_t nr_bos,
 		uint32_t nr_cmds)
 {
+	static atomic_t ident = ATOMIC_INIT(0);
 	struct msm_gem_submit *submit;
 	uint64_t sz;
 	int ret;
@@ -42,12 +43,20 @@ static struct msm_gem_submit *submit_create(struct drm_device *dev,
 	if (sz > SIZE_MAX)
 		return ERR_PTR(-ENOMEM);
 
-	submit = kzalloc(sz, GFP_KERNEL | __GFP_NOWARN | __GFP_NORETRY);
+	submit = kzalloc(sz, GFP_KERNEL | __GFP_NOWARN);
 	if (!submit)
 		return ERR_PTR(-ENOMEM);
 
-	ret = drm_sched_job_init(&submit->base, queue->entity, queue);
+	submit->hw_fence = msm_fence_alloc();
+	if (IS_ERR(submit->hw_fence)) {
+		ret = PTR_ERR(submit->hw_fence);
+		kfree(submit);
+		return ERR_PTR(ret);
+	}
+
+	ret = drm_sched_job_init(&submit->base, queue->entity, 1, queue);
 	if (ret) {
+		kfree(submit->hw_fence);
 		kfree(submit);
 		return ERR_PTR(ret);
 	}
@@ -58,8 +67,12 @@ static struct msm_gem_submit *submit_create(struct drm_device *dev,
 	submit->gpu = gpu;
 	submit->cmd = (void *)&submit->bos[nr_bos];
 	submit->queue = queue;
+	submit->pid = get_pid(task_pid(current));
 	submit->ring = gpu->rb[queue->ring_nr];
 	submit->fault_dumped = false;
+
+	/* Get a unique identifier for the submission for logging purposes */
+	submit->ident = atomic_inc_return(&ident) - 1;
 
 	INIT_LIST_HEAD(&submit->node);
 
@@ -73,13 +86,25 @@ void __msm_gem_submit_destroy(struct kref *kref)
 	unsigned i;
 
 	if (submit->fence_id) {
-		mutex_lock(&submit->queue->lock);
+		spin_lock(&submit->queue->idr_lock);
 		idr_remove(&submit->queue->fence_idr, submit->fence_id);
-		mutex_unlock(&submit->queue->lock);
+		spin_unlock(&submit->queue->idr_lock);
 	}
 
 	dma_fence_put(submit->user_fence);
-	dma_fence_put(submit->hw_fence);
+
+	/*
+	 * If the submit is freed before msm_job_run(), then hw_fence is
+	 * just some pre-allocated memory, not a reference counted fence.
+	 * Once the job runs and the hw_fence is initialized, it will
+	 * have a refcount of at least one, since the submit holds a ref
+	 * to the hw_fence.
+	 */
+	if (kref_read(&submit->hw_fence->refcount) == 0) {
+		kfree(submit->hw_fence);
+	} else {
+		dma_fence_put(submit->hw_fence);
+	}
 
 	put_pid(submit->pid);
 	msm_submitqueue_put(submit->queue);
@@ -117,7 +142,7 @@ static int submit_lookup_objects(struct msm_gem_submit *submit,
 
 		if ((submit_bo.flags & ~MSM_SUBMIT_BO_FLAGS) ||
 			!(submit_bo.flags & MANDATORY_FLAGS)) {
-			DRM_ERROR("invalid flags: %x\n", submit_bo.flags);
+			SUBMIT_ERROR(submit, "invalid flags: %x\n", submit_bo.flags);
 			ret = -EINVAL;
 			i = 0;
 			goto out;
@@ -125,8 +150,6 @@ static int submit_lookup_objects(struct msm_gem_submit *submit,
 
 		submit->bos[i].handle = submit_bo.handle;
 		submit->bos[i].flags = submit_bo.flags;
-		/* in validate_objects() we figure out if this is true: */
-		submit->bos[i].iova  = submit_bo.presumed;
 	}
 
 	spin_lock(&file->table_lock);
@@ -139,14 +162,14 @@ static int submit_lookup_objects(struct msm_gem_submit *submit,
 		 */
 		obj = idr_find(&file->object_idr, submit->bos[i].handle);
 		if (!obj) {
-			DRM_ERROR("invalid handle %u at index %u\n", submit->bos[i].handle, i);
+			SUBMIT_ERROR(submit, "invalid handle %u at index %u\n", submit->bos[i].handle, i);
 			ret = -EINVAL;
 			goto out_unlock;
 		}
 
 		drm_gem_object_get(obj);
 
-		submit->bos[i].obj = to_msm_bo(obj);
+		submit->bos[i].obj = obj;
 	}
 
 out_unlock:
@@ -183,13 +206,13 @@ static int submit_lookup_cmds(struct msm_gem_submit *submit,
 		case MSM_SUBMIT_CMD_CTX_RESTORE_BUF:
 			break;
 		default:
-			DRM_ERROR("invalid type: %08x\n", submit_cmd.type);
+			SUBMIT_ERROR(submit, "invalid type: %08x\n", submit_cmd.type);
 			return -EINVAL;
 		}
 
 		if (submit_cmd.size % 4) {
-			DRM_ERROR("non-aligned cmdstream buffer size: %u\n",
-					submit_cmd.size);
+			SUBMIT_ERROR(submit, "non-aligned cmdstream buffer size: %u\n",
+				     submit_cmd.size);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -209,7 +232,11 @@ static int submit_lookup_cmds(struct msm_gem_submit *submit,
 			ret = -ENOMEM;
 			goto out;
 		}
-		submit->cmd[i].relocs = kmalloc(sz, GFP_KERNEL);
+		submit->cmd[i].relocs = kmalloc(sz, GFP_KERNEL | __GFP_NOWARN);
+		if (!submit->cmd[i].relocs) {
+			ret = -ENOMEM;
+			goto out;
+		}
 		ret = copy_from_user(submit->cmd[i].relocs, userptr, sz);
 		if (ret) {
 			ret = -EFAULT;
@@ -221,118 +248,42 @@ out:
 	return ret;
 }
 
-/* Unwind bo state, according to cleanup_flags.  In the success case, only
- * the lock is dropped at the end of the submit (and active/pin ref is dropped
- * later when the submit is retired).
- */
-static void submit_cleanup_bo(struct msm_gem_submit *submit, int i,
-		unsigned cleanup_flags)
-{
-	struct drm_gem_object *obj = &submit->bos[i].obj->base;
-	unsigned flags = submit->bos[i].flags & cleanup_flags;
-
-	if (flags & BO_PINNED)
-		msm_gem_unpin_iova_locked(obj, submit->aspace);
-
-	if (flags & BO_ACTIVE)
-		msm_gem_active_put(obj);
-
-	if (flags & BO_LOCKED)
-		dma_resv_unlock(obj->resv);
-
-	submit->bos[i].flags &= ~cleanup_flags;
-}
-
-static void submit_unlock_unpin_bo(struct msm_gem_submit *submit, int i)
-{
-	submit_cleanup_bo(submit, i, BO_PINNED | BO_ACTIVE | BO_LOCKED);
-
-	if (!(submit->bos[i].flags & BO_VALID))
-		submit->bos[i].iova = 0;
-}
-
 /* This is where we make sure all the bo's are reserved and pin'd: */
 static int submit_lock_objects(struct msm_gem_submit *submit)
 {
-	int contended, slow_locked = -1, i, ret = 0;
+	int ret;
 
-retry:
-	for (i = 0; i < submit->nr_bos; i++) {
-		struct msm_gem_object *msm_obj = submit->bos[i].obj;
+	drm_exec_init(&submit->exec, DRM_EXEC_INTERRUPTIBLE_WAIT, submit->nr_bos);
 
-		if (slow_locked == i)
-			slow_locked = -1;
-
-		contended = i;
-
-		if (!(submit->bos[i].flags & BO_LOCKED)) {
-			ret = dma_resv_lock_interruptible(msm_obj->base.resv,
-							  &submit->ticket);
+	drm_exec_until_all_locked (&submit->exec) {
+		for (unsigned i = 0; i < submit->nr_bos; i++) {
+			struct drm_gem_object *obj = submit->bos[i].obj;
+			ret = drm_exec_prepare_obj(&submit->exec, obj, 1);
+			drm_exec_retry_on_contention(&submit->exec);
 			if (ret)
-				goto fail;
-			submit->bos[i].flags |= BO_LOCKED;
+				goto error;
 		}
 	}
-
-	ww_acquire_done(&submit->ticket);
 
 	return 0;
 
-fail:
-	if (ret == -EALREADY) {
-		DRM_ERROR("handle %u at index %u already on submit list\n",
-				submit->bos[i].handle, i);
-		ret = -EINVAL;
-	}
-
-	for (; i >= 0; i--)
-		submit_unlock_unpin_bo(submit, i);
-
-	if (slow_locked > 0)
-		submit_unlock_unpin_bo(submit, slow_locked);
-
-	if (ret == -EDEADLK) {
-		struct msm_gem_object *msm_obj = submit->bos[contended].obj;
-		/* we lost out in a seqno race, lock and retry.. */
-		ret = dma_resv_lock_slow_interruptible(msm_obj->base.resv,
-						       &submit->ticket);
-		if (!ret) {
-			submit->bos[contended].flags |= BO_LOCKED;
-			slow_locked = contended;
-			goto retry;
-		}
-
-		/* Not expecting -EALREADY here, if the bo was already
-		 * locked, we should have gotten -EALREADY already from
-		 * the dma_resv_lock_interruptable() call.
-		 */
-		WARN_ON_ONCE(ret == -EALREADY);
-	}
-
+error:
 	return ret;
 }
 
-static int submit_fence_sync(struct msm_gem_submit *submit, bool no_implicit)
+static int submit_fence_sync(struct msm_gem_submit *submit)
 {
 	int i, ret = 0;
 
 	for (i = 0; i < submit->nr_bos; i++) {
-		struct drm_gem_object *obj = &submit->bos[i].obj->base;
+		struct drm_gem_object *obj = submit->bos[i].obj;
 		bool write = submit->bos[i].flags & MSM_SUBMIT_BO_WRITE;
 
-		if (!write) {
-			/* NOTE: _reserve_shared() must happen before
-			 * _add_shared_fence(), which makes this a slightly
-			 * strange place to call it.  OTOH this is a
-			 * convenient can-fail point to hook it in.
-			 */
-			ret = dma_resv_reserve_shared(obj->resv, 1);
-			if (ret)
-				return ret;
-		}
-
-		/* exclusive fences must be ordered */
-		if (no_implicit && !write)
+		/* Otherwise userspace can ask for implicit sync to be
+		 * disabled on specific buffers.  This is useful for internal
+		 * usermode driver managed buffers, suballocation, etc.
+		 */
+		if (submit->bos[i].flags & MSM_SUBMIT_BO_NO_IMPLICIT)
 			continue;
 
 		ret = drm_sched_job_add_implicit_dependencies(&submit->base,
@@ -347,46 +298,57 @@ static int submit_fence_sync(struct msm_gem_submit *submit, bool no_implicit)
 
 static int submit_pin_objects(struct msm_gem_submit *submit)
 {
+	struct msm_drm_private *priv = submit->dev->dev_private;
 	int i, ret = 0;
 
-	submit->valid = true;
-
-	/*
-	 * Increment active_count first, so if under memory pressure, we
-	 * don't inadvertently evict a bo needed by the submit in order
-	 * to pin an earlier bo in the same submit.
-	 */
 	for (i = 0; i < submit->nr_bos; i++) {
-		struct drm_gem_object *obj = &submit->bos[i].obj->base;
-
-		msm_gem_active_get(obj, submit->gpu);
-		submit->bos[i].flags |= BO_ACTIVE;
-	}
-
-	for (i = 0; i < submit->nr_bos; i++) {
-		struct drm_gem_object *obj = &submit->bos[i].obj->base;
-		uint64_t iova;
+		struct drm_gem_object *obj = submit->bos[i].obj;
+		struct msm_gem_vma *vma;
 
 		/* if locking succeeded, pin bo: */
-		ret = msm_gem_get_and_pin_iova_locked(obj,
-				submit->aspace, &iova);
+		vma = msm_gem_get_vma_locked(obj, submit->aspace);
+		if (IS_ERR(vma)) {
+			ret = PTR_ERR(vma);
+			break;
+		}
 
+		ret = msm_gem_pin_vma_locked(obj, vma);
 		if (ret)
 			break;
 
-		submit->bos[i].flags |= BO_PINNED;
-
-		if (iova == submit->bos[i].iova) {
-			submit->bos[i].flags |= BO_VALID;
-		} else {
-			submit->bos[i].iova = iova;
-			/* iova changed, so address in cmdstream is not valid: */
-			submit->bos[i].flags &= ~BO_VALID;
-			submit->valid = false;
-		}
+		submit->bos[i].iova = vma->iova;
 	}
 
+	/*
+	 * A second loop while holding the LRU lock (a) avoids acquiring/dropping
+	 * the LRU lock for each individual bo, while (b) avoiding holding the
+	 * LRU lock while calling msm_gem_pin_vma_locked() (which could trigger
+	 * get_pages() which could trigger reclaim.. and if we held the LRU lock
+	 * could trigger deadlock with the shrinker).
+	 */
+	mutex_lock(&priv->lru.lock);
+	for (i = 0; i < submit->nr_bos; i++) {
+		msm_gem_pin_obj_locked(submit->bos[i].obj);
+	}
+	mutex_unlock(&priv->lru.lock);
+
+	submit->bos_pinned = true;
+
 	return ret;
+}
+
+static void submit_unpin_objects(struct msm_gem_submit *submit)
+{
+	if (!submit->bos_pinned)
+		return;
+
+	for (int i = 0; i < submit->nr_bos; i++) {
+		struct drm_gem_object *obj = submit->bos[i].obj;
+
+		msm_gem_unpin_locked(obj);
+	}
+
+	submit->bos_pinned = false;
 }
 
 static void submit_attach_object_fences(struct msm_gem_submit *submit)
@@ -394,21 +356,23 @@ static void submit_attach_object_fences(struct msm_gem_submit *submit)
 	int i;
 
 	for (i = 0; i < submit->nr_bos; i++) {
-		struct drm_gem_object *obj = &submit->bos[i].obj->base;
+		struct drm_gem_object *obj = submit->bos[i].obj;
 
 		if (submit->bos[i].flags & MSM_SUBMIT_BO_WRITE)
-			dma_resv_add_excl_fence(obj->resv, submit->user_fence);
+			dma_resv_add_fence(obj->resv, submit->user_fence,
+					   DMA_RESV_USAGE_WRITE);
 		else if (submit->bos[i].flags & MSM_SUBMIT_BO_READ)
-			dma_resv_add_shared_fence(obj->resv, submit->user_fence);
+			dma_resv_add_fence(obj->resv, submit->user_fence,
+					   DMA_RESV_USAGE_READ);
 	}
 }
 
 static int submit_bo(struct msm_gem_submit *submit, uint32_t idx,
-		struct msm_gem_object **obj, uint64_t *iova, bool *valid)
+		struct drm_gem_object **obj, uint64_t *iova)
 {
 	if (idx >= submit->nr_bos) {
-		DRM_ERROR("invalid buffer index: %u (out of %u)\n",
-				idx, submit->nr_bos);
+		SUBMIT_ERROR(submit, "invalid buffer index: %u (out of %u)\n",
+			     idx, submit->nr_bos);
 		return -EINVAL;
 	}
 
@@ -416,32 +380,27 @@ static int submit_bo(struct msm_gem_submit *submit, uint32_t idx,
 		*obj = submit->bos[idx].obj;
 	if (iova)
 		*iova = submit->bos[idx].iova;
-	if (valid)
-		*valid = !!(submit->bos[idx].flags & BO_VALID);
 
 	return 0;
 }
 
 /* process the reloc's and patch up the cmdstream as needed: */
-static int submit_reloc(struct msm_gem_submit *submit, struct msm_gem_object *obj,
+static int submit_reloc(struct msm_gem_submit *submit, struct drm_gem_object *obj,
 		uint32_t offset, uint32_t nr_relocs, struct drm_msm_gem_submit_reloc *relocs)
 {
 	uint32_t i, last_offset = 0;
 	uint32_t *ptr;
 	int ret = 0;
 
-	if (!nr_relocs)
-		return 0;
-
 	if (offset % 4) {
-		DRM_ERROR("non-aligned cmdstream buffer: %u\n", offset);
+		SUBMIT_ERROR(submit, "non-aligned cmdstream buffer: %u\n", offset);
 		return -EINVAL;
 	}
 
 	/* For now, just map the entire thing.  Eventually we probably
 	 * to do it page-by-page, w/ kmap() if not vmap()d..
 	 */
-	ptr = msm_gem_get_vaddr_locked(&obj->base);
+	ptr = msm_gem_get_vaddr_locked(obj);
 
 	if (IS_ERR(ptr)) {
 		ret = PTR_ERR(ptr);
@@ -453,11 +412,10 @@ static int submit_reloc(struct msm_gem_submit *submit, struct msm_gem_object *ob
 		struct drm_msm_gem_submit_reloc submit_reloc = relocs[i];
 		uint32_t off;
 		uint64_t iova;
-		bool valid;
 
 		if (submit_reloc.submit_offset % 4) {
-			DRM_ERROR("non-aligned reloc offset: %u\n",
-					submit_reloc.submit_offset);
+			SUBMIT_ERROR(submit, "non-aligned reloc offset: %u\n",
+				     submit_reloc.submit_offset);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -465,19 +423,16 @@ static int submit_reloc(struct msm_gem_submit *submit, struct msm_gem_object *ob
 		/* offset in dwords: */
 		off = submit_reloc.submit_offset / 4;
 
-		if ((off >= (obj->base.size / 4)) ||
+		if ((off >= (obj->size / 4)) ||
 				(off < last_offset)) {
-			DRM_ERROR("invalid offset %u at reloc %u\n", off, i);
+			SUBMIT_ERROR(submit, "invalid offset %u at reloc %u\n", off, i);
 			ret = -EINVAL;
 			goto out;
 		}
 
-		ret = submit_bo(submit, submit_reloc.reloc_idx, NULL, &iova, &valid);
+		ret = submit_bo(submit, submit_reloc.reloc_idx, NULL, &iova);
 		if (ret)
 			goto out;
-
-		if (valid)
-			continue;
 
 		iova += submit_reloc.reloc_offset;
 
@@ -492,7 +447,7 @@ static int submit_reloc(struct msm_gem_submit *submit, struct msm_gem_object *ob
 	}
 
 out:
-	msm_gem_put_vaddr_locked(&obj->base);
+	msm_gem_put_vaddr_locked(obj);
 
 	return ret;
 }
@@ -503,18 +458,14 @@ out:
  */
 static void submit_cleanup(struct msm_gem_submit *submit, bool error)
 {
-	unsigned cleanup_flags = BO_LOCKED;
-	unsigned i;
-
-	if (error)
-		cleanup_flags |= BO_PINNED | BO_ACTIVE;
-
-	for (i = 0; i < submit->nr_bos; i++) {
-		struct msm_gem_object *msm_obj = submit->bos[i].obj;
-		submit_cleanup_bo(submit, i, cleanup_flags);
-		if (error)
-			drm_gem_object_put(&msm_obj->base);
+	if (error) {
+		submit_unpin_objects(submit);
+		/* job wasn't enqueued to scheduler, so early retirement: */
+		msm_submit_retire(submit);
 	}
+
+	if (submit->exec.objects)
+		drm_exec_fini(&submit->exec);
 }
 
 void msm_submit_retire(struct msm_gem_submit *submit)
@@ -522,11 +473,8 @@ void msm_submit_retire(struct msm_gem_submit *submit)
 	int i;
 
 	for (i = 0; i < submit->nr_bos; i++) {
-		struct drm_gem_object *obj = &submit->bos[i].obj->base;
+		struct drm_gem_object *obj = submit->bos[i].obj;
 
-		msm_gem_lock(obj);
-		submit_cleanup_bo(submit, i, BO_PINNED | BO_ACTIVE);
-		msm_gem_unlock(obj);
 		drm_gem_object_put(obj);
 	}
 }
@@ -541,8 +489,7 @@ static struct drm_syncobj **msm_parse_deps(struct msm_gem_submit *submit,
                                            struct drm_file *file,
                                            uint64_t in_syncobjs_addr,
                                            uint32_t nr_in_syncobjs,
-                                           size_t syncobj_stride,
-                                           struct msm_ringbuffer *ring)
+                                           size_t syncobj_stride)
 {
 	struct drm_syncobj **syncobjs = NULL;
 	struct drm_msm_gem_submit_syncobj syncobj_desc = {0};
@@ -556,7 +503,6 @@ static struct drm_syncobj **msm_parse_deps(struct msm_gem_submit *submit,
 
 	for (i = 0; i < nr_in_syncobjs; ++i) {
 		uint64_t address = in_syncobjs_addr + i * syncobj_stride;
-		struct dma_fence *fence;
 
 		if (copy_from_user(&syncobj_desc,
 			           u64_to_user_ptr(address),
@@ -576,12 +522,8 @@ static struct drm_syncobj **msm_parse_deps(struct msm_gem_submit *submit,
 			break;
 		}
 
-		ret = drm_syncobj_find_fence(file, syncobj_desc.handle,
-		                             syncobj_desc.point, 0, &fence);
-		if (ret)
-			break;
-
-		ret = drm_sched_job_add_dependency(&submit->base, fence);
+		ret = drm_sched_job_add_syncobj_dependency(&submit->base, file,
+							   syncobj_desc.handle, syncobj_desc.point);
 		if (ret)
 			break;
 
@@ -628,8 +570,8 @@ static struct msm_submit_post_dep *msm_parse_post_deps(struct drm_device *dev,
 	int ret = 0;
 	uint32_t i, j;
 
-	post_deps = kmalloc_array(nr_syncobjs, sizeof(*post_deps),
-	                          GFP_KERNEL | __GFP_NOWARN | __GFP_NORETRY);
+	post_deps = kcalloc(nr_syncobjs, sizeof(*post_deps),
+			    GFP_KERNEL | __GFP_NOWARN | __GFP_NORETRY);
 	if (!post_deps)
 		return ERR_PTR(-ENOMEM);
 
@@ -644,7 +586,6 @@ static struct msm_submit_post_dep *msm_parse_post_deps(struct drm_device *dev,
 		}
 
 		post_deps[i].point = syncobj_desc.point;
-		post_deps[i].chain = NULL;
 
 		if (syncobj_desc.flags) {
 			ret = -EINVAL;
@@ -708,7 +649,6 @@ static void msm_process_post_deps(struct msm_submit_post_dep *post_deps,
 int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		struct drm_file *file)
 {
-	static atomic_t ident = ATOMIC_INIT(0);
 	struct msm_drm_private *priv = dev->dev_private;
 	struct drm_msm_gem_submit *args = data;
 	struct msm_file_private *ctx = file->driver_priv;
@@ -719,16 +659,19 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 	struct msm_submit_post_dep *post_deps = NULL;
 	struct drm_syncobj **syncobjs_to_reset = NULL;
 	int out_fence_fd = -1;
-	struct pid *pid = get_pid(task_pid(current));
-	bool has_ww_ticket = false;
 	unsigned i;
-	int ret, submitid;
+	int ret;
 
 	if (!gpu)
 		return -ENXIO;
 
 	if (args->pad)
 		return -EINVAL;
+
+	if (unlikely(!ctx->aspace) && !capable(CAP_SYS_RAWIO)) {
+		DRM_ERROR_RATELIMITED("IOMMU support or CAP_SYS_RAWIO required!\n");
+		return -EPERM;
+	}
 
 	/* for now, we just have 3d pipe.. eventually this would need to
 	 * be more clever to dispatch to appropriate gpu module:
@@ -749,35 +692,28 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 	if (!queue)
 		return -ENOENT;
 
-	/* Get a unique identifier for the submission for logging purposes */
-	submitid = atomic_inc_return(&ident) - 1;
-
 	ring = gpu->rb[queue->ring_nr];
-	trace_msm_gpu_submit(pid_nr(pid), ring->id, submitid,
-		args->nr_bos, args->nr_cmds);
-
-	ret = mutex_lock_interruptible(&queue->lock);
-	if (ret)
-		goto out_post_unlock;
 
 	if (args->flags & MSM_SUBMIT_FENCE_FD_OUT) {
 		out_fence_fd = get_unused_fd_flags(O_CLOEXEC);
 		if (out_fence_fd < 0) {
 			ret = out_fence_fd;
-			goto out_unlock;
+			goto out_post_unlock;
 		}
 	}
 
-	submit = submit_create(dev, gpu, queue, args->nr_bos,
-		args->nr_cmds);
+	submit = submit_create(dev, gpu, queue, args->nr_bos, args->nr_cmds);
 	if (IS_ERR(submit)) {
 		ret = PTR_ERR(submit);
-		submit = NULL;
-		goto out_unlock;
+		goto out_post_unlock;
 	}
 
-	submit->pid = pid;
-	submit->ident = submitid;
+	trace_msm_gpu_submit(pid_nr(submit->pid), ring->id, submit->ident,
+		args->nr_bos, args->nr_cmds);
+
+	ret = mutex_lock_interruptible(&queue->lock);
+	if (ret)
+		goto out_post_unlock;
 
 	if (args->flags & MSM_SUBMIT_SUDO)
 		submit->in_rb = true;
@@ -801,7 +737,7 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		syncobjs_to_reset = msm_parse_deps(submit, file,
 		                                   args->in_syncobjs,
 		                                   args->nr_in_syncobjs,
-		                                   args->syncobj_stride, ring);
+		                                   args->syncobj_stride);
 		if (IS_ERR(syncobjs_to_reset)) {
 			ret = PTR_ERR(syncobjs_to_reset);
 			goto out_unlock;
@@ -828,43 +764,48 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		goto out;
 
 	/* copy_*_user while holding a ww ticket upsets lockdep */
-	ww_acquire_init(&submit->ticket, &reservation_ww_class);
-	has_ww_ticket = true;
 	ret = submit_lock_objects(submit);
 	if (ret)
 		goto out;
 
-	ret = submit_fence_sync(submit, !!(args->flags & MSM_SUBMIT_NO_IMPLICIT));
-	if (ret)
-		goto out;
+	if (!(args->flags & MSM_SUBMIT_NO_IMPLICIT)) {
+		ret = submit_fence_sync(submit);
+		if (ret)
+			goto out;
+	}
 
 	ret = submit_pin_objects(submit);
 	if (ret)
 		goto out;
 
 	for (i = 0; i < args->nr_cmds; i++) {
-		struct msm_gem_object *msm_obj;
+		struct drm_gem_object *obj;
 		uint64_t iova;
 
-		ret = submit_bo(submit, submit->cmd[i].idx,
-				&msm_obj, &iova, NULL);
+		ret = submit_bo(submit, submit->cmd[i].idx, &obj, &iova);
 		if (ret)
 			goto out;
 
 		if (!submit->cmd[i].size ||
 			((submit->cmd[i].size + submit->cmd[i].offset) >
-				msm_obj->base.size / 4)) {
-			DRM_ERROR("invalid cmdstream size: %u\n", submit->cmd[i].size * 4);
+				obj->size / 4)) {
+			SUBMIT_ERROR(submit, "invalid cmdstream size: %u\n", submit->cmd[i].size * 4);
 			ret = -EINVAL;
 			goto out;
 		}
 
 		submit->cmd[i].iova = iova + (submit->cmd[i].offset * 4);
 
-		if (submit->valid)
+		if (likely(!submit->cmd[i].nr_relocs))
 			continue;
 
-		ret = submit_reloc(submit, msm_obj, submit->cmd[i].offset * 4,
+		if (!gpu->allow_relocs) {
+			SUBMIT_ERROR(submit, "relocs not allowed\n");
+			ret = -EINVAL;
+			goto out;
+		}
+
+		ret = submit_reloc(submit, obj, submit->cmd[i].offset * 4,
 				submit->cmd[i].nr_relocs, submit->cmd[i].relocs);
 		if (ret)
 			goto out;
@@ -872,18 +813,58 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 
 	submit->nr_cmds = i;
 
+	idr_preload(GFP_KERNEL);
+
+	spin_lock(&queue->idr_lock);
+
+	/*
+	 * If using userspace provided seqno fence, validate that the id
+	 * is available before arming sched job.  Since access to fence_idr
+	 * is serialized on the queue lock, the slot should be still avail
+	 * after the job is armed
+	 */
+	if ((args->flags & MSM_SUBMIT_FENCE_SN_IN) &&
+			(!args->fence || idr_find(&queue->fence_idr, args->fence))) {
+		spin_unlock(&queue->idr_lock);
+		idr_preload_end();
+		ret = -EINVAL;
+		goto out;
+	}
+
 	drm_sched_job_arm(&submit->base);
 
 	submit->user_fence = dma_fence_get(&submit->base.s_fence->finished);
 
-	/*
-	 * Allocate an id which can be used by WAIT_FENCE ioctl to map back
-	 * to the underlying fence.
-	 */
-	submit->fence_id = idr_alloc_cyclic(&queue->fence_idr,
-			submit->user_fence, 1, INT_MAX, GFP_KERNEL);
+	if (args->flags & MSM_SUBMIT_FENCE_SN_IN) {
+		/*
+		 * Userspace has assigned the seqno fence that it wants
+		 * us to use.  It is an error to pick a fence sequence
+		 * number that is not available.
+		 */
+		submit->fence_id = args->fence;
+		ret = idr_alloc_u32(&queue->fence_idr, submit->user_fence,
+				    &submit->fence_id, submit->fence_id,
+				    GFP_NOWAIT);
+		/*
+		 * We've already validated that the fence_id slot is valid,
+		 * so if idr_alloc_u32 failed, it is a kernel bug
+		 */
+		WARN_ON(ret);
+	} else {
+		/*
+		 * Allocate an id which can be used by WAIT_FENCE ioctl to map
+		 * back to the underlying fence.
+		 */
+		submit->fence_id = idr_alloc_cyclic(&queue->fence_idr,
+						    submit->user_fence, 1,
+						    INT_MAX, GFP_NOWAIT);
+	}
+
+	spin_unlock(&queue->idr_lock);
+	idr_preload_end();
+
 	if (submit->fence_id < 0) {
-		ret = submit->fence_id = 0;
+		ret = submit->fence_id;
 		submit->fence_id = 0;
 	}
 
@@ -897,10 +878,15 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		}
 	}
 
+	if (ret)
+		goto out;
+
 	submit_attach_object_fences(submit);
 
 	/* The scheduler owns a ref now: */
 	msm_gem_submit_get(submit);
+
+	msm_rd_dump_submit(priv->rd, submit, NULL);
 
 	drm_sched_entity_push_job(&submit->base);
 
@@ -914,15 +900,21 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 
 out:
 	submit_cleanup(submit, !!ret);
-	if (has_ww_ticket)
-		ww_acquire_fini(&submit->ticket);
 out_unlock:
+	mutex_unlock(&queue->lock);
+out_post_unlock:
 	if (ret && (out_fence_fd >= 0))
 		put_unused_fd(out_fence_fd);
-	mutex_unlock(&queue->lock);
-	if (submit)
+
+	if (!IS_ERR_OR_NULL(submit)) {
 		msm_gem_submit_put(submit);
-out_post_unlock:
+	} else {
+		/*
+		 * If the submit hasn't yet taken ownership of the queue
+		 * then we need to drop the reference ourself:
+		 */
+		msm_submitqueue_put(queue);
+	}
 	if (!IS_ERR_OR_NULL(post_deps)) {
 		for (i = 0; i < args->nr_out_syncobjs; ++i) {
 			kfree(post_deps[i].chain);

@@ -16,7 +16,6 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/syscore_ops.h>
 #include <sysdev/fsl_soc.h>
@@ -255,7 +254,7 @@ EXPORT_SYMBOL(mpic_start_timer);
 
 /**
  * mpic_stop_timer - stop hardware timer
- * @handle: the timer to be stoped
+ * @handle: the timer to be stopped
  *
  * The timer periodically generates an interrupt. Unless user stops the timer.
  */

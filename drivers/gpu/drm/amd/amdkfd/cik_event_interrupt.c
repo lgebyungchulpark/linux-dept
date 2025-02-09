@@ -26,7 +26,7 @@
 #include "amdgpu_amdkfd.h"
 #include "kfd_smi_events.h"
 
-static bool cik_event_interrupt_isr(struct kfd_dev *dev,
+static bool cik_event_interrupt_isr(struct kfd_node *dev,
 					const uint32_t *ih_ring_entry,
 					uint32_t *patched_ihre,
 					bool *patched_flag)
@@ -85,7 +85,7 @@ static bool cik_event_interrupt_isr(struct kfd_dev *dev,
 		!amdgpu_no_queue_eviction_on_vm_fault);
 }
 
-static void cik_event_interrupt_wq(struct kfd_dev *dev,
+static void cik_event_interrupt_wq(struct kfd_node *dev,
 					const uint32_t *ih_ring_entry)
 {
 	const struct cik_ih_ring_entry *ihre =
@@ -110,7 +110,7 @@ static void cik_event_interrupt_wq(struct kfd_dev *dev,
 		struct kfd_vm_fault_info info;
 
 		kfd_smi_event_update_vmfault(dev, pasid);
-		kfd_process_vm_fault(dev->dqm, pasid);
+		kfd_dqm_evict_pasid(dev->dqm, pasid);
 
 		memset(&info, 0, sizeof(info));
 		amdgpu_amdkfd_gpuvm_get_vm_fault_info(dev->adev, &info);
@@ -118,9 +118,9 @@ static void cik_event_interrupt_wq(struct kfd_dev *dev,
 			return;
 
 		if (info.vmid == vmid)
-			kfd_signal_vm_fault_event(dev, pasid, &info);
+			kfd_signal_vm_fault_event(dev, pasid, &info, NULL);
 		else
-			kfd_signal_vm_fault_event(dev, pasid, NULL);
+			kfd_signal_vm_fault_event(dev, pasid, NULL, NULL);
 	}
 }
 

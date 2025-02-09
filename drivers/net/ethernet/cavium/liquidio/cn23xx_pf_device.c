@@ -36,175 +36,6 @@
  */
 #define CN23XX_INPUT_JABBER 64600
 
-void cn23xx_dump_pf_initialized_regs(struct octeon_device *oct)
-{
-	int i = 0;
-	u32 regval = 0;
-	struct octeon_cn23xx_pf *cn23xx = (struct octeon_cn23xx_pf *)oct->chip;
-
-	/*In cn23xx_soft_reset*/
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%llx\n",
-		"CN23XX_WIN_WR_MASK_REG", CVM_CAST64(CN23XX_WIN_WR_MASK_REG),
-		CVM_CAST64(octeon_read_csr64(oct, CN23XX_WIN_WR_MASK_REG)));
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_SLI_SCRATCH1", CVM_CAST64(CN23XX_SLI_SCRATCH1),
-		CVM_CAST64(octeon_read_csr64(oct, CN23XX_SLI_SCRATCH1)));
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_RST_SOFT_RST", CN23XX_RST_SOFT_RST,
-		lio_pci_readq(oct, CN23XX_RST_SOFT_RST));
-
-	/*In cn23xx_set_dpi_regs*/
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_DPI_DMA_CONTROL", CN23XX_DPI_DMA_CONTROL,
-		lio_pci_readq(oct, CN23XX_DPI_DMA_CONTROL));
-
-	for (i = 0; i < 6; i++) {
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_DPI_DMA_ENG_ENB", i,
-			CN23XX_DPI_DMA_ENG_ENB(i),
-			lio_pci_readq(oct, CN23XX_DPI_DMA_ENG_ENB(i)));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_DPI_DMA_ENG_BUF", i,
-			CN23XX_DPI_DMA_ENG_BUF(i),
-			lio_pci_readq(oct, CN23XX_DPI_DMA_ENG_BUF(i)));
-	}
-
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n", "CN23XX_DPI_CTL",
-		CN23XX_DPI_CTL, lio_pci_readq(oct, CN23XX_DPI_CTL));
-
-	/*In cn23xx_setup_pcie_mps and cn23xx_setup_pcie_mrrs */
-	pci_read_config_dword(oct->pci_dev, CN23XX_CONFIG_PCIE_DEVCTL, &regval);
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_CONFIG_PCIE_DEVCTL",
-		CVM_CAST64(CN23XX_CONFIG_PCIE_DEVCTL), CVM_CAST64(regval));
-
-	dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-		"CN23XX_DPI_SLI_PRTX_CFG", oct->pcie_port,
-		CN23XX_DPI_SLI_PRTX_CFG(oct->pcie_port),
-		lio_pci_readq(oct, CN23XX_DPI_SLI_PRTX_CFG(oct->pcie_port)));
-
-	/*In cn23xx_specific_regs_setup */
-	dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-		"CN23XX_SLI_S2M_PORTX_CTL", oct->pcie_port,
-		CVM_CAST64(CN23XX_SLI_S2M_PORTX_CTL(oct->pcie_port)),
-		CVM_CAST64(octeon_read_csr64(
-			oct, CN23XX_SLI_S2M_PORTX_CTL(oct->pcie_port))));
-
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_SLI_RING_RST", CVM_CAST64(CN23XX_SLI_PKT_IOQ_RING_RST),
-		(u64)octeon_read_csr64(oct, CN23XX_SLI_PKT_IOQ_RING_RST));
-
-	/*In cn23xx_setup_global_mac_regs*/
-	for (i = 0; i < CN23XX_MAX_MACS; i++) {
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_PKT_MAC_RINFO64", i,
-			CVM_CAST64(CN23XX_SLI_PKT_MAC_RINFO64(i, oct->pf_num)),
-			CVM_CAST64(octeon_read_csr64
-				(oct, CN23XX_SLI_PKT_MAC_RINFO64
-					(i, oct->pf_num))));
-	}
-
-	/*In cn23xx_setup_global_input_regs*/
-	for (i = 0; i < CN23XX_MAX_INPUT_QUEUES; i++) {
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_IQ_PKT_CONTROL64", i,
-			CVM_CAST64(CN23XX_SLI_IQ_PKT_CONTROL64(i)),
-			CVM_CAST64(octeon_read_csr64
-				(oct, CN23XX_SLI_IQ_PKT_CONTROL64(i))));
-	}
-
-	/*In cn23xx_setup_global_output_regs*/
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_SLI_OQ_WMARK", CVM_CAST64(CN23XX_SLI_OQ_WMARK),
-		CVM_CAST64(octeon_read_csr64(oct, CN23XX_SLI_OQ_WMARK)));
-
-	for (i = 0; i < CN23XX_MAX_OUTPUT_QUEUES; i++) {
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_OQ_PKT_CONTROL", i,
-			CVM_CAST64(CN23XX_SLI_OQ_PKT_CONTROL(i)),
-			CVM_CAST64(octeon_read_csr(
-				oct, CN23XX_SLI_OQ_PKT_CONTROL(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_OQ_PKT_INT_LEVELS", i,
-			CVM_CAST64(CN23XX_SLI_OQ_PKT_INT_LEVELS(i)),
-			CVM_CAST64(octeon_read_csr64(
-				oct, CN23XX_SLI_OQ_PKT_INT_LEVELS(i))));
-	}
-
-	/*In cn23xx_enable_interrupt and cn23xx_disable_interrupt*/
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"cn23xx->intr_enb_reg64",
-		CVM_CAST64((long)(cn23xx->intr_enb_reg64)),
-		CVM_CAST64(readq(cn23xx->intr_enb_reg64)));
-
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"cn23xx->intr_sum_reg64",
-		CVM_CAST64((long)(cn23xx->intr_sum_reg64)),
-		CVM_CAST64(readq(cn23xx->intr_sum_reg64)));
-
-	/*In cn23xx_setup_iq_regs*/
-	for (i = 0; i < CN23XX_MAX_INPUT_QUEUES; i++) {
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_IQ_BASE_ADDR64", i,
-			CVM_CAST64(CN23XX_SLI_IQ_BASE_ADDR64(i)),
-			CVM_CAST64(octeon_read_csr64(
-				oct, CN23XX_SLI_IQ_BASE_ADDR64(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_IQ_SIZE", i,
-			CVM_CAST64(CN23XX_SLI_IQ_SIZE(i)),
-			CVM_CAST64(octeon_read_csr
-				(oct, CN23XX_SLI_IQ_SIZE(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_IQ_DOORBELL", i,
-			CVM_CAST64(CN23XX_SLI_IQ_DOORBELL(i)),
-			CVM_CAST64(octeon_read_csr64(
-				oct, CN23XX_SLI_IQ_DOORBELL(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_IQ_INSTR_COUNT64", i,
-			CVM_CAST64(CN23XX_SLI_IQ_INSTR_COUNT64(i)),
-			CVM_CAST64(octeon_read_csr64(
-				oct, CN23XX_SLI_IQ_INSTR_COUNT64(i))));
-	}
-
-	/*In cn23xx_setup_oq_regs*/
-	for (i = 0; i < CN23XX_MAX_OUTPUT_QUEUES; i++) {
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_OQ_BASE_ADDR64", i,
-			CVM_CAST64(CN23XX_SLI_OQ_BASE_ADDR64(i)),
-			CVM_CAST64(octeon_read_csr64(
-				oct, CN23XX_SLI_OQ_BASE_ADDR64(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_OQ_SIZE", i,
-			CVM_CAST64(CN23XX_SLI_OQ_SIZE(i)),
-			CVM_CAST64(octeon_read_csr
-				(oct, CN23XX_SLI_OQ_SIZE(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_OQ_BUFF_INFO_SIZE", i,
-			CVM_CAST64(CN23XX_SLI_OQ_BUFF_INFO_SIZE(i)),
-			CVM_CAST64(octeon_read_csr(
-				oct, CN23XX_SLI_OQ_BUFF_INFO_SIZE(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_OQ_PKTS_SENT", i,
-			CVM_CAST64(CN23XX_SLI_OQ_PKTS_SENT(i)),
-			CVM_CAST64(octeon_read_csr64(
-				oct, CN23XX_SLI_OQ_PKTS_SENT(i))));
-		dev_dbg(&oct->pci_dev->dev, "%s(%d)[%llx] : 0x%016llx\n",
-			"CN23XX_SLI_OQ_PKTS_CREDIT", i,
-			CVM_CAST64(CN23XX_SLI_OQ_PKTS_CREDIT(i)),
-			CVM_CAST64(octeon_read_csr64(
-				oct, CN23XX_SLI_OQ_PKTS_CREDIT(i))));
-	}
-
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_SLI_PKT_TIME_INT",
-		CVM_CAST64(CN23XX_SLI_PKT_TIME_INT),
-		CVM_CAST64(octeon_read_csr64(oct, CN23XX_SLI_PKT_TIME_INT)));
-	dev_dbg(&oct->pci_dev->dev, "%s[%llx] : 0x%016llx\n",
-		"CN23XX_SLI_PKT_CNT_INT",
-		CVM_CAST64(CN23XX_SLI_PKT_CNT_INT),
-		CVM_CAST64(octeon_read_csr64(oct, CN23XX_SLI_PKT_CNT_INT)));
-}
-
 static int cn23xx_pf_soft_reset(struct octeon_device *oct)
 {
 	octeon_write_csr64(oct, CN23XX_WIN_WR_MASK_REG, 0xFF);
@@ -719,11 +550,9 @@ static int cn23xx_setup_pf_mbox(struct octeon_device *oct)
 	for (i = 0; i < oct->sriov_info.max_vfs; i++) {
 		q_no = i * oct->sriov_info.rings_per_vf;
 
-		mbox = vmalloc(sizeof(*mbox));
+		mbox = vzalloc(sizeof(*mbox));
 		if (!mbox)
 			goto free_mbox;
-
-		memset(mbox, 0, sizeof(struct octeon_mbox));
 
 		spin_lock_init(&mbox->lock);
 
@@ -1377,6 +1206,7 @@ int setup_cn23xx_octeon_pf_device(struct octeon_device *oct)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(setup_cn23xx_octeon_pf_device);
 
 int validate_cn23xx_pf_config_info(struct octeon_device *oct,
 				   struct octeon_config *conf23xx)
@@ -1435,6 +1265,7 @@ int cn23xx_fw_loaded(struct octeon_device *oct)
 	val = octeon_read_csr64(oct, CN23XX_SLI_SCRATCH2);
 	return (val >> SCR2_BIT_FW_LOADED) & 1ULL;
 }
+EXPORT_SYMBOL_GPL(cn23xx_fw_loaded);
 
 void cn23xx_tell_vf_its_macaddr_changed(struct octeon_device *oct, int vfidx,
 					u8 *mac)
@@ -1456,6 +1287,7 @@ void cn23xx_tell_vf_its_macaddr_changed(struct octeon_device *oct, int vfidx,
 		octeon_mbox_write(oct, &mbox_cmd);
 	}
 }
+EXPORT_SYMBOL_GPL(cn23xx_tell_vf_its_macaddr_changed);
 
 static void
 cn23xx_get_vf_stats_callback(struct octeon_device *oct,
@@ -1489,7 +1321,7 @@ int cn23xx_get_vf_stats(struct octeon_device *oct, int vfidx,
 	mbox_cmd.q_no = vfidx * oct->sriov_info.rings_per_vf;
 	mbox_cmd.recv_len = 0;
 	mbox_cmd.recv_status = 0;
-	mbox_cmd.fn = (octeon_mbox_callback_t)cn23xx_get_vf_stats_callback;
+	mbox_cmd.fn = cn23xx_get_vf_stats_callback;
 	ctx.stats = stats;
 	atomic_set(&ctx.status, 0);
 	mbox_cmd.fn_arg = (void *)&ctx;
@@ -1510,3 +1342,4 @@ int cn23xx_get_vf_stats(struct octeon_device *oct, int vfidx,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cn23xx_get_vf_stats);

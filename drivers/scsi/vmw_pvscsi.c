@@ -1137,7 +1137,8 @@ static int pvscsi_setup_msg_workqueue(struct pvscsi_adapter *adapter)
 	snprintf(name, sizeof(name),
 		 "vmw_pvscsi_wq_%u", adapter->host->host_no);
 
-	adapter->workqueue = create_singlethread_workqueue(name);
+	adapter->workqueue =
+		alloc_ordered_workqueue("%s", WQ_MEM_RECLAIM, name);
 	if (!adapter->workqueue) {
 		printk(KERN_ERR "vmw_pvscsi: failed to create work queue\n");
 		return 0;
@@ -1324,7 +1325,6 @@ static u32 pvscsi_get_max_targets(struct pvscsi_adapter *adapter)
 	 * indicate success.
 	 */
 	header = config_page;
-	memset(header, 0, sizeof *header);
 	header->hostStatus = BTSTAT_INVPARAM;
 	header->scsiStatus = SDSTAT_CHECK;
 
@@ -1347,7 +1347,7 @@ exit:
 
 static int pvscsi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	unsigned int irq_flag = PCI_IRQ_MSIX | PCI_IRQ_MSI | PCI_IRQ_LEGACY;
+	unsigned int irq_flag = PCI_IRQ_ALL_TYPES;
 	struct pvscsi_adapter *adapter;
 	struct pvscsi_adapter adapter_temp;
 	struct Scsi_Host *host = NULL;

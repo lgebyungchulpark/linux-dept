@@ -4,11 +4,11 @@
  * Copyright (c) 2014, Intel Corporation.
  */
 
-#include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
+#include <linux/mod_devicetable.h>
+#include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/acpi.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
@@ -725,7 +725,8 @@ static int mma9553_read_event_config(struct iio_dev *indio_dev,
 static int mma9553_write_event_config(struct iio_dev *indio_dev,
 				      const struct iio_chan_spec *chan,
 				      enum iio_event_type type,
-				      enum iio_event_direction dir, int state)
+				      enum iio_event_direction dir,
+				      bool state)
 {
 	struct mma9553_data *data = iio_priv(indio_dev);
 	struct mma9553_event *event;
@@ -1030,9 +1031,9 @@ static irqreturn_t mma9553_event_handler(int irq, void *private)
 	if (ev_step_detect->enabled && (stepcnt != data->stepcnt)) {
 		data->stepcnt = stepcnt;
 		iio_push_event(indio_dev,
-			       IIO_EVENT_CODE(IIO_STEPS, 0, IIO_NO_MOD,
-					      IIO_EV_DIR_NONE,
-					      IIO_EV_TYPE_CHANGE, 0, 0, 0),
+			       IIO_UNMOD_EVENT_CODE(IIO_STEPS, 0,
+						    IIO_EV_TYPE_CHANGE,
+						    IIO_EV_DIR_NONE),
 			       data->timestamp);
 	}
 
@@ -1041,20 +1042,18 @@ static irqreturn_t mma9553_event_handler(int irq, void *private)
 		/* ev_activity can be NULL if activity == ACTIVITY_UNKNOWN */
 		if (ev_prev_activity && ev_prev_activity->enabled)
 			iio_push_event(indio_dev,
-				       IIO_EVENT_CODE(IIO_ACTIVITY, 0,
-						    ev_prev_activity->info->mod,
-						    IIO_EV_DIR_FALLING,
-						    IIO_EV_TYPE_THRESH, 0, 0,
-						    0),
+				       IIO_MOD_EVENT_CODE(IIO_ACTIVITY, 0,
+						ev_prev_activity->info->mod,
+						IIO_EV_TYPE_THRESH,
+						IIO_EV_DIR_FALLING),
 				       data->timestamp);
 
 		if (ev_activity && ev_activity->enabled)
 			iio_push_event(indio_dev,
-				       IIO_EVENT_CODE(IIO_ACTIVITY, 0,
-						      ev_activity->info->mod,
-						      IIO_EV_DIR_RISING,
-						      IIO_EV_TYPE_THRESH, 0, 0,
-						      0),
+				       IIO_MOD_EVENT_CODE(IIO_ACTIVITY, 0,
+							  ev_activity->info->mod,
+							  IIO_EV_TYPE_THRESH,
+							  IIO_EV_DIR_RISING),
 				       data->timestamp);
 	}
 	mutex_unlock(&data->mutex);
@@ -1062,20 +1061,9 @@ static irqreturn_t mma9553_event_handler(int irq, void *private)
 	return IRQ_HANDLED;
 }
 
-static const char *mma9553_match_acpi_device(struct device *dev)
+static int mma9553_probe(struct i2c_client *client)
 {
-	const struct acpi_device_id *id;
-
-	id = acpi_match_device(dev->driver->acpi_match_table, dev);
-	if (!id)
-		return NULL;
-
-	return dev_name(dev);
-}
-
-static int mma9553_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
-{
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct mma9553_data *data;
 	struct iio_dev *indio_dev;
 	const char *name = NULL;
@@ -1091,9 +1079,9 @@ static int mma9553_probe(struct i2c_client *client,
 
 	if (id)
 		name = id->name;
-	else if (ACPI_HANDLE(&client->dev))
-		name = mma9553_match_acpi_device(&client->dev);
 	else
+		name = iio_get_acpi_device_name(&client->dev);
+	if (!name)
 		return -ENOSYS;
 
 	mutex_init(&data->mutex);
@@ -1134,18 +1122,21 @@ static int mma9553_probe(struct i2c_client *client,
 	ret = iio_device_register(indio_dev);
 	if (ret < 0) {
 		dev_err(&client->dev, "unable to register iio device\n");
-		goto out_poweroff;
+		goto err_pm_cleanup;
 	}
 
 	dev_dbg(&indio_dev->dev, "Registered device %s\n", name);
 	return 0;
 
+err_pm_cleanup:
+	pm_runtime_dont_use_autosuspend(&client->dev);
+	pm_runtime_disable(&client->dev);
 out_poweroff:
 	mma9551_set_device_state(client, false);
 	return ret;
 }
 
-static int mma9553_remove(struct i2c_client *client)
+static void mma9553_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct mma9553_data *data = iio_priv(indio_dev);
@@ -1158,11 +1149,8 @@ static int mma9553_remove(struct i2c_client *client)
 	mutex_lock(&data->mutex);
 	mma9551_set_device_state(data->client, false);
 	mutex_unlock(&data->mutex);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM
 static int mma9553_runtime_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
@@ -1194,9 +1182,7 @@ static int mma9553_runtime_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM_SLEEP
 static int mma9553_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
@@ -1222,12 +1208,10 @@ static int mma9553_resume(struct device *dev)
 
 	return ret;
 }
-#endif
 
 static const struct dev_pm_ops mma9553_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(mma9553_suspend, mma9553_resume)
-	SET_RUNTIME_PM_OPS(mma9553_runtime_suspend,
-			   mma9553_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(mma9553_suspend, mma9553_resume)
+	RUNTIME_PM_OPS(mma9553_runtime_suspend, mma9553_runtime_resume, NULL)
 };
 
 static const struct acpi_device_id mma9553_acpi_match[] = {
@@ -1238,8 +1222,8 @@ static const struct acpi_device_id mma9553_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, mma9553_acpi_match);
 
 static const struct i2c_device_id mma9553_id[] = {
-	{"mma9553", 0},
-	{},
+	{ "mma9553" },
+	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, mma9553_id);
@@ -1247,9 +1231,9 @@ MODULE_DEVICE_TABLE(i2c, mma9553_id);
 static struct i2c_driver mma9553_driver = {
 	.driver = {
 		   .name = MMA9553_DRV_NAME,
-		   .acpi_match_table = ACPI_PTR(mma9553_acpi_match),
-		   .pm = &mma9553_pm_ops,
-		   },
+		   .acpi_match_table = mma9553_acpi_match,
+		   .pm = pm_ptr(&mma9553_pm_ops),
+	},
 	.probe = mma9553_probe,
 	.remove = mma9553_remove,
 	.id_table = mma9553_id,
@@ -1260,3 +1244,4 @@ module_i2c_driver(mma9553_driver);
 MODULE_AUTHOR("Irina Tirdea <irina.tirdea@intel.com>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MMA9553L pedometer platform driver");
+MODULE_IMPORT_NS("IIO_MMA9551");

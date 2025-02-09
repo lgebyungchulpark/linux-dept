@@ -2161,7 +2161,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt5651 = {
 	.num_dapm_routes	= ARRAY_SIZE(rt5651_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt5651_regmap = {
@@ -2173,7 +2172,7 @@ static const struct regmap_config rt5651_regmap = {
 	.volatile_reg = rt5651_volatile_register,
 	.readable_reg = rt5651_readable_register,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt5651_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5651_reg),
 	.ranges = rt5651_ranges,
@@ -2200,7 +2199,7 @@ MODULE_DEVICE_TABLE(acpi, rt5651_acpi_match);
 #endif
 
 static const struct i2c_device_id rt5651_i2c_id[] = {
-	{ "rt5651", 0 },
+	{ "rt5651" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt5651_i2c_id);
@@ -2209,8 +2208,7 @@ MODULE_DEVICE_TABLE(i2c, rt5651_i2c_id);
  * Note this function MUST not look at device-properties, see the comment
  * above rt5651_apply_properties().
  */
-static int rt5651_i2c_probe(struct i2c_client *i2c,
-		    const struct i2c_device_id *id)
+static int rt5651_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt5651_priv *rt5651;
 	int ret;
@@ -2263,7 +2261,7 @@ static int rt5651_i2c_probe(struct i2c_client *i2c,
 			       IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING
 			       | IRQF_ONESHOT | IRQF_NO_AUTOEN, "rt5651", rt5651);
 	if (ret) {
-		dev_warn(&i2c->dev, "Failed to reguest IRQ %d: %d\n",
+		dev_warn(&i2c->dev, "Failed to request IRQ %d: %d\n",
 			 rt5651->irq, ret);
 		rt5651->irq = -ENXIO;
 	}

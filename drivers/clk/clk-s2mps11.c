@@ -202,7 +202,7 @@ err_reg:
 	return ret;
 }
 
-static int s2mps11_clk_remove(struct platform_device *pdev)
+static void s2mps11_clk_remove(struct platform_device *pdev)
 {
 	struct s2mps11_clk *s2mps11_clks = platform_get_drvdata(pdev);
 	int i;
@@ -217,8 +217,6 @@ static int s2mps11_clk_remove(struct platform_device *pdev)
 			continue;
 		clkdev_drop(s2mps11_clks[i].lookup);
 	}
-
-	return 0;
 }
 
 static const struct platform_device_id s2mps11_clk_id[] = {

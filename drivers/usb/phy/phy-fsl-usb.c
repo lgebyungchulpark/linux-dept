@@ -27,7 +27,7 @@
 #include <linux/platform_device.h>
 #include <linux/uaccess.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "phy-fsl-usb.h"
 
@@ -983,7 +983,7 @@ static int fsl_otg_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int fsl_otg_remove(struct platform_device *pdev)
+static void fsl_otg_remove(struct platform_device *pdev)
 {
 	struct fsl_usb2_platform_data *pdata = dev_get_platdata(&pdev->dev);
 
@@ -998,8 +998,6 @@ static int fsl_otg_remove(struct platform_device *pdev)
 
 	if (pdata->exit)
 		pdata->exit(pdev);
-
-	return 0;
 }
 
 struct platform_driver fsl_otg_driver = {
@@ -1007,7 +1005,6 @@ struct platform_driver fsl_otg_driver = {
 	.remove = fsl_otg_remove,
 	.driver = {
 		.name = driver_name,
-		.owner = THIS_MODULE,
 	},
 };
 

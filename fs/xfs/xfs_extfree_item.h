@@ -52,6 +52,14 @@ struct xfs_efi_log_item {
 	xfs_efi_log_format_t	efi_format;
 };
 
+static inline size_t
+xfs_efi_log_item_sizeof(
+	unsigned int		nr)
+{
+	return offsetof(struct xfs_efi_log_item, efi_format) +
+			xfs_efi_log_format_sizeof(nr);
+}
+
 /*
  * This is the "extent free done" log item.  It is used to log
  * the fact that some extents earlier mentioned in an efi item
@@ -64,6 +72,14 @@ struct xfs_efd_log_item {
 	xfs_efd_log_format_t	efd_format;
 };
 
+static inline size_t
+xfs_efd_log_item_sizeof(
+	unsigned int		nr)
+{
+	return offsetof(struct xfs_efd_log_item, efd_format) +
+			xfs_efd_log_format_sizeof(nr);
+}
+
 /*
  * Max number of extents in fast allocation path.
  */
@@ -71,5 +87,11 @@ struct xfs_efd_log_item {
 
 extern struct kmem_cache	*xfs_efi_cache;
 extern struct kmem_cache	*xfs_efd_cache;
+
+struct xfs_extent_free_item;
+
+void xfs_extent_free_defer_add(struct xfs_trans *tp,
+		struct xfs_extent_free_item *xefi,
+		struct xfs_defer_pending **dfpp);
 
 #endif	/* __XFS_EXTFREE_ITEM_H__ */

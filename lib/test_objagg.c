@@ -60,7 +60,7 @@ static struct objagg_obj *world_obj_get(struct world *world,
 	if (!world->key_refs[key_id_index(key_id)]) {
 		world->objagg_objs[key_id_index(key_id)] = objagg_obj;
 	} else if (world->objagg_objs[key_id_index(key_id)] != objagg_obj) {
-		pr_err("Key %u: God another object for the same key.\n",
+		pr_err("Key %u: Got another object for the same key.\n",
 		       key_id);
 		err = -EINVAL;
 		goto err_key_id_check;
@@ -157,7 +157,7 @@ static int test_nodelta_obj_get(struct world *world, struct objagg *objagg,
 	int err;
 
 	if (should_create_root)
-		prandom_bytes(world->next_root_buf,
+		get_random_bytes(world->next_root_buf,
 			      sizeof(world->next_root_buf));
 
 	objagg_obj = world_obj_get(world, objagg, key_id);

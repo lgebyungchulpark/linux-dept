@@ -9,9 +9,12 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
 
@@ -94,16 +97,12 @@ static int stm32_dac_probe(struct platform_device *pdev)
 	struct reset_control *rst;
 	int ret;
 
-	if (!dev->of_node)
-		return -ENODEV;
-
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, &priv->common);
 
-	cfg = (const struct stm32_dac_cfg *)
-		of_match_device(dev->driver->of_match_table, dev)->data;
+	cfg = device_get_match_data(dev);
 
 	mmio = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mmio))
@@ -183,7 +182,7 @@ err_pm_stop:
 	return ret;
 }
 
-static int stm32_dac_remove(struct platform_device *pdev)
+static void stm32_dac_remove(struct platform_device *pdev)
 {
 	pm_runtime_get_sync(&pdev->dev);
 	of_platform_depopulate(&pdev->dev);
@@ -191,11 +190,9 @@ static int stm32_dac_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
-
-	return 0;
 }
 
-static int __maybe_unused stm32_dac_core_resume(struct device *dev)
+static int stm32_dac_core_resume(struct device *dev)
 {
 	struct stm32_dac_common *common = dev_get_drvdata(dev);
 	struct stm32_dac_priv *priv = to_stm32_dac_priv(common);
@@ -203,9 +200,8 @@ static int __maybe_unused stm32_dac_core_resume(struct device *dev)
 
 	if (priv->common.hfsel) {
 		/* restore hfsel (maybe lost under low power state) */
-		ret = regmap_update_bits(priv->common.regmap, STM32_DAC_CR,
-					 STM32H7_DAC_CR_HFSEL,
-					 STM32H7_DAC_CR_HFSEL);
+		ret = regmap_set_bits(priv->common.regmap, STM32_DAC_CR,
+				      STM32H7_DAC_CR_HFSEL);
 		if (ret)
 			return ret;
 	}
@@ -213,23 +209,23 @@ static int __maybe_unused stm32_dac_core_resume(struct device *dev)
 	return pm_runtime_force_resume(dev);
 }
 
-static int __maybe_unused stm32_dac_core_runtime_suspend(struct device *dev)
+static int stm32_dac_core_runtime_suspend(struct device *dev)
 {
 	stm32_dac_core_hw_stop(dev);
 
 	return 0;
 }
 
-static int __maybe_unused stm32_dac_core_runtime_resume(struct device *dev)
+static int stm32_dac_core_runtime_resume(struct device *dev)
 {
 	return stm32_dac_core_hw_start(dev);
 }
 
 static const struct dev_pm_ops stm32_dac_core_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, stm32_dac_core_resume)
-	SET_RUNTIME_PM_OPS(stm32_dac_core_runtime_suspend,
-			   stm32_dac_core_runtime_resume,
-			   NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, stm32_dac_core_resume)
+	RUNTIME_PM_OPS(stm32_dac_core_runtime_suspend,
+		       stm32_dac_core_runtime_resume,
+		       NULL)
 };
 
 static const struct stm32_dac_cfg stm32h7_dac_cfg = {
@@ -253,7 +249,7 @@ static struct platform_driver stm32_dac_driver = {
 	.driver = {
 		.name = "stm32-dac-core",
 		.of_match_table = stm32_dac_of_match,
-		.pm = &stm32_dac_core_pm_ops,
+		.pm = pm_ptr(&stm32_dac_core_pm_ops),
 	},
 };
 module_platform_driver(stm32_dac_driver);

@@ -111,7 +111,7 @@
 #define  SFC_VER_4			0x4
 #define  SFC_VER_5			0x5
 
-/* Delay line controller resiter */
+/* Delay line controller register */
 #define SFC_DLL_CTRL0			0x3C
 #define SFC_DLL_CTRL0_SCLK_SMP_DLL	BIT(15)
 #define SFC_DLL_CTRL0_DLL_MAX_VER4	0xFFU
@@ -182,6 +182,7 @@ struct rockchip_sfc {
 	bool use_dma;
 	u32 max_iosize;
 	u16 version;
+	struct spi_controller *host;
 };
 
 static int rockchip_sfc_reset(struct rockchip_sfc *sfc)
@@ -346,7 +347,7 @@ static int rockchip_sfc_xfer_setup(struct rockchip_sfc *sfc,
 
 	/* set the Controller */
 	ctrl |= SFC_CTRL_PHASE_SEL_NEGETIVE;
-	cmd |= mem->spi->chip_select << SFC_CMD_CS_SHIFT;
+	cmd |= spi_get_chipselect(mem->spi, 0) << SFC_CMD_CS_SHIFT;
 
 	dev_dbg(sfc->dev, "sfc addr.nbytes=%x(x%d) dummy.nbytes=%x(x%d)\n",
 		op->addr.nbytes, op->addr.buswidth,
@@ -487,7 +488,7 @@ static int rockchip_sfc_xfer_done(struct rockchip_sfc *sfc, u32 timeout_us)
 
 static int rockchip_sfc_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
-	struct rockchip_sfc *sfc = spi_master_get_devdata(mem->spi->master);
+	struct rockchip_sfc *sfc = spi_controller_get_devdata(mem->spi->controller);
 	u32 len = op->data.nbytes;
 	int ret;
 
@@ -503,7 +504,7 @@ static int rockchip_sfc_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op
 	rockchip_sfc_adjust_op_work((struct spi_mem_op *)op);
 	rockchip_sfc_xfer_setup(sfc, mem, op, len);
 	if (len) {
-		if (likely(sfc->use_dma) && len >= SFC_DMA_TRANS_THRETHOLD) {
+		if (likely(sfc->use_dma) && len >= SFC_DMA_TRANS_THRETHOLD && !(len & 0x3)) {
 			init_completion(&sfc->cp);
 			rockchip_sfc_irq_unmask(sfc, SFC_IMR_DMA);
 			ret = rockchip_sfc_xfer_data_dma(sfc, op, len);
@@ -523,7 +524,7 @@ static int rockchip_sfc_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op
 
 static int rockchip_sfc_adjust_op_size(struct spi_mem *mem, struct spi_mem_op *op)
 {
-	struct rockchip_sfc *sfc = spi_master_get_devdata(mem->spi->master);
+	struct rockchip_sfc *sfc = spi_controller_get_devdata(mem->spi->controller);
 
 	op->data.nbytes = min(op->data.nbytes, sfc->max_iosize);
 
@@ -557,44 +558,40 @@ static irqreturn_t rockchip_sfc_irq_handler(int irq, void *dev_id)
 static int rockchip_sfc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct spi_master *master;
-	struct resource *res;
+	struct spi_controller *host;
 	struct rockchip_sfc *sfc;
 	int ret;
 
-	master = devm_spi_alloc_master(&pdev->dev, sizeof(*sfc));
-	if (!master)
+	host = devm_spi_alloc_host(&pdev->dev, sizeof(*sfc));
+	if (!host)
 		return -ENOMEM;
 
-	master->flags = SPI_MASTER_HALF_DUPLEX;
-	master->mem_ops = &rockchip_sfc_mem_ops;
-	master->dev.of_node = pdev->dev.of_node;
-	master->mode_bits = SPI_TX_QUAD | SPI_TX_DUAL | SPI_RX_QUAD | SPI_RX_DUAL;
-	master->max_speed_hz = SFC_MAX_SPEED;
-	master->num_chipselect = SFC_MAX_CHIPSELECT_NUM;
+	host->flags = SPI_CONTROLLER_HALF_DUPLEX;
+	host->mem_ops = &rockchip_sfc_mem_ops;
+	host->dev.of_node = pdev->dev.of_node;
+	host->mode_bits = SPI_TX_QUAD | SPI_TX_DUAL | SPI_RX_QUAD | SPI_RX_DUAL;
+	host->max_speed_hz = SFC_MAX_SPEED;
+	host->num_chipselect = SFC_MAX_CHIPSELECT_NUM;
 
-	sfc = spi_master_get_devdata(master);
+	sfc = spi_controller_get_devdata(host);
 	sfc->dev = dev;
+	sfc->host = host;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	sfc->regbase = devm_ioremap_resource(dev, res);
+	sfc->regbase = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(sfc->regbase))
 		return PTR_ERR(sfc->regbase);
 
 	sfc->clk = devm_clk_get(&pdev->dev, "clk_sfc");
-	if (IS_ERR(sfc->clk)) {
-		dev_err(&pdev->dev, "Failed to get sfc interface clk\n");
-		return PTR_ERR(sfc->clk);
-	}
+	if (IS_ERR(sfc->clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(sfc->clk),
+				     "Failed to get sfc interface clk\n");
 
 	sfc->hclk = devm_clk_get(&pdev->dev, "hclk_sfc");
-	if (IS_ERR(sfc->hclk)) {
-		dev_err(&pdev->dev, "Failed to get sfc ahb clk\n");
-		return PTR_ERR(sfc->hclk);
-	}
+	if (IS_ERR(sfc->hclk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(sfc->hclk),
+				     "Failed to get sfc ahb clk\n");
 
-	sfc->use_dma = !of_property_read_bool(sfc->dev->of_node,
-					      "rockchip,sfc-no-dma");
+	sfc->use_dma = !of_property_read_bool(sfc->dev->of_node, "rockchip,sfc-no-dma");
 
 	if (sfc->use_dma) {
 		ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
@@ -604,8 +601,7 @@ static int rockchip_sfc_probe(struct platform_device *pdev)
 		}
 
 		sfc->buffer = dmam_alloc_coherent(dev, SFC_MAX_IOSIZE_VER3,
-						  &sfc->dma_buffer,
-						  GFP_KERNEL);
+						  &sfc->dma_buffer, GFP_KERNEL);
 		if (!sfc->buffer)
 			return -ENOMEM;
 	}
@@ -624,17 +620,14 @@ static int rockchip_sfc_probe(struct platform_device *pdev)
 
 	/* Find the irq */
 	ret = platform_get_irq(pdev, 0);
-	if (ret < 0) {
-		dev_err(dev, "Failed to get the irq\n");
+	if (ret < 0)
 		goto err_irq;
-	}
 
 	ret = devm_request_irq(dev, ret, rockchip_sfc_irq_handler,
 			       0, pdev->name, sfc);
 	if (ret) {
 		dev_err(dev, "Failed to request irq\n");
-
-		return ret;
+		goto err_irq;
 	}
 
 	ret = rockchip_sfc_init(sfc);
@@ -644,7 +637,7 @@ static int rockchip_sfc_probe(struct platform_device *pdev)
 	sfc->max_iosize = rockchip_sfc_get_max_iosize(sfc);
 	sfc->version = rockchip_sfc_get_version(sfc);
 
-	ret = spi_register_master(master);
+	ret = spi_register_controller(host);
 	if (ret)
 		goto err_irq;
 
@@ -658,17 +651,15 @@ err_hclk:
 	return ret;
 }
 
-static int rockchip_sfc_remove(struct platform_device *pdev)
+static void rockchip_sfc_remove(struct platform_device *pdev)
 {
-	struct spi_master *master = platform_get_drvdata(pdev);
 	struct rockchip_sfc *sfc = platform_get_drvdata(pdev);
+	struct spi_controller *host = sfc->host;
 
-	spi_unregister_master(master);
+	spi_unregister_controller(host);
 
 	clk_disable_unprepare(sfc->clk);
 	clk_disable_unprepare(sfc->hclk);
-
-	return 0;
 }
 
 static const struct of_device_id rockchip_sfc_dt_ids[] = {
@@ -683,7 +674,7 @@ static struct platform_driver rockchip_sfc_driver = {
 		.of_match_table = rockchip_sfc_dt_ids,
 	},
 	.probe	= rockchip_sfc_probe,
-	.remove	= rockchip_sfc_remove,
+	.remove = rockchip_sfc_remove,
 };
 module_platform_driver(rockchip_sfc_driver);
 

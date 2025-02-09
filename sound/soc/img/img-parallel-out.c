@@ -162,11 +162,9 @@ static int img_prl_out_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		return -EINVAL;
 	}
 
-	ret = pm_runtime_get_sync(prl->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(prl->dev);
+	ret = pm_runtime_resume_and_get(prl->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	reg = img_prl_out_readl(prl, IMG_PRL_OUT_CTL);
 	reg = (reg & ~IMG_PRL_OUT_CTL_EDGE_MASK) | control_set;
@@ -175,12 +173,6 @@ static int img_prl_out_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 	return 0;
 }
-
-static const struct snd_soc_dai_ops img_prl_out_dai_ops = {
-	.trigger = img_prl_out_trigger,
-	.hw_params = img_prl_out_hw_params,
-	.set_fmt = img_prl_out_set_fmt
-};
 
 static int img_prl_out_dai_probe(struct snd_soc_dai *dai)
 {
@@ -191,8 +183,14 @@ static int img_prl_out_dai_probe(struct snd_soc_dai *dai)
 	return 0;
 }
 
+static const struct snd_soc_dai_ops img_prl_out_dai_ops = {
+	.probe		= img_prl_out_dai_probe,
+	.trigger	= img_prl_out_trigger,
+	.hw_params	= img_prl_out_hw_params,
+	.set_fmt	= img_prl_out_set_fmt
+};
+
 static struct snd_soc_dai_driver img_prl_out_dai = {
-	.probe = img_prl_out_dai_probe,
 	.playback = {
 		.channels_min = 2,
 		.channels_max = 2,
@@ -203,7 +201,8 @@ static struct snd_soc_dai_driver img_prl_out_dai = {
 };
 
 static const struct snd_soc_component_driver img_prl_out_component = {
-	.name = "img-prl-out"
+	.name = "img-prl-out",
+	.legacy_dai_naming = 1,
 };
 
 static int img_prl_out_probe(struct platform_device *pdev)
@@ -283,7 +282,7 @@ err_pm_disable:
 	return ret;
 }
 
-static int img_prl_out_dev_remove(struct platform_device *pdev)
+static void img_prl_out_dev_remove(struct platform_device *pdev)
 {
 	struct img_prl_out *prl = platform_get_drvdata(pdev);
 
@@ -292,8 +291,6 @@ static int img_prl_out_dev_remove(struct platform_device *pdev)
 		img_prl_out_suspend(&pdev->dev);
 
 	clk_disable_unprepare(prl->clk_sys);
-
-	return 0;
 }
 
 static const struct of_device_id img_prl_out_of_match[] = {

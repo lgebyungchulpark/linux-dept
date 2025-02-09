@@ -15,11 +15,14 @@
 #include <linux/bits.h>
 #include <linux/bitfield.h>
 #include <linux/i2c.h>
+#include <linux/irq.h>
 #include <linux/module.h>
-#include <linux/of_irq.h>
+#include <linux/mod_devicetable.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/regmap.h>
+#include <linux/types.h>
 
 #include <linux/iio/buffer.h>
 #include <linux/iio/events.h>
@@ -159,10 +162,9 @@ struct fxls8962af_chip_info {
 struct fxls8962af_data {
 	struct regmap *regmap;
 	const struct fxls8962af_chip_info *chip_info;
-	struct regulator *vdd_reg;
 	struct {
 		__le16 channels[3];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 	int64_t timestamp, old_timestamp;	/* Only used in hw fifo mode. */
 	struct iio_mount_matrix orientation;
@@ -173,12 +175,20 @@ struct fxls8962af_data {
 	u16 upper_thres;
 };
 
-const struct regmap_config fxls8962af_regmap_conf = {
+const struct regmap_config fxls8962af_i2c_regmap_conf = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = FXLS8962AF_MAX_REG,
 };
-EXPORT_SYMBOL_GPL(fxls8962af_regmap_conf);
+EXPORT_SYMBOL_NS_GPL(fxls8962af_i2c_regmap_conf, "IIO_FXLS8962AF");
+
+const struct regmap_config fxls8962af_spi_regmap_conf = {
+	.reg_bits = 8,
+	.pad_bits = 8,
+	.val_bits = 8,
+	.max_register = FXLS8962AF_MAX_REG,
+};
+EXPORT_SYMBOL_NS_GPL(fxls8962af_spi_regmap_conf, "IIO_FXLS8962AF");
 
 enum {
 	fxls8962af_idx_x,
@@ -219,8 +229,8 @@ static int fxls8962af_power_off(struct fxls8962af_data *data)
 
 static int fxls8962af_standby(struct fxls8962af_data *data)
 {
-	return regmap_update_bits(data->regmap, FXLS8962AF_SENS_CONFIG1,
-				  FXLS8962AF_SENS_CONFIG1_ACTIVE, 0);
+	return regmap_clear_bits(data->regmap, FXLS8962AF_SENS_CONFIG1,
+				 FXLS8962AF_SENS_CONFIG1_ACTIVE);
 }
 
 static int fxls8962af_active(struct fxls8962af_data *data)
@@ -607,7 +617,7 @@ static int
 fxls8962af_write_event_config(struct iio_dev *indio_dev,
 			      const struct iio_chan_spec *chan,
 			      enum iio_event_type type,
-			      enum iio_event_direction dir, int state)
+			      enum iio_event_direction dir, bool state)
 {
 	struct fxls8962af_data *data = iio_priv(indio_dev);
 	u8 enable_event, enable_bits;
@@ -717,8 +727,7 @@ static const struct iio_event_spec fxls8962af_event[] = {
 		.sign = 's', \
 		.realbits = 12, \
 		.storagebits = 16, \
-		.shift = 4, \
-		.endianness = IIO_BE, \
+		.endianness = IIO_LE, \
 	}, \
 	.event_spec = fxls8962af_event, \
 	.num_event_specs = ARRAY_SIZE(fxls8962af_event), \
@@ -777,9 +786,8 @@ static int fxls8962af_reset(struct fxls8962af_data *data)
 	unsigned int reg;
 	int ret;
 
-	ret = regmap_update_bits(data->regmap, FXLS8962AF_SENS_CONFIG1,
-				 FXLS8962AF_SENS_CONFIG1_RST,
-				 FXLS8962AF_SENS_CONFIG1_RST);
+	ret = regmap_set_bits(data->regmap, FXLS8962AF_SENS_CONFIG1,
+			      FXLS8962AF_SENS_CONFIG1_RST);
 	if (ret)
 		return ret;
 
@@ -822,9 +830,8 @@ static int fxls8962af_buffer_postenable(struct iio_dev *indio_dev)
 	fxls8962af_standby(data);
 
 	/* Enable buffer interrupt */
-	ret = regmap_update_bits(data->regmap, FXLS8962AF_INT_EN,
-				 FXLS8962AF_INT_EN_BUF_EN,
-				 FXLS8962AF_INT_EN_BUF_EN);
+	ret = regmap_set_bits(data->regmap, FXLS8962AF_INT_EN,
+			      FXLS8962AF_INT_EN_BUF_EN);
 	if (ret)
 		return ret;
 
@@ -843,8 +850,8 @@ static int fxls8962af_buffer_predisable(struct iio_dev *indio_dev)
 	fxls8962af_standby(data);
 
 	/* Disable buffer interrupt */
-	ret = regmap_update_bits(data->regmap, FXLS8962AF_INT_EN,
-				 FXLS8962AF_INT_EN_BUF_EN, 0);
+	ret = regmap_clear_bits(data->regmap, FXLS8962AF_INT_EN,
+				FXLS8962AF_INT_EN_BUF_EN);
 	if (ret)
 		return ret;
 
@@ -897,9 +904,10 @@ static int fxls8962af_fifo_transfer(struct fxls8962af_data *data,
 	int total_length = samples * sample_length;
 	int ret;
 
-	if (i2c_verify_client(dev))
+	if (i2c_verify_client(dev) &&
+	    data->chip_info->chip_id == FXLS8962AF_DEVICE_ID)
 		/*
-		 * Due to errata bug:
+		 * Due to errata bug (only applicable on fxls8962af):
 		 * E3: FIFO burst read operation error using I2C interface
 		 * We have to avoid burst reads on I2C..
 		 */
@@ -959,8 +967,7 @@ static int fxls8962af_fifo_flush(struct iio_dev *indio_dev)
 		int j, bit;
 
 		j = 0;
-		for_each_set_bit(bit, indio_dev->active_scan_mask,
-				 indio_dev->masklength) {
+		iio_for_each_active_channel(indio_dev, bit) {
 			memcpy(&data->scan.channels[j++], &buffer[i * 3 + bit],
 			       sizeof(data->scan.channels[0]));
 		}
@@ -1043,13 +1050,6 @@ static irqreturn_t fxls8962af_interrupt(int irq, void *p)
 	return IRQ_NONE;
 }
 
-static void fxls8962af_regulator_disable(void *data_ptr)
-{
-	struct fxls8962af_data *data = data_ptr;
-
-	regulator_disable(data->vdd_reg);
-}
-
 static void fxls8962af_pm_disable(void *dev_ptr)
 {
 	struct device *dev = dev_ptr;
@@ -1062,12 +1062,12 @@ static void fxls8962af_pm_disable(void *dev_ptr)
 	fxls8962af_standby(iio_priv(indio_dev));
 }
 
-static void fxls8962af_get_irq(struct device_node *of_node,
+static void fxls8962af_get_irq(struct device *dev,
 			       enum fxls8962af_int_pin *pin)
 {
 	int irq;
 
-	irq = of_irq_get_byname(of_node, "INT2");
+	irq = fwnode_irq_get_byname(dev_fwnode(dev), "INT2");
 	if (irq > 0) {
 		*pin = FXLS8962AF_PIN_INT2;
 		return;
@@ -1086,7 +1086,7 @@ static int fxls8962af_irq_setup(struct iio_dev *indio_dev, int irq)
 	u8 int_pin_sel;
 	int ret;
 
-	fxls8962af_get_irq(dev->of_node, &int_pin);
+	fxls8962af_get_irq(dev, &int_pin);
 	switch (int_pin) {
 	case FXLS8962AF_PIN_INT1:
 		int_pin_sel = FXLS8962AF_INT_PIN_SEL_INT1;
@@ -1104,8 +1104,7 @@ static int fxls8962af_irq_setup(struct iio_dev *indio_dev, int irq)
 	if (ret)
 		return ret;
 
-	irq_type = irqd_get_trigger_type(irq_get_irq_data(irq));
-
+	irq_type = irq_get_trigger_type(irq);
 	switch (irq_type) {
 	case IRQF_TRIGGER_HIGH:
 	case IRQF_TRIGGER_RISING:
@@ -1163,20 +1162,10 @@ int fxls8962af_core_probe(struct device *dev, struct regmap *regmap, int irq)
 	if (ret)
 		return ret;
 
-	data->vdd_reg = devm_regulator_get(dev, "vdd");
-	if (IS_ERR(data->vdd_reg))
-		return dev_err_probe(dev, PTR_ERR(data->vdd_reg),
-				     "Failed to get vdd regulator\n");
-
-	ret = regulator_enable(data->vdd_reg);
-	if (ret) {
-		dev_err(dev, "Failed to enable vdd regulator: %d\n", ret);
-		return ret;
-	}
-
-	ret = devm_add_action_or_reset(dev, fxls8962af_regulator_disable, data);
+	ret = devm_regulator_get_enable(dev, "vdd");
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret,
+				     "Failed to get vdd regulator\n");
 
 	ret = regmap_read(data->regmap, FXLS8962AF_WHO_AM_I, &reg);
 	if (ret)
@@ -1209,7 +1198,6 @@ int fxls8962af_core_probe(struct device *dev, struct regmap *regmap, int irq)
 			return ret;
 
 		ret = devm_iio_kfifo_buffer_setup(dev, indio_dev,
-						  INDIO_BUFFER_SOFTWARE,
 						  &fxls8962af_buffer_ops);
 		if (ret)
 			return ret;
@@ -1232,9 +1220,9 @@ int fxls8962af_core_probe(struct device *dev, struct regmap *regmap, int irq)
 
 	return devm_iio_device_register(dev, indio_dev);
 }
-EXPORT_SYMBOL_GPL(fxls8962af_core_probe);
+EXPORT_SYMBOL_NS_GPL(fxls8962af_core_probe, "IIO_FXLS8962AF");
 
-static int __maybe_unused fxls8962af_runtime_suspend(struct device *dev)
+static int fxls8962af_runtime_suspend(struct device *dev)
 {
 	struct fxls8962af_data *data = iio_priv(dev_get_drvdata(dev));
 	int ret;
@@ -1248,14 +1236,14 @@ static int __maybe_unused fxls8962af_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused fxls8962af_runtime_resume(struct device *dev)
+static int fxls8962af_runtime_resume(struct device *dev)
 {
 	struct fxls8962af_data *data = iio_priv(dev_get_drvdata(dev));
 
 	return fxls8962af_active(data);
 }
 
-static int __maybe_unused fxls8962af_suspend(struct device *dev)
+static int fxls8962af_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct fxls8962af_data *data = iio_priv(indio_dev);
@@ -1276,7 +1264,7 @@ static int __maybe_unused fxls8962af_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused fxls8962af_resume(struct device *dev)
+static int fxls8962af_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct fxls8962af_data *data = iio_priv(indio_dev);
@@ -1293,12 +1281,10 @@ static int __maybe_unused fxls8962af_resume(struct device *dev)
 	return 0;
 }
 
-const struct dev_pm_ops fxls8962af_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(fxls8962af_suspend, fxls8962af_resume)
-	SET_RUNTIME_PM_OPS(fxls8962af_runtime_suspend,
-			   fxls8962af_runtime_resume, NULL)
+EXPORT_NS_GPL_DEV_PM_OPS(fxls8962af_pm_ops, IIO_FXLS8962AF) = {
+	SYSTEM_SLEEP_PM_OPS(fxls8962af_suspend, fxls8962af_resume)
+	RUNTIME_PM_OPS(fxls8962af_runtime_suspend, fxls8962af_runtime_resume, NULL)
 };
-EXPORT_SYMBOL_GPL(fxls8962af_pm_ops);
 
 MODULE_AUTHOR("Sean Nyekjaer <sean@geanix.com>");
 MODULE_DESCRIPTION("NXP FXLS8962AF/FXLS8964AF accelerometer driver");

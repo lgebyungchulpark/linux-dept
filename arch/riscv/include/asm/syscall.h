@@ -10,12 +10,14 @@
 #ifndef _ASM_RISCV_SYSCALL_H
 #define _ASM_RISCV_SYSCALL_H
 
+#include <asm/hwprobe.h>
 #include <uapi/linux/audit.h>
 #include <linux/sched.h>
 #include <linux/err.h>
 
 /* The array of function pointers for syscalls. */
 extern void * const sys_call_table[];
+extern void * const compat_sys_call_table[];
 
 /*
  * Only the low 32 bits of orig_r0 are meaningful, so we return int.
@@ -73,5 +75,28 @@ static inline int syscall_get_arch(struct task_struct *task)
 #endif
 }
 
+typedef long (*syscall_t)(const struct pt_regs *);
+static inline void syscall_handler(struct pt_regs *regs, ulong syscall)
+{
+	syscall_t fn;
+
+#ifdef CONFIG_COMPAT
+	if ((regs->status & SR_UXL) == SR_UXL_32)
+		fn = compat_sys_call_table[syscall];
+	else
+#endif
+		fn = sys_call_table[syscall];
+
+	regs->a0 = fn(regs);
+}
+
+static inline bool arch_syscall_is_vdso_sigreturn(struct pt_regs *regs)
+{
+	return false;
+}
+
 asmlinkage long sys_riscv_flush_icache(uintptr_t, uintptr_t, uintptr_t);
+
+asmlinkage long sys_riscv_hwprobe(struct riscv_hwprobe *, size_t, size_t,
+				  unsigned long *, unsigned int);
 #endif	/* _ASM_RISCV_SYSCALL_H */

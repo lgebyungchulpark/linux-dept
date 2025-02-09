@@ -5,12 +5,10 @@
  * This performs n*log2(n) + 0.37*n + o(n) comparisons on average,
  * and 1.5*n*log2(n) + O(n) in the (very contrived) worst case.
  *
- * Glibc qsort() manages n*log2(n) - 1.26*n for random inputs (1.63*n
+ * Quicksort manages n*log2(n) - 1.26*n for random inputs (1.63*n
  * better) at the expense of stack usage and much larger code to avoid
  * quicksort's O(n^2) worst case.
  */
-
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/types.h>
 #include <linux/export.h>
@@ -122,16 +120,27 @@ static void swap_bytes(void *a, void *b, size_t n)
  * a pointer, but small integers make for the smallest compare
  * instructions.
  */
-#define SWAP_WORDS_64 (swap_func_t)0
-#define SWAP_WORDS_32 (swap_func_t)1
-#define SWAP_BYTES    (swap_func_t)2
+#define SWAP_WORDS_64 (swap_r_func_t)0
+#define SWAP_WORDS_32 (swap_r_func_t)1
+#define SWAP_BYTES    (swap_r_func_t)2
+#define SWAP_WRAPPER  (swap_r_func_t)3
+
+struct wrapper {
+	cmp_func_t cmp;
+	swap_func_t swap;
+};
 
 /*
  * The function pointer is last to make tail calls most efficient if the
  * compiler decides not to inline this function.
  */
-static void do_swap(void *a, void *b, size_t size, swap_func_t swap_func)
+static void do_swap(void *a, void *b, size_t size, swap_r_func_t swap_func, const void *priv)
 {
+	if (swap_func == SWAP_WRAPPER) {
+		((const struct wrapper *)priv)->swap(a, b, (int)size);
+		return;
+	}
+
 	if (swap_func == SWAP_WORDS_64)
 		swap_words_64(a, b, size);
 	else if (swap_func == SWAP_WORDS_32)
@@ -139,7 +148,7 @@ static void do_swap(void *a, void *b, size_t size, swap_func_t swap_func)
 	else if (swap_func == SWAP_BYTES)
 		swap_bytes(a, b, size);
 	else
-		swap_func(a, b, (int)size);
+		swap_func(a, b, (int)size, priv);
 }
 
 #define _CMP_WRAPPER ((cmp_r_func_t)0L)
@@ -147,7 +156,7 @@ static void do_swap(void *a, void *b, size_t size, swap_func_t swap_func)
 static int do_cmp(const void *a, const void *b, cmp_r_func_t cmp, const void *priv)
 {
 	if (cmp == _CMP_WRAPPER)
-		return ((cmp_func_t)(priv))(a, b);
+		return ((const struct wrapper *)priv)->cmp(a, b);
 	return cmp(a, b, priv);
 }
 
@@ -198,15 +207,20 @@ static size_t parent(size_t i, unsigned int lsbit, size_t size)
  */
 void sort_r(void *base, size_t num, size_t size,
 	    cmp_r_func_t cmp_func,
-	    swap_func_t swap_func,
+	    swap_r_func_t swap_func,
 	    const void *priv)
 {
 	/* pre-scale counters for performance */
 	size_t n = num * size, a = (num/2) * size;
 	const unsigned int lsbit = size & -size;  /* Used to find parent */
+	size_t shift = 0;
 
 	if (!a)		/* num < 2 || size == 0 */
 		return;
+
+	/* called from 'sort' without swap function, let's pick the default */
+	if (swap_func == SWAP_WRAPPER && !((struct wrapper *)priv)->swap)
+		swap_func = NULL;
 
 	if (!swap_func) {
 		if (is_aligned(base, size, 8))
@@ -227,12 +241,18 @@ void sort_r(void *base, size_t num, size_t size,
 	for (;;) {
 		size_t b, c, d;
 
-		if (a)			/* Building heap: sift down --a */
-			a -= size;
-		else if (n -= size)	/* Sorting: Extract root to --n */
-			do_swap(base, base + n, size, swap_func);
-		else			/* Sort complete */
+		if (a)			/* Building heap: sift down a */
+			a -= size << shift;
+		else if (n > 3 * size) { /* Sorting: Extract two largest elements */
+			n -= size;
+			do_swap(base, base + n, size, swap_func, priv);
+			shift = do_cmp(base + size, base + 2 * size, cmp_func, priv) <= 0;
+			a = size << shift;
+			n -= size;
+			do_swap(base + a, base + n, size, swap_func, priv);
+		} else {		/* Sort complete */
 			break;
+		}
 
 		/*
 		 * Sift element at "a" down into heap.  This is the
@@ -247,7 +267,7 @@ void sort_r(void *base, size_t num, size_t size,
 		 * average, 3/4 worst-case.)
 		 */
 		for (b = a; c = 2*b + size, (d = c + size) < n;)
-			b = do_cmp(base + c, base + d, cmp_func, priv) >= 0 ? c : d;
+			b = do_cmp(base + c, base + d, cmp_func, priv) > 0 ? c : d;
 		if (d == n)	/* Special case last leaf with no sibling */
 			b = c;
 
@@ -257,9 +277,14 @@ void sort_r(void *base, size_t num, size_t size,
 		c = b;			/* Where "a" belongs */
 		while (b != a) {	/* Shift it into place */
 			b = parent(b, lsbit, size);
-			do_swap(base + b, base + c, size, swap_func);
+			do_swap(base + b, base + c, size, swap_func, priv);
 		}
 	}
+
+	n -= size;
+	do_swap(base, base + n, size, swap_func, priv);
+	if (n == size * 2 && do_cmp(base, base + size, cmp_func, priv) > 0)
+		do_swap(base, base + size, size, swap_func, priv);
 }
 EXPORT_SYMBOL(sort_r);
 
@@ -267,6 +292,11 @@ void sort(void *base, size_t num, size_t size,
 	  cmp_func_t cmp_func,
 	  swap_func_t swap_func)
 {
-	return sort_r(base, num, size, _CMP_WRAPPER, swap_func, cmp_func);
+	struct wrapper w = {
+		.cmp  = cmp_func,
+		.swap = swap_func,
+	};
+
+	return sort_r(base, num, size, _CMP_WRAPPER, SWAP_WRAPPER, &w);
 }
 EXPORT_SYMBOL(sort);

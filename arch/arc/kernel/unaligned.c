@@ -12,6 +12,7 @@
 #include <linux/ptrace.h>
 #include <linux/uaccess.h>
 #include <asm/disasm.h>
+#include "unaligned.h"
 
 #ifdef CONFIG_CPU_BIG_ENDIAN
 #define BE		1
@@ -237,7 +238,7 @@ int misaligned_fixup(unsigned long address, struct pt_regs *regs,
 	if (state.fault)
 		goto fault;
 
-	/* clear any remanants of delay slot */
+	/* clear any remnants of delay slot */
 	if (delay_mode(regs)) {
 		regs->ret = regs->bta & ~1U;
 		regs->status32 &= ~STATUS_DE_MASK;

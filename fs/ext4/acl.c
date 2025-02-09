@@ -139,7 +139,7 @@ fail:
 /*
  * Inode operation get_posix_acl().
  *
- * inode->i_mutex: don't care
+ * inode->i_rwsem: don't care
  */
 struct posix_acl *
 ext4_get_acl(struct inode *inode, int type, bool rcu)
@@ -183,7 +183,7 @@ ext4_get_acl(struct inode *inode, int type, bool rcu)
 /*
  * Set the access or default ACL of an inode.
  *
- * inode->i_mutex: down unless called from ext4_new_inode
+ * inode->i_rwsem: down unless called from ext4_new_inode
  */
 static int
 __ext4_set_acl(handle_t *handle, struct inode *inode, int type,
@@ -225,12 +225,13 @@ __ext4_set_acl(handle_t *handle, struct inode *inode, int type,
 }
 
 int
-ext4_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
+ext4_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 	     struct posix_acl *acl, int type)
 {
 	handle_t *handle;
 	int error, credits, retries = 0;
 	size_t acl_size = acl ? ext4_acl_size(acl->a_count) : 0;
+	struct inode *inode = d_inode(dentry);
 	umode_t mode = inode->i_mode;
 	int update_mode = 0;
 
@@ -248,7 +249,7 @@ retry:
 		return PTR_ERR(handle);
 
 	if ((type == ACL_TYPE_ACCESS) && acl) {
-		error = posix_acl_update_mode(mnt_userns, inode, &mode, &acl);
+		error = posix_acl_update_mode(idmap, inode, &mode, &acl);
 		if (error)
 			goto out_stop;
 		if (mode != inode->i_mode)
@@ -258,7 +259,7 @@ retry:
 	error = __ext4_set_acl(handle, inode, type, acl, 0 /* xattr_flags */);
 	if (!error && update_mode) {
 		inode->i_mode = mode;
-		inode->i_ctime = current_time(inode);
+		inode_set_ctime_current(inode);
 		error = ext4_mark_inode_dirty(handle, inode);
 	}
 out_stop:
@@ -271,8 +272,8 @@ out_stop:
 /*
  * Initialize the ACLs of a new inode. Called from ext4_new_inode.
  *
- * dir->i_mutex: down
- * inode->i_mutex: up (access to inode is still exclusive)
+ * dir->i_rwsem: down
+ * inode->i_rwsem: up (access to inode is still exclusive)
  */
 int
 ext4_init_acl(handle_t *handle, struct inode *inode, struct inode *dir)

@@ -20,7 +20,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 
-#define SNVS_HPVIDR1_REG	0xF8
+#define SNVS_HPVIDR1_REG	0xBF8
 #define SNVS_LPSR_REG		0x4C	/* LP Status Register */
 #define SNVS_LPCR_REG		0x38	/* LP Control Register */
 #define SNVS_HPSR_REG		0x14
@@ -100,11 +100,6 @@ static irqreturn_t imx_snvs_pwrkey_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void imx_snvs_pwrkey_disable_clk(void *data)
-{
-	clk_disable_unprepare(data);
-}
-
 static void imx_snvs_pwrkey_act(void *pdata)
 {
 	struct pwrkey_drv_data *pd = pdata;
@@ -141,26 +136,10 @@ static int imx_snvs_pwrkey_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "KEY_POWER without setting in dts\n");
 	}
 
-	clk = devm_clk_get_optional(&pdev->dev, NULL);
+	clk = devm_clk_get_optional_enabled(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "Failed to get snvs clock (%pe)\n", clk);
 		return PTR_ERR(clk);
-	}
-
-	error = clk_prepare_enable(clk);
-	if (error) {
-		dev_err(&pdev->dev, "Failed to enable snvs clock (%pe)\n",
-			ERR_PTR(error));
-		return error;
-	}
-
-	error = devm_add_action_or_reset(&pdev->dev,
-					 imx_snvs_pwrkey_disable_clk, clk);
-	if (error) {
-		dev_err(&pdev->dev,
-			"Failed to register clock cleanup handler (%pe)\n",
-			ERR_PTR(error));
-		return error;
 	}
 
 	pdata->wakeup = of_property_read_bool(np, "wakeup-source");
@@ -204,7 +183,6 @@ static int imx_snvs_pwrkey_probe(struct platform_device *pdev)
 	error = devm_request_irq(&pdev->dev, pdata->irq,
 			       imx_snvs_pwrkey_interrupt,
 			       0, pdev->name, pdev);
-
 	if (error) {
 		dev_err(&pdev->dev, "interrupt not available.\n");
 		return error;

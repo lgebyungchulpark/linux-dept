@@ -13,6 +13,7 @@
 #include <linux/err.h>
 #include <linux/sysfs.h>
 #include <linux/kobject.h>
+#include <linux/kstrtox.h>
 #include <linux/platform_device.h>
 
 #include <video/omapfb_dss.h>
@@ -210,7 +211,7 @@ static ssize_t overlay_enabled_store(struct omap_overlay *ovl, const char *buf,
 	int r;
 	bool enable;
 
-	r = strtobool(buf, &enable);
+	r = kstrtobool(buf, &enable);
 	if (r)
 		return r;
 
@@ -390,6 +391,7 @@ static struct attribute *overlay_sysfs_attrs[] = {
 	&overlay_attr_zorder.attr,
 	NULL
 };
+ATTRIBUTE_GROUPS(overlay_sysfs);
 
 static ssize_t overlay_attr_show(struct kobject *kobj, struct attribute *attr,
 		char *buf)
@@ -428,7 +430,7 @@ static const struct sysfs_ops overlay_sysfs_ops = {
 
 static struct kobj_type overlay_ktype = {
 	.sysfs_ops = &overlay_sysfs_ops,
-	.default_attrs = overlay_sysfs_attrs,
+	.default_groups = overlay_sysfs_groups,
 };
 
 int dss_overlay_kobj_init(struct omap_overlay *ovl,

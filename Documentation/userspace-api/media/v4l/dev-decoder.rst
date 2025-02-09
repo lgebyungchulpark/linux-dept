@@ -72,6 +72,12 @@ coded resolution
 coded width
    width for given coded resolution.
 
+coding tree unit
+   processing unit of the HEVC codec (corresponds to macroblock units in
+   H.264, VP8, VP9),
+   can use block structures of up to 64×64 pixels.
+   Good at sub-partitioning the picture into variable sized structures.
+
 decode order
    the order in which frames are decoded; may differ from display order if the
    coded format includes a feature of frame reordering; for decoders,
@@ -104,7 +110,8 @@ keyframe
 macroblock
    a processing unit in image and video compression formats based on linear
    block transforms (e.g. H.264, VP8, VP9); codec-specific, but for most of
-   popular codecs the size is 16x16 samples (pixels).
+   popular codecs the size is 16x16 samples (pixels). The HEVC codec uses a
+   slightly more flexible processing unit called coding tree unit (CTU).
 
 OUTPUT
    the source buffer queue; for decoders, the queue of buffers containing
@@ -270,7 +277,7 @@ Initialization
      other fields
          follow standard semantics.
 
-   * **Return fields:**
+   * **Returned fields:**
 
      ``sizeimage``
          adjusted size of ``OUTPUT`` buffers.
@@ -304,7 +311,7 @@ Initialization
       ``memory``
           follows standard semantics.
 
-    * **Return fields:**
+    * **Returned fields:**
 
       ``count``
           the actual number of buffers allocated.
@@ -332,7 +339,7 @@ Initialization
       ``format``
           follows standard semantics.
 
-    * **Return fields:**
+    * **Returned fields:**
 
       ``count``
           adjusted to the number of allocated buffers.
@@ -403,7 +410,7 @@ Capture Setup
       ``type``
           a ``V4L2_BUF_TYPE_*`` enum appropriate for ``CAPTURE``.
 
-    * **Return fields:**
+    * **Returned fields:**
 
       ``width``, ``height``
           frame buffer resolution for the decoded frames.
@@ -436,7 +443,7 @@ Capture Setup
       ``target``
           set to ``V4L2_SEL_TGT_COMPOSE``.
 
-    * **Return fields:**
+    * **Returned fields:**
 
       ``r.left``, ``r.top``, ``r.width``, ``r.height``
           the visible rectangle; it must fit within the frame buffer resolution
@@ -545,7 +552,7 @@ Capture Setup
          frame is written; defaults to ``V4L2_SEL_TGT_COMPOSE_DEFAULT``;
          read-only on hardware without additional compose/scaling capabilities.
 
-   * **Return fields:**
+   * **Returned fields:**
 
      ``r.left``, ``r.top``, ``r.width``, ``r.height``
          the visible rectangle; it must fit within the frame buffer resolution
@@ -622,7 +629,7 @@ Capture Setup
       ``memory``
           follows standard semantics.
 
-    * **Return fields:**
+    * **Returned fields:**
 
       ``count``
           actual number of buffers allocated.
@@ -661,7 +668,7 @@ Capture Setup
           a format representing the maximum framebuffer resolution to be
           accommodated by newly allocated buffers.
 
-    * **Return fields:**
+    * **Returned fields:**
 
       ``count``
           adjusted to the number of allocated buffers.

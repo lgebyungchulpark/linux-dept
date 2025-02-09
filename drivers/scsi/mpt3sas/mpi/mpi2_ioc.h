@@ -537,7 +537,7 @@ typedef struct _MPI2_EVENT_NOTIFICATION_REPLY {
 	U16 Event;		/*0x14 */
 	U16 Reserved4;		/*0x16 */
 	U32 EventContext;	/*0x18 */
-	U32 EventData[1];	/*0x1C */
+	U32 EventData[];	/*0x1C */
 } MPI2_EVENT_NOTIFICATION_REPLY, *PTR_MPI2_EVENT_NOTIFICATION_REPLY,
 	Mpi2EventNotificationReply_t,
 	*pMpi2EventNotificationReply_t;
@@ -639,7 +639,7 @@ typedef struct _MPI2_EVENT_DATA_HOST_MESSAGE {
 	U8 Reserved1;		/*0x01 */
 	U16 Reserved2;		/*0x02 */
 	U32 Reserved3;		/*0x04 */
-	U32 HostData[1];	/*0x08 */
+	U32 HostData[];		/*0x08 */
 } MPI2_EVENT_DATA_HOST_MESSAGE, *PTR_MPI2_EVENT_DATA_HOST_MESSAGE,
 	Mpi2EventDataHostMessage_t, *pMpi2EventDataHostMessage_t;
 
@@ -808,12 +808,9 @@ typedef struct _MPI2_EVENT_DATA_IR_PHYSICAL_DISK {
 /*Integrated RAID Configuration Change List Event data */
 
 /*
- *Host code (drivers, BIOS, utilities, etc.) should leave this define set to
- *one and check NumElements at runtime.
+ *Host code (drivers, BIOS, utilities, etc.) should check NumElements at
+ *runtime before using ConfigElement[].
  */
-#ifndef MPI2_EVENT_IR_CONFIG_ELEMENT_COUNT
-#define MPI2_EVENT_IR_CONFIG_ELEMENT_COUNT          (1)
-#endif
 
 typedef struct _MPI2_EVENT_IR_CONFIG_ELEMENT {
 	U16 ElementFlags;	/*0x00 */
@@ -848,7 +845,7 @@ typedef struct _MPI2_EVENT_DATA_IR_CONFIG_CHANGE_LIST {
 	U8 ConfigNum;		/*0x03 */
 	U32 Flags;		/*0x04 */
 	MPI2_EVENT_IR_CONFIG_ELEMENT
-		ConfigElement[MPI2_EVENT_IR_CONFIG_ELEMENT_COUNT];/*0x08 */
+		ConfigElement[];/*0x08 */
 } MPI2_EVENT_DATA_IR_CONFIG_CHANGE_LIST,
 	*PTR_MPI2_EVENT_DATA_IR_CONFIG_CHANGE_LIST,
 	Mpi2EventDataIrConfigChangeList_t,
@@ -969,12 +966,9 @@ typedef struct _MPI2_EVENT_DATA_SAS_INIT_TABLE_OVERFLOW {
 /*SAS Topology Change List Event data */
 
 /*
- *Host code (drivers, BIOS, utilities, etc.) should leave this define set to
- *one and check NumEntries at runtime.
+ *Host code (drivers, BIOS, utilities, etc.) should check NumEntries at
+ *runtime before using PHY[].
  */
-#ifndef MPI2_EVENT_SAS_TOPO_PHY_COUNT
-#define MPI2_EVENT_SAS_TOPO_PHY_COUNT           (1)
-#endif
 
 typedef struct _MPI2_EVENT_SAS_TOPO_PHY_ENTRY {
 	U16 AttachedDevHandle;	/*0x00 */
@@ -994,7 +988,7 @@ typedef struct _MPI2_EVENT_DATA_SAS_TOPOLOGY_CHANGE_LIST {
 	U8 ExpStatus;		/*0x0A */
 	U8 PhysicalPort;	/*0x0B */
 	MPI2_EVENT_SAS_TOPO_PHY_ENTRY
-	PHY[MPI2_EVENT_SAS_TOPO_PHY_COUNT];	/*0x0C */
+	PHY[];			/*0x0C */
 } MPI2_EVENT_DATA_SAS_TOPOLOGY_CHANGE_LIST,
 	*PTR_MPI2_EVENT_DATA_SAS_TOPOLOGY_CHANGE_LIST,
 	Mpi2EventDataSasTopologyChangeList_t,
@@ -1229,12 +1223,9 @@ typedef struct _MPI26_EVENT_DATA_PCIE_ENUMERATION {
 /*PCIe Topology Change List Event data (MPI v2.6 and later) */
 
 /*
- *Host code (drivers, BIOS, utilities, etc.) should leave this define set to
- *one and check NumEntries at runtime.
+ *Host code (drivers, BIOS, utilities, etc.) should check NumEntries at
+ *runtime before using PortEntry[].
  */
-#ifndef MPI26_EVENT_PCIE_TOPO_PORT_COUNT
-#define MPI26_EVENT_PCIE_TOPO_PORT_COUNT        (1)
-#endif
 
 typedef struct _MPI26_EVENT_PCIE_TOPO_PORT_ENTRY {
 	U16	AttachedDevHandle;      /*0x00 */
@@ -1286,7 +1277,7 @@ typedef struct _MPI26_EVENT_DATA_PCIE_TOPOLOGY_CHANGE_LIST {
 	U8	SwitchStatus;           /*0x0A */
 	U8	PhysicalPort;           /*0x0B */
 	MPI26_EVENT_PCIE_TOPO_PORT_ENTRY
-		PortEntry[MPI26_EVENT_PCIE_TOPO_PORT_COUNT]; /*0x0C */
+		PortEntry[];            /*0x0C */
 } MPI26_EVENT_DATA_PCIE_TOPOLOGY_CHANGE_LIST,
 	*PTR_MPI26_EVENT_DATA_PCIE_TOPOLOGY_CHANGE_LIST,
 	Mpi26EventDataPCIeTopologyChangeList_t,
@@ -1397,7 +1388,7 @@ typedef struct _MPI2_SEND_HOST_MESSAGE_REQUEST {
 	U32 Reserved8;		/*0x18 */
 	U32 Reserved9;		/*0x1C */
 	U32 Reserved10;		/*0x20 */
-	U32 HostData[1];	/*0x24 */
+	U32 HostData[];		/*0x24 */
 } MPI2_SEND_HOST_MESSAGE_REQUEST,
 	*PTR_MPI2_SEND_HOST_MESSAGE_REQUEST,
 	Mpi2SendHostMessageRequest_t,

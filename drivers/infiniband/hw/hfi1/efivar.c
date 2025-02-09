@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright(c) 2015, 2016 Intel Corporation.
  */
@@ -72,7 +72,7 @@ static int read_efi_var(const char *name, unsigned long *size,
 	 * is in the EFIVAR_FS code and may not be compiled in.
 	 * However, even that is insufficient since it does not cover
 	 * EFI_BUFFER_TOO_SMALL which could be an important return.
-	 * For now, just split out succces or not found.
+	 * For now, just split out success or not found.
 	 */
 	ret = status == EFI_SUCCESS   ? 0 :
 	      status == EFI_NOT_FOUND ? -ENOENT :
@@ -112,7 +112,7 @@ int read_hfi1_efi_var(struct hfi1_devdata *dd, const char *kind,
 		      unsigned long *size, void **return_data)
 {
 	char prefix_name[64];
-	char name[64];
+	char name[128];
 	int result;
 
 	/* create a common prefix */

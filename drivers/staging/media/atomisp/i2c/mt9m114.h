@@ -3,17 +3,6 @@
  * Support for mt9m114 Camera Sensor.
  *
  * Copyright (c) 2010 Intel Corporation. All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
  */
 
 #ifndef __A1040_H__
@@ -136,9 +125,6 @@
 #define MT9M114_BPAT_BGBGGRGR	BIT(3)
 
 #define MT9M114_FOCAL_LENGTH_NUM	208	/*2.08mm*/
-#define MT9M114_FOCAL_LENGTH_DEM	100
-#define MT9M114_F_NUMBER_DEFAULT_NUM	24
-#define MT9M114_F_NUMBER_DEM	10
 #define MT9M114_WAIT_STAT_TIMEOUT	100
 #define MT9M114_FLICKER_MODE_50HZ	1
 #define MT9M114_FLICKER_MODE_60HZ	2
@@ -319,9 +305,6 @@ struct mt9m114_res_struct {
 	struct regval_list *regs;
 	u16 pixels_per_line;
 	u16 lines_per_frame;
-	u8 bin_factor_x;
-	u8 bin_factor_y;
-	u8 bin_mode;
 };
 
 /* 2 bytes used for address: 256 bytes total */
@@ -353,9 +336,6 @@ static struct mt9m114_res_struct mt9m114_res[] = {
 
 		.pixels_per_line = 0x0640,
 		.lines_per_frame = 0x0307,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 	},
 	{
 		.desc	= "848P",
@@ -369,9 +349,6 @@ static struct mt9m114_res_struct mt9m114_res[] = {
 
 		.pixels_per_line = 0x0640,
 		.lines_per_frame = 0x03E8,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 	},
 	{
 		.desc	= "960P",
@@ -385,9 +362,6 @@ static struct mt9m114_res_struct mt9m114_res[] = {
 
 		.pixels_per_line = 0x0644, /* consistent with regs arrays */
 		.lines_per_frame = 0x03E5, /* consistent with regs arrays */
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 	},
 };
 

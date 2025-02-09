@@ -99,6 +99,10 @@ Global attributes
 `name`
 		The chip name.
 
+`label`
+		A descriptive label that allows to uniquely identify a device
+		within the system.
+
 `update_interval`
 		The interval at which the chip will update readings.
 
@@ -197,7 +201,7 @@ PWM
 		Pulse width modulation fan control.
 
 `pwm[1-*]_enable`
-		Fan speed control method:
+		Fan speed control method.
 
 `pwm[1-*]_mode`
 		direct current or pulse-width modulation.

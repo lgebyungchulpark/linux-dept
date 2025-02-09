@@ -149,14 +149,25 @@ static int snd_acp6x_probe(struct pci_dev *pci,
 	int index = 0;
 	int val = 0x00;
 	u32 addr;
-	unsigned int irqflags;
+	unsigned int irqflags, flag;
 	int ret;
 
 	irqflags = IRQF_SHARED;
-	/* Yellow Carp device check */
-	if (pci->revision != 0x60)
+
+	/* Return if acp config flag is defined */
+	flag = snd_amd_acp_find_config(pci);
+	if (flag)
 		return -ENODEV;
 
+	/* Yellow Carp device check */
+	switch (pci->revision) {
+	case 0x60:
+	case 0x6f:
+		break;
+	default:
+		dev_dbg(&pci->dev, "acp6x pci device not found\n");
+		return -ENODEV;
+	}
 	if (pci_enable_device(pci)) {
 		dev_err(&pci->dev, "pci_enable_device failed\n");
 		return -ENODEV;

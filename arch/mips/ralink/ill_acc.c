@@ -5,8 +5,10 @@
  */
 
 #include <linux/interrupt.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/of_irq.h>
+#include <linux/platform_device.h>
 
 #include <asm/mach-ralink/ralink_regs.h>
 
@@ -61,6 +63,7 @@ static int __init ill_acc_of_setup(void)
 	pdev = of_find_device_by_node(np);
 	if (!pdev) {
 		pr_err("%pOFn: failed to lookup pdev\n", np);
+		of_node_put(np);
 		return -EINVAL;
 	}
 

@@ -2,17 +2,15 @@
 #include <linux/screen_info.h>
 #include <linux/init.h>
 
-#include <asm/bootparam.h>
 #include <asm/setup.h>
 
 #include <xen/interface/xen.h>
 
 #include "xen-ops.h"
 
-void __init xen_init_vga(const struct dom0_vga_console_info *info, size_t size)
+void __init xen_init_vga(const struct dom0_vga_console_info *info, size_t size,
+			 struct screen_info *screen_info)
 {
-	struct screen_info *screen_info = &boot_params.screen_info;
-
 	/* This is drawn from a dump from vgacon:startup in
 	 * standard Linux. */
 	screen_info->orig_video_mode = 3;
@@ -57,6 +55,14 @@ void __init xen_init_vga(const struct dom0_vga_console_info *info, size_t size)
 		screen_info->rsvd_size = info->u.vesa_lfb.rsvd_size;
 		screen_info->rsvd_pos = info->u.vesa_lfb.rsvd_pos;
 
+		if (size >= offsetof(struct dom0_vga_console_info,
+				     u.vesa_lfb.ext_lfb_base)
+		    + sizeof(info->u.vesa_lfb.ext_lfb_base)
+		    && info->u.vesa_lfb.ext_lfb_base) {
+			screen_info->ext_lfb_base = info->u.vesa_lfb.ext_lfb_base;
+			screen_info->capabilities |= VIDEO_CAPABILITY_64BIT_BASE;
+		}
+
 		if (info->video_type == XEN_VGATYPE_EFI_LFB) {
 			screen_info->orig_video_isVGA = VIDEO_TYPE_EFI;
 			break;
@@ -66,14 +72,6 @@ void __init xen_init_vga(const struct dom0_vga_console_info *info, size_t size)
 				     u.vesa_lfb.mode_attrs)
 		    + sizeof(info->u.vesa_lfb.mode_attrs))
 			screen_info->vesa_attributes = info->u.vesa_lfb.mode_attrs;
-
-		if (size >= offsetof(struct dom0_vga_console_info,
-				     u.vesa_lfb.ext_lfb_base)
-		    + sizeof(info->u.vesa_lfb.ext_lfb_base)
-		    && info->u.vesa_lfb.ext_lfb_base) {
-			screen_info->ext_lfb_base = info->u.vesa_lfb.ext_lfb_base;
-			screen_info->capabilities |= VIDEO_CAPABILITY_64BIT_BASE;
-		}
 		break;
 	}
 }

@@ -371,7 +371,6 @@ static u16 initio_se2_rd(unsigned long base, u8 addr)
  */
 static void initio_se2_wr(unsigned long base, u8 addr, u16 val)
 {
-	u8 rb;
 	u8 instr;
 	int i;
 
@@ -400,7 +399,7 @@ static void initio_se2_wr(unsigned long base, u8 addr, u16 val)
 		udelay(30);
 		outb(SE2CS, base + TUL_NVRAM);			/* -CLK */
 		udelay(30);
-		if ((rb = inb(base + TUL_NVRAM)) & SE2DI)
+		if (inb(base + TUL_NVRAM) & SE2DI)
 			break;	/* write complete */
 	}
 	outb(0, base + TUL_NVRAM);				/* -CS */
@@ -1166,7 +1165,7 @@ static void tulip_scsi(struct initio_host * host)
 			return;
 		}
 		if (host->jsint & (TSS_FUNC_COMP | TSS_BUS_SERV)) {	/* func complete or Bus service */
-			if ((scb = host->active) != NULL)
+			if (host->active)
 				initio_next_state(host);
 			return;
 		}
@@ -2553,7 +2552,7 @@ static void initio_build_scb(struct initio_host * host, struct scsi_ctrl_blk * c
 				  SENSE_SIZE, DMA_FROM_DEVICE);
 	cblk->senseptr = (u32)dma_addr;
 	cblk->senselen = SENSE_SIZE;
-	cmnd->SCp.ptr = (char *)(unsigned long)dma_addr;
+	initio_priv(cmnd)->sense_dma_addr = dma_addr;
 	cblk->cdblen = cmnd->cmd_len;
 
 	/* Clear the returned status */
@@ -2577,7 +2576,7 @@ static void initio_build_scb(struct initio_host * host, struct scsi_ctrl_blk * c
 					  sizeof(struct sg_entry) * TOTAL_SG_ENTRY,
 					  DMA_BIDIRECTIONAL);
 		cblk->bufptr = (u32)dma_addr;
-		cmnd->SCp.dma_handle = dma_addr;
+		initio_priv(cmnd)->sglist_dma_addr = dma_addr;
 
 		cblk->sglen = nseg;
 
@@ -2704,16 +2703,17 @@ static int i91u_biosparam(struct scsi_device *sdev, struct block_device *dev,
 static void i91u_unmap_scb(struct pci_dev *pci_dev, struct scsi_cmnd *cmnd)
 {
 	/* auto sense buffer */
-	if (cmnd->SCp.ptr) {
+	if (initio_priv(cmnd)->sense_dma_addr) {
 		dma_unmap_single(&pci_dev->dev,
-				 (dma_addr_t)((unsigned long)cmnd->SCp.ptr),
+				 initio_priv(cmnd)->sense_dma_addr,
 				 SENSE_SIZE, DMA_FROM_DEVICE);
-		cmnd->SCp.ptr = NULL;
+		initio_priv(cmnd)->sense_dma_addr = 0;
 	}
 
 	/* request buffer */
 	if (scsi_sg_count(cmnd)) {
-		dma_unmap_single(&pci_dev->dev, cmnd->SCp.dma_handle,
+		dma_unmap_single(&pci_dev->dev,
+				 initio_priv(cmnd)->sglist_dma_addr,
 				 sizeof(struct sg_entry) * TOTAL_SG_ENTRY,
 				 DMA_BIDIRECTIONAL);
 
@@ -2787,7 +2787,7 @@ static void i91uSCBPost(u8 * host_mem, u8 * cblk_mem)
 	initio_release_scb(host, cblk);	/* Release SCB for current channel */
 }
 
-static struct scsi_host_template initio_template = {
+static const struct scsi_host_template initio_template = {
 	.proc_name		= "INI9100U",
 	.name			= "Initio INI-9X00U/UW SCSI device driver",
 	.queuecommand		= i91u_queuecommand,
@@ -2796,6 +2796,7 @@ static struct scsi_host_template initio_template = {
 	.can_queue		= MAX_TARGETS * i91u_MAXQUEUE,
 	.this_id		= 1,
 	.sg_tablesize		= SG_ALL,
+	.cmd_size		= sizeof(struct initio_cmd_priv),
 };
 
 static int initio_probe_one(struct pci_dev *pdev,

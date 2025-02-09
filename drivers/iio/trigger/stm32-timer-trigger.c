@@ -11,9 +11,10 @@
 #include <linux/iio/timer/stm32-timer-trigger.h>
 #include <linux/iio/trigger.h>
 #include <linux/mfd/stm32-timers.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/of_device.h>
+#include <linux/property.h>
 
 #define MAX_TRIGGERS 7
 #define MAX_VALIDS 5
@@ -157,7 +158,7 @@ static int stm32_timer_start(struct stm32_timer_trigger *priv,
 
 	regmap_write(priv->regmap, TIM_PSC, prescaler);
 	regmap_write(priv->regmap, TIM_ARR, prd - 1);
-	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE, TIM_CR1_ARPE);
+	regmap_set_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE);
 
 	/* Force master mode to update mode */
 	if (stm32_timer_is_trgo2_name(trig->name))
@@ -168,10 +169,10 @@ static int stm32_timer_start(struct stm32_timer_trigger *priv,
 				   0x2 << TIM_CR2_MMS_SHIFT);
 
 	/* Make sure that registers are updated */
-	regmap_update_bits(priv->regmap, TIM_EGR, TIM_EGR_UG, TIM_EGR_UG);
+	regmap_set_bits(priv->regmap, TIM_EGR, TIM_EGR_UG);
 
 	/* Enable controller */
-	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, TIM_CR1_CEN);
+	regmap_set_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN);
 	mutex_unlock(&priv->lock);
 
 	return 0;
@@ -188,19 +189,19 @@ static void stm32_timer_stop(struct stm32_timer_trigger *priv,
 
 	mutex_lock(&priv->lock);
 	/* Stop timer */
-	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE, 0);
-	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, 0);
+	regmap_clear_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE);
+	regmap_clear_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN);
 	regmap_write(priv->regmap, TIM_PSC, 0);
 	regmap_write(priv->regmap, TIM_ARR, 0);
 
 	/* Force disable master mode */
 	if (stm32_timer_is_trgo2_name(trig->name))
-		regmap_update_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS2, 0);
+		regmap_clear_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS2);
 	else
-		regmap_update_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS, 0);
+		regmap_clear_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS);
 
 	/* Make sure that registers are updated */
-	regmap_update_bits(priv->regmap, TIM_EGR, TIM_EGR_UG, TIM_EGR_UG);
+	regmap_set_bits(priv->regmap, TIM_EGR, TIM_EGR_UG);
 
 	if (priv->enabled) {
 		priv->enabled = false;
@@ -497,11 +498,9 @@ static int stm32_counter_write_raw(struct iio_dev *indio_dev,
 				priv->enabled = true;
 				clk_enable(priv->clk);
 			}
-			regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN,
-					   TIM_CR1_CEN);
+			regmap_set_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN);
 		} else {
-			regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN,
-					   0);
+			regmap_clear_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN);
 			if (priv->enabled) {
 				priv->enabled = false;
 				clk_disable(priv->clk);
@@ -554,7 +553,7 @@ static int stm32_set_trigger_mode(struct iio_dev *indio_dev,
 {
 	struct stm32_timer_trigger *priv = iio_priv(indio_dev);
 
-	regmap_update_bits(priv->regmap, TIM_SMCR, TIM_SMCR_SMS, TIM_SMCR_SMS);
+	regmap_set_bits(priv->regmap, TIM_SMCR, TIM_SMCR_SMS);
 
 	return 0;
 }
@@ -682,7 +681,7 @@ static ssize_t stm32_count_set_preset(struct iio_dev *indio_dev,
 		return ret;
 
 	/* TIMx_ARR register shouldn't be buffered (ARPE=0) */
-	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE, 0);
+	regmap_clear_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE);
 	regmap_write(priv->regmap, TIM_ARR, preset);
 
 	return len;
@@ -756,9 +755,9 @@ static void stm32_timer_detect_trgo2(struct stm32_timer_trigger *priv)
 	 * Master mode selection 2 bits can only be written and read back when
 	 * timer supports it.
 	 */
-	regmap_update_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS2, TIM_CR2_MMS2);
+	regmap_set_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS2);
 	regmap_read(priv->regmap, TIM_CR2, &val);
-	regmap_update_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS2, 0);
+	regmap_clear_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS2);
 	priv->has_trgo2 = !!val;
 }
 
@@ -771,11 +770,11 @@ static int stm32_timer_trigger_probe(struct platform_device *pdev)
 	unsigned int index;
 	int ret;
 
-	if (of_property_read_u32(dev->of_node, "reg", &index))
-		return -EINVAL;
+	ret = device_property_read_u32(dev, "reg", &index);
+	if (ret)
+		return ret;
 
-	cfg = (const struct stm32_timer_trigger_cfg *)
-		of_match_device(dev->driver->of_match_table, dev)->data;
+	cfg = device_get_match_data(dev);
 
 	if (index >= ARRAY_SIZE(triggers_table) ||
 	    index >= cfg->num_valids_table)
@@ -808,7 +807,7 @@ static int stm32_timer_trigger_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int stm32_timer_trigger_remove(struct platform_device *pdev)
+static void stm32_timer_trigger_remove(struct platform_device *pdev)
 {
 	struct stm32_timer_trigger *priv = platform_get_drvdata(pdev);
 	u32 val;
@@ -819,15 +818,13 @@ static int stm32_timer_trigger_remove(struct platform_device *pdev)
 	/* Check if nobody else use the timer, then disable it */
 	regmap_read(priv->regmap, TIM_CCER, &val);
 	if (!(val & TIM_CCER_CCXE))
-		regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, 0);
+		regmap_clear_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN);
 
 	if (priv->enabled)
 		clk_disable(priv->clk);
-
-	return 0;
 }
 
-static int __maybe_unused stm32_timer_trigger_suspend(struct device *dev)
+static int stm32_timer_trigger_suspend(struct device *dev)
 {
 	struct stm32_timer_trigger *priv = dev_get_drvdata(dev);
 
@@ -842,14 +839,14 @@ static int __maybe_unused stm32_timer_trigger_suspend(struct device *dev)
 		regmap_read(priv->regmap, TIM_SMCR, &priv->bak.smcr);
 
 		/* Disable the timer */
-		regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, 0);
+		regmap_clear_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN);
 		clk_disable(priv->clk);
 	}
 
 	return 0;
 }
 
-static int __maybe_unused stm32_timer_trigger_resume(struct device *dev)
+static int stm32_timer_trigger_resume(struct device *dev)
 {
 	struct stm32_timer_trigger *priv = dev_get_drvdata(dev);
 	int ret;
@@ -875,9 +872,9 @@ static int __maybe_unused stm32_timer_trigger_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(stm32_timer_trigger_pm_ops,
-			 stm32_timer_trigger_suspend,
-			 stm32_timer_trigger_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(stm32_timer_trigger_pm_ops,
+				stm32_timer_trigger_suspend,
+				stm32_timer_trigger_resume);
 
 static const struct stm32_timer_trigger_cfg stm32_timer_trg_cfg = {
 	.valids_table = valids_table,
@@ -907,7 +904,7 @@ static struct platform_driver stm32_timer_trigger_driver = {
 	.driver = {
 		.name = "stm32-timer-trigger",
 		.of_match_table = stm32_trig_of_match,
-		.pm = &stm32_timer_trigger_pm_ops,
+		.pm = pm_sleep_ptr(&stm32_timer_trigger_pm_ops),
 	},
 };
 module_platform_driver(stm32_timer_trigger_driver);

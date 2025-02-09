@@ -19,10 +19,12 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/netdevice.h>
+#include <linux/ptp_mock.h>
 #include <linux/u64_stats_sync.h>
 #include <net/devlink.h>
 #include <net/udp_tunnel.h>
 #include <net/xdp.h>
+#include <net/macsec.h>
 
 #define DRV_NAME	"netdevsim"
 
@@ -52,6 +54,25 @@ struct nsim_ipsec {
 	u32 ok;
 };
 
+#define NSIM_MACSEC_MAX_SECY_COUNT 3
+#define NSIM_MACSEC_MAX_RXSC_COUNT 1
+struct nsim_rxsc {
+	sci_t sci;
+	bool used;
+};
+
+struct nsim_secy {
+	sci_t sci;
+	struct nsim_rxsc nsim_rxsc[NSIM_MACSEC_MAX_RXSC_COUNT];
+	u8 nsim_rxsc_count;
+	bool used;
+};
+
+struct nsim_macsec {
+	struct nsim_secy nsim_secy[NSIM_MACSEC_MAX_SECY_COUNT];
+	u8 nsim_secy_count;
+};
+
 struct nsim_ethtool_pauseparam {
 	bool rx;
 	bool tx;
@@ -69,13 +90,22 @@ struct nsim_ethtool {
 	struct ethtool_fecparam fec;
 };
 
+struct nsim_rq {
+	struct napi_struct napi;
+	struct sk_buff_head skb_queue;
+	struct page_pool *page_pool;
+};
+
 struct netdevsim {
 	struct net_device *netdev;
 	struct nsim_dev *nsim_dev;
 	struct nsim_dev_port *nsim_dev_port;
+	struct mock_phc *phc;
+	struct nsim_rq *rq;
 
 	u64 tx_packets;
 	u64 tx_bytes;
+	u64 tx_dropped;
 	struct u64_stats_sync syncp;
 
 	struct nsim_bus_dev *nsim_bus_dev;
@@ -93,6 +123,7 @@ struct netdevsim {
 
 	bool bpf_map_accept;
 	struct nsim_ipsec ipsec;
+	struct nsim_macsec macsec;
 	struct {
 		u32 inject_error;
 		u32 sleep;
@@ -101,12 +132,17 @@ struct netdevsim {
 		struct debugfs_u32_array dfs_ports[2];
 	} udp_ports;
 
+	struct page *page;
+	struct dentry *pp_dfs;
+
 	struct nsim_ethtool ethtool;
+	struct netdevsim __rcu *peer;
 };
 
 struct netdevsim *
 nsim_create(struct nsim_dev *nsim_dev, struct nsim_dev_port *nsim_dev_port);
 void nsim_destroy(struct netdevsim *ns);
+bool netdev_is_nsim(struct net_device *dev);
 
 void nsim_ethtool_init(struct netdevsim *ns);
 
@@ -184,6 +220,28 @@ struct nsim_dev_health {
 int nsim_dev_health_init(struct nsim_dev *nsim_dev, struct devlink *devlink);
 void nsim_dev_health_exit(struct nsim_dev *nsim_dev);
 
+struct nsim_dev_hwstats_netdev {
+	struct list_head list;
+	struct net_device *netdev;
+	struct rtnl_hw_stats64 stats;
+	bool enabled;
+	bool fail_enable;
+};
+
+struct nsim_dev_hwstats {
+	struct dentry *ddir;
+	struct dentry *l3_ddir;
+
+	struct mutex hwsdev_list_lock; /* protects hwsdev list(s) */
+	struct list_head l3_list;
+
+	struct notifier_block netdevice_nb;
+	struct delayed_work traffic_dw;
+};
+
+int nsim_dev_hwstats_init(struct nsim_dev *nsim_dev);
+void nsim_dev_hwstats_exit(struct nsim_dev *nsim_dev);
+
 #if IS_ENABLED(CONFIG_PSAMPLE)
 int nsim_dev_psample_init(struct nsim_dev *nsim_dev);
 void nsim_dev_psample_exit(struct nsim_dev *nsim_dev);
@@ -239,7 +297,6 @@ struct nsim_dev {
 	struct dentry *take_snapshot;
 	struct dentry *nodes_ddir;
 
-	struct mutex vfs_lock;  /* Protects vfconfigs */
 	struct nsim_vf_config *vfconfigs;
 
 	struct bpf_offload_dev *bpf_dev;
@@ -252,7 +309,6 @@ struct nsim_dev {
 	struct list_head bpf_bound_maps;
 	struct netdev_phys_item_id switch_id;
 	struct list_head port_list;
-	struct mutex port_list_lock; /* protects port list */
 	bool fw_update_status;
 	u32 fw_update_overwrite_mask;
 	u32 max_macs;
@@ -261,6 +317,7 @@ struct nsim_dev {
 	bool fail_reload;
 	struct devlink_region *dummy_region;
 	struct nsim_dev_health health;
+	struct nsim_dev_hwstats hwstats;
 	struct flow_action_cookie *fa_cookie;
 	spinlock_t fa_cookie_lock; /* protects fa_cookie */
 	bool fail_trap_group_set;
@@ -345,6 +402,19 @@ static inline bool nsim_ipsec_tx(struct netdevsim *ns, struct sk_buff *skb)
 }
 #endif
 
+#if IS_ENABLED(CONFIG_MACSEC)
+void nsim_macsec_init(struct netdevsim *ns);
+void nsim_macsec_teardown(struct netdevsim *ns);
+#else
+static inline void nsim_macsec_init(struct netdevsim *ns)
+{
+}
+
+static inline void nsim_macsec_teardown(struct netdevsim *ns)
+{
+}
+#endif
+
 struct nsim_bus_dev {
 	struct device dev;
 	struct list_head list;
@@ -355,9 +425,6 @@ struct nsim_bus_dev {
 				  */
 	unsigned int max_vfs;
 	unsigned int num_vfs;
-	/* Lock for devlink->reload_enabled in netdevsim module */
-	struct mutex nsim_bus_reload_lock;
-	bool in_reload;
 	bool init;
 };
 

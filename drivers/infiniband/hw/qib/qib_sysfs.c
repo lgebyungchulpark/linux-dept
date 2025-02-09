@@ -283,7 +283,7 @@ static struct bin_attribute *port_ccmgta_attributes[] = {
 };
 
 static umode_t qib_ccmgta_is_bin_visible(struct kobject *kobj,
-				 struct bin_attribute *attr, int n)
+				 const struct bin_attribute *attr, int n)
 {
 	struct qib_pportdata *ppd = qib_get_pportdata_kobj(kobj);
 
@@ -541,7 +541,7 @@ static struct attribute *port_diagc_attributes[] = {
 };
 
 static const struct attribute_group port_diagc_group = {
-	.name = "linkcontrol",
+	.name = "diag_counters",
 	.attrs = port_diagc_attributes,
 };
 
@@ -585,13 +585,7 @@ static ssize_t hca_type_show(struct device *device,
 static DEVICE_ATTR_RO(hca_type);
 static DEVICE_ATTR(board_id, 0444, hca_type_show, NULL);
 
-static ssize_t version_show(struct device *device,
-			    struct device_attribute *attr, char *buf)
-{
-	/* The string printed here is already newline-terminated. */
-	return sysfs_emit(buf, "%s", (char *)ib_qib_version);
-}
-static DEVICE_ATTR_RO(version);
+static DEVICE_STRING_ATTR_RO(version, 0444, QIB_DRIVER_VERSION);
 
 static ssize_t boardversion_show(struct device *device,
 				 struct device_attribute *attr, char *buf)
@@ -721,7 +715,7 @@ static struct attribute *qib_attributes[] = {
 	&dev_attr_hw_rev.attr,
 	&dev_attr_hca_type.attr,
 	&dev_attr_board_id.attr,
-	&dev_attr_version.attr,
+	&dev_attr_version.attr.attr,
 	&dev_attr_nctxts.attr,
 	&dev_attr_nfreectxts.attr,
 	&dev_attr_serial.attr,

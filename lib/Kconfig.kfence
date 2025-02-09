@@ -5,7 +5,7 @@ config HAVE_ARCH_KFENCE
 
 menuconfig KFENCE
 	bool "KFENCE: low-overhead sampling-based memory safety error detector"
-	depends on HAVE_ARCH_KFENCE && (SLAB || SLUB)
+	depends on HAVE_ARCH_KFENCE
 	select STACKTRACE
 	select IRQ_WORK
 	help
@@ -44,6 +44,18 @@ config KFENCE_NUM_OBJECTS
 	  The number of guarded objects available. For each KFENCE object, 2
 	  pages are required; with one containing the object and two adjacent
 	  ones used as guard pages.
+
+config KFENCE_DEFERRABLE
+	bool "Use a deferrable timer to trigger allocations"
+	help
+	  Use a deferrable timer to trigger allocations. This avoids forcing
+	  CPU wake-ups if the system is idle, at the risk of a less predictable
+	  sample interval.
+
+	  Warning: The KUnit test suite fails with this option enabled - due to
+	  the unpredictability of the sample interval!
+
+	  Say N if you are unsure.
 
 config KFENCE_STATIC_KEYS
 	bool "Use static keys to set up allocations" if EXPERT

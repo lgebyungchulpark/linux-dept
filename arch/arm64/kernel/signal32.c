@@ -17,7 +17,7 @@
 #include <asm/signal32.h>
 #include <asm/traps.h>
 #include <linux/uaccess.h>
-#include <asm/unistd.h>
+#include <asm/unistd_compat_32.h>
 #include <asm/vdso.h>
 
 struct compat_vfp_sigframe {
@@ -451,7 +451,7 @@ int compat_setup_frame(int usig, struct ksignal *ksig, sigset_t *set,
 
 void compat_setup_restart_syscall(struct pt_regs *regs)
 {
-       regs->regs[7] = __NR_compat_restart_syscall;
+       regs->regs[7] = __NR_compat32_restart_syscall;
 }
 
 /*
@@ -460,7 +460,7 @@ void compat_setup_restart_syscall(struct pt_regs *regs)
  */
 static_assert(NSIGILL	== 11);
 static_assert(NSIGFPE	== 15);
-static_assert(NSIGSEGV	== 9);
+static_assert(NSIGSEGV	== 10);
 static_assert(NSIGBUS	== 5);
 static_assert(NSIGTRAP	== 6);
 static_assert(NSIGCHLD	== 6);
@@ -487,6 +487,7 @@ static_assert(offsetof(compat_siginfo_t, si_upper)	== 0x18);
 static_assert(offsetof(compat_siginfo_t, si_pkey)	== 0x14);
 static_assert(offsetof(compat_siginfo_t, si_perf_data)	== 0x10);
 static_assert(offsetof(compat_siginfo_t, si_perf_type)	== 0x14);
+static_assert(offsetof(compat_siginfo_t, si_perf_flags)	== 0x18);
 static_assert(offsetof(compat_siginfo_t, si_band)	== 0x0c);
 static_assert(offsetof(compat_siginfo_t, si_fd)		== 0x10);
 static_assert(offsetof(compat_siginfo_t, si_call_addr)	== 0x0c);

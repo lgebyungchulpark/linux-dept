@@ -1116,7 +1116,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8985 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm8985_regmap = {
@@ -1126,7 +1125,7 @@ static const struct regmap_config wm8985_regmap = {
 	.max_register = WM8985_MAX_REGISTER,
 	.writeable_reg = wm8985_writeable,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = wm8985_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8985_reg_defaults),
 };
@@ -1167,10 +1166,12 @@ static struct spi_driver wm8985_spi_driver = {
 #endif
 
 #if IS_ENABLED(CONFIG_I2C)
-static int wm8985_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static const struct i2c_device_id wm8985_i2c_id[];
+
+static int wm8985_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8985_priv *wm8985;
+	const struct i2c_device_id *id = i2c_match_id(wm8985_i2c_id, i2c);
 	int ret;
 
 	wm8985 = devm_kzalloc(&i2c->dev, sizeof *wm8985, GFP_KERNEL);

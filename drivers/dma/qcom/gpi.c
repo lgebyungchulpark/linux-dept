@@ -476,12 +476,6 @@ struct gpi_dev {
 	struct gpii *gpiis;
 };
 
-struct reg_info {
-	char *name;
-	u32 offset;
-	u32 val;
-};
-
 struct gchan {
 	struct virt_dma_chan vc;
 	u32 chid;
@@ -1150,9 +1144,9 @@ static void gpi_ev_tasklet(unsigned long data)
 {
 	struct gpii *gpii = (struct gpii *)data;
 
-	read_lock_bh(&gpii->pm_lock);
+	read_lock(&gpii->pm_lock);
 	if (!REG_ACCESS_VALID(gpii->pm_state)) {
-		read_unlock_bh(&gpii->pm_lock);
+		read_unlock(&gpii->pm_lock);
 		dev_err(gpii->gpi_dev->dev, "not processing any events, pm_state:%s\n",
 			TO_GPI_PM_STR(gpii->pm_state));
 		return;
@@ -1163,7 +1157,7 @@ static void gpi_ev_tasklet(unsigned long data)
 
 	/* enable IEOB, switching back to interrupts */
 	gpi_config_interrupts(gpii, MASK_IEOB_SETTINGS, 1);
-	read_unlock_bh(&gpii->pm_lock);
+	read_unlock(&gpii->pm_lock);
 }
 
 /* marks all pending events for the channel as stale */
@@ -1197,7 +1191,6 @@ static int gpi_reset_chan(struct gchan *gchan, enum gpi_cmd gpi_cmd)
 {
 	struct gpii *gpii = gchan->gpii;
 	struct gpi_ring *ch_ring = &gchan->ch_ring;
-	unsigned long flags;
 	LIST_HEAD(list);
 	int ret;
 
@@ -1220,9 +1213,9 @@ static int gpi_reset_chan(struct gchan *gchan, enum gpi_cmd gpi_cmd)
 	gpi_mark_stale_events(gchan);
 
 	/* remove all async descriptors */
-	spin_lock_irqsave(&gchan->vc.lock, flags);
+	spin_lock(&gchan->vc.lock);
 	vchan_get_all_descriptors(&gchan->vc, &list);
-	spin_unlock_irqrestore(&gchan->vc.lock, flags);
+	spin_unlock(&gchan->vc.lock);
 	write_unlock_irq(&gpii->pm_lock);
 	vchan_dma_desc_free_list(&gchan->vc, &list);
 
@@ -1754,10 +1747,15 @@ static int gpi_create_spi_tre(struct gchan *chan, struct gpi_desc *desc,
 		tre->dword[2] = u32_encode_bits(spi->rx_len, TRE_RX_LEN);
 
 		tre->dword[3] = u32_encode_bits(TRE_TYPE_GO, TRE_FLAGS_TYPE);
-		if (spi->cmd == SPI_RX)
+		if (spi->cmd == SPI_RX) {
 			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_IEOB);
-		else
+			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_LINK);
+		} else if (spi->cmd == SPI_TX) {
 			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_CHAIN);
+		} else { /* SPI_DUPLEX */
+			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_CHAIN);
+			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_LINK);
+		}
 	}
 
 	/* create the dma tre */
@@ -1858,7 +1856,7 @@ static void gpi_issue_pending(struct dma_chan *chan)
 
 	read_lock_irqsave(&gpii->pm_lock, pm_lock_flags);
 
-	/* move all submitted discriptors to issued list */
+	/* move all submitted descriptors to issued list */
 	spin_lock_irqsave(&gchan->vc.lock, flags);
 	if (vchan_issue_pending(&gchan->vc))
 		vd = list_last_entry(&gchan->vc.desc_issued,
@@ -1961,7 +1959,6 @@ error_alloc_ev_ring:
 error_config_int:
 	gpi_free_ring(&gpii->ev_ring, gpii);
 exit_gpi_init:
-	mutex_unlock(&gpii->ctrl_lock);
 	return ret;
 }
 
@@ -2148,6 +2145,7 @@ static int gpi_probe(struct platform_device *pdev)
 {
 	struct gpi_dev *gpi_dev;
 	unsigned int i;
+	u32 ee_offset;
 	int ret;
 
 	gpi_dev = devm_kzalloc(&pdev->dev, sizeof(*gpi_dev), GFP_KERNEL);
@@ -2155,8 +2153,7 @@ static int gpi_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	gpi_dev->dev = &pdev->dev;
-	gpi_dev->res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	gpi_dev->regs = devm_ioremap_resource(gpi_dev->dev, gpi_dev->res);
+	gpi_dev->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &gpi_dev->res);
 	if (IS_ERR(gpi_dev->regs))
 		return PTR_ERR(gpi_dev->regs);
 	gpi_dev->ee_base = gpi_dev->regs;
@@ -2174,6 +2171,9 @@ static int gpi_probe(struct platform_device *pdev)
 		dev_err(gpi_dev->dev, "missing 'gpii-mask' DT node\n");
 		return ret;
 	}
+
+	ee_offset = (uintptr_t)device_get_match_data(gpi_dev->dev);
+	gpi_dev->ee_base = gpi_dev->ee_base - ee_offset;
 
 	gpi_dev->ev_factor = EV_FACTOR;
 
@@ -2278,9 +2278,18 @@ static int gpi_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id gpi_of_match[] = {
-	{ .compatible = "qcom,sdm845-gpi-dma" },
-	{ .compatible = "qcom,sm8150-gpi-dma" },
-	{ .compatible = "qcom,sm8250-gpi-dma" },
+	{ .compatible = "qcom,sdm845-gpi-dma", .data = (void *)0x0 },
+	{ .compatible = "qcom,sm6350-gpi-dma", .data = (void *)0x10000 },
+	/*
+	 * Do not grow the list for compatible devices. Instead use
+	 * qcom,sdm845-gpi-dma (for ee_offset = 0x0) or qcom,sm6350-gpi-dma
+	 * (for ee_offset = 0x10000).
+	 */
+	{ .compatible = "qcom,sc7280-gpi-dma", .data = (void *)0x10000 },
+	{ .compatible = "qcom,sm8150-gpi-dma", .data = (void *)0x0 },
+	{ .compatible = "qcom,sm8250-gpi-dma", .data = (void *)0x0 },
+	{ .compatible = "qcom,sm8350-gpi-dma", .data = (void *)0x10000 },
+	{ .compatible = "qcom,sm8450-gpi-dma", .data = (void *)0x10000 },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, gpi_of_match);

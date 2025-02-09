@@ -391,7 +391,7 @@ SEC("sk_lookup")
 int ctx_narrow_access(struct bpf_sk_lookup *ctx)
 {
 	struct bpf_sock *sk;
-	int err, family;
+	__u32 val_u32;
 	bool v4;
 
 	v4 = (ctx->family == AF_INET);
@@ -412,10 +412,20 @@ int ctx_narrow_access(struct bpf_sk_lookup *ctx)
 
 	/* Narrow loads from remote_port field. Expect SRC_PORT. */
 	if (LSB(ctx->remote_port, 0) != ((SRC_PORT >> 0) & 0xff) ||
-	    LSB(ctx->remote_port, 1) != ((SRC_PORT >> 8) & 0xff) ||
-	    LSB(ctx->remote_port, 2) != 0 || LSB(ctx->remote_port, 3) != 0)
+	    LSB(ctx->remote_port, 1) != ((SRC_PORT >> 8) & 0xff))
 		return SK_DROP;
 	if (LSW(ctx->remote_port, 0) != SRC_PORT)
+		return SK_DROP;
+
+	/*
+	 * NOTE: 4-byte load from bpf_sk_lookup at remote_port offset
+	 * is quirky. It gets rewritten by the access converter to a
+	 * 2-byte load for backward compatibility. Treating the load
+	 * result as a be16 value makes the code portable across
+	 * little- and big-endian platforms.
+	 */
+	val_u32 = *(__u32 *)&ctx->remote_port;
+	if (val_u32 != SRC_PORT)
 		return SK_DROP;
 
 	/* Narrow loads from local_port field. Expect DST_PORT. */
@@ -634,9 +644,7 @@ static __always_inline int select_server_a(struct bpf_sk_lookup *ctx)
 SEC("sk_lookup")
 int multi_prog_redir1(struct bpf_sk_lookup *ctx)
 {
-	int ret;
-
-	ret = select_server_a(ctx);
+	(void)select_server_a(ctx);
 	bpf_map_update_elem(&run_map, &KEY_PROG1, &PROG_DONE, BPF_ANY);
 	return SK_PASS;
 }
@@ -644,9 +652,7 @@ int multi_prog_redir1(struct bpf_sk_lookup *ctx)
 SEC("sk_lookup")
 int multi_prog_redir2(struct bpf_sk_lookup *ctx)
 {
-	int ret;
-
-	ret = select_server_a(ctx);
+	(void)select_server_a(ctx);
 	bpf_map_update_elem(&run_map, &KEY_PROG2, &PROG_DONE, BPF_ANY);
 	return SK_PASS;
 }

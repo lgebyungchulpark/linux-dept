@@ -297,9 +297,9 @@ static void put_child_connect_map(struct r8a66597 *r8a66597, int address)
 static void set_pipe_reg_addr(struct r8a66597_pipe *pipe, u8 dma_ch)
 {
 	u16 pipenum = pipe->info.pipenum;
-	const unsigned long fifoaddr[] = {D0FIFO, D1FIFO, CFIFO};
-	const unsigned long fifosel[] = {D0FIFOSEL, D1FIFOSEL, CFIFOSEL};
-	const unsigned long fifoctr[] = {D0FIFOCTR, D1FIFOCTR, CFIFOCTR};
+	static const unsigned long fifoaddr[] = {D0FIFO, D1FIFO, CFIFO};
+	static const unsigned long fifosel[] = {D0FIFOSEL, D1FIFOSEL, CFIFOSEL};
+	static const unsigned long fifoctr[] = {D0FIFOCTR, D1FIFOCTR, CFIFOCTR};
 
 	if (dma_ch > R8A66597_PIPE_NO_DMA)	/* dma fifo not use? */
 		dma_ch = R8A66597_PIPE_NO_DMA;
@@ -759,7 +759,7 @@ static void enable_r8a66597_pipe_dma(struct r8a66597 *r8a66597,
 	struct r8a66597_pipe_info *info = &pipe->info;
 	unsigned short mbw = mbw_value(r8a66597);
 
-	/* pipe dma is only for external controlles */
+	/* pipe dma is only for external controllers */
 	if (r8a66597->pdata->on_chip)
 		return;
 
@@ -1336,7 +1336,7 @@ static void packet_read(struct r8a66597 *r8a66597, u16 pipenum)
 		buf = (void *)urb->transfer_buffer + urb->actual_length;
 		urb_len = urb->transfer_buffer_length - urb->actual_length;
 	}
-	bufsize = min(urb_len, (int) td->maxpacket);
+	bufsize = min_t(int, urb_len, td->maxpacket);
 	if (rcv_len <= bufsize) {
 		size = rcv_len;
 	} else {
@@ -1867,8 +1867,7 @@ static struct r8a66597_td *r8a66597_make_td(struct r8a66597 *r8a66597,
 	td->pipe = hep->hcpriv;
 	td->urb = urb;
 	td->address = get_urb_to_r8a66597_addr(r8a66597, urb);
-	td->maxpacket = usb_maxpacket(urb->dev, urb->pipe,
-				      !usb_pipein(urb->pipe));
+	td->maxpacket = usb_maxpacket(urb->dev, urb->pipe);
 	if (usb_pipecontrol(urb->pipe))
 		td->type = USB_PID_SETUP;
 	else if (usb_pipein(urb->pipe))
@@ -2380,7 +2379,7 @@ static const struct dev_pm_ops r8a66597_dev_pm_ops = {
 #define R8A66597_DEV_PM_OPS	NULL
 #endif
 
-static int r8a66597_remove(struct platform_device *pdev)
+static void r8a66597_remove(struct platform_device *pdev)
 {
 	struct r8a66597		*r8a66597 = platform_get_drvdata(pdev);
 	struct usb_hcd		*hcd = r8a66597_to_hcd(r8a66597);
@@ -2391,7 +2390,6 @@ static int r8a66597_remove(struct platform_device *pdev)
 	if (r8a66597->pdata->on_chip)
 		clk_put(r8a66597->clk);
 	usb_put_hcd(hcd);
-	return 0;
 }
 
 static int r8a66597_probe(struct platform_device *pdev)

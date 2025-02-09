@@ -21,7 +21,7 @@
 #include <linux/netdevice.h>
 #include <linux/random.h>
 #include <linux/crc32.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/bitsperlong.h>
 
 #ifdef __KERNEL__
@@ -70,6 +70,12 @@ int eth_gro_complete(struct sk_buff *skb, int nhoff);
 static const u8 eth_reserved_addr_base[ETH_ALEN] __aligned(2) =
 { 0x01, 0x80, 0xc2, 0x00, 0x00, 0x00 };
 #define eth_stp_addr eth_reserved_addr_base
+
+static const u8 eth_ipv4_mcast_addr_base[ETH_ALEN] __aligned(2) =
+{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0x00 };
+
+static const u8 eth_ipv6_mcast_addr_base[ETH_ALEN] __aligned(2) =
+{ 0x33, 0x33, 0x00, 0x00, 0x00, 0x00 };
 
 /**
  * is_link_local_ether_addr - Determine if given Ethernet address is link-local
@@ -134,7 +140,7 @@ static inline bool is_multicast_ether_addr(const u8 *addr)
 #endif
 }
 
-static inline bool is_multicast_ether_addr_64bits(const u8 addr[6+2])
+static inline bool is_multicast_ether_addr_64bits(const u8 *addr)
 {
 #if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) && BITS_PER_LONG == 64
 #ifdef __BIG_ENDIAN
@@ -372,8 +378,7 @@ static inline bool ether_addr_equal(const u8 *addr1, const u8 *addr2)
  * Please note that alignment of addr1 & addr2 are only guaranteed to be 16 bits.
  */
 
-static inline bool ether_addr_equal_64bits(const u8 addr1[6+2],
-					   const u8 addr2[6+2])
+static inline bool ether_addr_equal_64bits(const u8 *addr1, const u8 *addr2)
 {
 #if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) && BITS_PER_LONG == 64
 	u64 fold = (*(const u64 *)addr1) ^ (*(const u64 *)addr2);
@@ -427,6 +432,26 @@ static inline bool ether_addr_equal_masked(const u8 *addr1, const u8 *addr2,
 	}
 
 	return true;
+}
+
+static inline bool ether_addr_is_ipv4_mcast(const u8 *addr)
+{
+	u8 mask[ETH_ALEN] = { 0xff, 0xff, 0xff, 0x80, 0x00, 0x00 };
+
+	return ether_addr_equal_masked(addr, eth_ipv4_mcast_addr_base, mask);
+}
+
+static inline bool ether_addr_is_ipv6_mcast(const u8 *addr)
+{
+	u8 mask[ETH_ALEN] = { 0xff, 0xff, 0x00, 0x00, 0x00, 0x00 };
+
+	return ether_addr_equal_masked(addr, eth_ipv6_mcast_addr_base, mask);
+}
+
+static inline bool ether_addr_is_ip_mcast(const u8 *addr)
+{
+	return ether_addr_is_ipv4_mcast(addr) ||
+		ether_addr_is_ipv6_mcast(addr);
 }
 
 /**
@@ -483,6 +508,20 @@ static inline void eth_addr_inc(u8 *addr)
 	u64 u = ether_addr_to_u64(addr);
 
 	u++;
+	u64_to_ether_addr(u, addr);
+}
+
+/**
+ * eth_addr_add() - Add (or subtract) an offset to/from the given MAC address.
+ *
+ * @offset: Offset to add.
+ * @addr: Pointer to a six-byte array containing Ethernet address to increment.
+ */
+static inline void eth_addr_add(u8 *addr, long offset)
+{
+	u64 u = ether_addr_to_u64(addr);
+
+	u += offset;
 	u64_to_ether_addr(u, addr);
 }
 
@@ -573,7 +612,40 @@ static inline void eth_hw_addr_gen(struct net_device *dev, const u8 *base_addr,
 }
 
 /**
- * eth_skb_pad - Pad buffer to mininum number of octets for Ethernet frame
+ * eth_skb_pkt_type - Assign packet type if destination address does not match
+ * @skb: Assigned a packet type if address does not match @dev address
+ * @dev: Network device used to compare packet address against
+ *
+ * If the destination MAC address of the packet does not match the network
+ * device address, assign an appropriate packet type.
+ */
+static inline void eth_skb_pkt_type(struct sk_buff *skb,
+				    const struct net_device *dev)
+{
+	const struct ethhdr *eth = eth_hdr(skb);
+
+	if (unlikely(!ether_addr_equal_64bits(eth->h_dest, dev->dev_addr))) {
+		if (unlikely(is_multicast_ether_addr_64bits(eth->h_dest))) {
+			if (ether_addr_equal_64bits(eth->h_dest, dev->broadcast))
+				skb->pkt_type = PACKET_BROADCAST;
+			else
+				skb->pkt_type = PACKET_MULTICAST;
+		} else {
+			skb->pkt_type = PACKET_OTHERHOST;
+		}
+	}
+}
+
+static inline struct ethhdr *eth_skb_pull_mac(struct sk_buff *skb)
+{
+	struct ethhdr *eth = (struct ethhdr *)skb->data;
+
+	skb_pull_inline(skb, ETH_HLEN);
+	return eth;
+}
+
+/**
+ * eth_skb_pad - Pad buffer to minimum number of octets for Ethernet frame
  * @skb: Buffer to pad
  *
  * An Ethernet frame should have a minimum size of 60 bytes.  This function

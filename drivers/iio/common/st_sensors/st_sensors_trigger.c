@@ -8,7 +8,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/trigger.h>
 #include <linux/interrupt.h>
@@ -86,7 +85,7 @@ static irqreturn_t st_sensors_irq_thread(int irq, void *p)
 	 */
 	if (sdata->hw_irq_trigger &&
 	    st_sensors_new_samples_available(indio_dev, sdata)) {
-		iio_trigger_poll_chained(p);
+		iio_trigger_poll_nested(p);
 	} else {
 		dev_dbg(indio_dev->dev.parent, "spurious IRQ\n");
 		return IRQ_NONE;
@@ -111,7 +110,7 @@ static irqreturn_t st_sensors_irq_thread(int irq, void *p)
 		dev_dbg(indio_dev->dev.parent,
 			"more samples came in during polling\n");
 		sdata->hw_timestamp = iio_get_time_ns(indio_dev);
-		iio_trigger_poll_chained(p);
+		iio_trigger_poll_nested(p);
 	}
 
 	return IRQ_HANDLED;
@@ -135,11 +134,11 @@ int st_sensors_allocate_trigger(struct iio_dev *indio_dev,
 	iio_trigger_set_drvdata(sdata->trig, indio_dev);
 	sdata->trig->ops = trigger_ops;
 
-	irq_trig = irqd_get_trigger_type(irq_get_irq_data(sdata->irq));
 	/*
 	 * If the IRQ is triggered on falling edge, we need to mark the
 	 * interrupt as active low, if the hardware supports this.
 	 */
+	irq_trig = irq_get_trigger_type(sdata->irq);
 	switch(irq_trig) {
 	case IRQF_TRIGGER_FALLING:
 	case IRQF_TRIGGER_LOW:
@@ -228,7 +227,7 @@ int st_sensors_allocate_trigger(struct iio_dev *indio_dev,
 
 	return 0;
 }
-EXPORT_SYMBOL(st_sensors_allocate_trigger);
+EXPORT_SYMBOL_NS(st_sensors_allocate_trigger, "IIO_ST_SENSORS");
 
 int st_sensors_validate_device(struct iio_trigger *trig,
 			       struct iio_dev *indio_dev)
@@ -240,8 +239,4 @@ int st_sensors_validate_device(struct iio_trigger *trig,
 
 	return 0;
 }
-EXPORT_SYMBOL(st_sensors_validate_device);
-
-MODULE_AUTHOR("Denis Ciocca <denis.ciocca@st.com>");
-MODULE_DESCRIPTION("STMicroelectronics ST-sensors trigger");
-MODULE_LICENSE("GPL v2");
+EXPORT_SYMBOL_NS(st_sensors_validate_device, "IIO_ST_SENSORS");

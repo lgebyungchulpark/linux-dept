@@ -169,7 +169,7 @@ static int pps_gpio_probe(struct platform_device *pdev)
 	/* GPIO setup */
 	ret = pps_gpio_setup(dev);
 	if (ret)
-		return -EINVAL;
+		return ret;
 
 	/* IRQ setup */
 	ret = gpiod_to_irq(data->gpio_pin);
@@ -220,7 +220,7 @@ static int pps_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int pps_gpio_remove(struct platform_device *pdev)
+static void pps_gpio_remove(struct platform_device *pdev)
 {
 	struct pps_gpio_device_data *data = platform_get_drvdata(pdev);
 
@@ -229,7 +229,6 @@ static int pps_gpio_remove(struct platform_device *pdev)
 	/* reset echo pin in any case */
 	gpiod_set_value(data->echo_pin, 0);
 	dev_info(&pdev->dev, "removed IRQ %d as PPS source\n", data->irq);
-	return 0;
 }
 
 static const struct of_device_id pps_gpio_dt_ids[] = {

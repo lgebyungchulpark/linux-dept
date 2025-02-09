@@ -75,10 +75,21 @@ unsigned int mte_get_pstate_tco(void);
 /* Test framework static inline functions/macros */
 static inline void evaluate_test(int err, const char *msg)
 {
-	if (err == KSFT_PASS)
-		ksft_test_result_pass(msg);
-	else if (err == KSFT_FAIL)
-		ksft_test_result_fail(msg);
+	switch (err) {
+	case KSFT_PASS:
+		ksft_test_result_pass("%s", msg);
+		break;
+	case KSFT_FAIL:
+		ksft_test_result_fail("%s", msg);
+		break;
+	case KSFT_SKIP:
+		ksft_test_result_skip("%s", msg);
+		break;
+	default:
+		ksft_test_result_error("Unknown return code %d from %s",
+				       err, msg);
+		break;
+	}
 }
 
 static inline int check_allocated_memory(void *ptr, size_t size,

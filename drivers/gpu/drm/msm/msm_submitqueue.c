@@ -7,6 +7,45 @@
 
 #include "msm_gpu.h"
 
+int msm_file_private_set_sysprof(struct msm_file_private *ctx,
+				 struct msm_gpu *gpu, int sysprof)
+{
+	/*
+	 * Since pm_runtime and sysprof_active are both refcounts, we
+	 * call apply the new value first, and then unwind the previous
+	 * value
+	 */
+
+	switch (sysprof) {
+	default:
+		return -EINVAL;
+	case 2:
+		pm_runtime_get_sync(&gpu->pdev->dev);
+		fallthrough;
+	case 1:
+		refcount_inc(&gpu->sysprof_active);
+		fallthrough;
+	case 0:
+		break;
+	}
+
+	/* unwind old value: */
+	switch (ctx->sysprof) {
+	case 2:
+		pm_runtime_put_autosuspend(&gpu->pdev->dev);
+		fallthrough;
+	case 1:
+		refcount_dec(&gpu->sysprof_active);
+		fallthrough;
+	case 0:
+		break;
+	}
+
+	ctx->sysprof = sysprof;
+
+	return 0;
+}
+
 void __msm_file_private_destroy(struct kref *kref)
 {
 	struct msm_file_private *ctx = container_of(kref,
@@ -22,6 +61,8 @@ void __msm_file_private_destroy(struct kref *kref)
 	}
 
 	msm_gem_address_space_put(ctx->aspace);
+	kfree(ctx->comm);
+	kfree(ctx->cmdline);
 	kfree(ctx);
 }
 
@@ -120,6 +161,8 @@ int msm_submitqueue_create(struct drm_device *drm, struct msm_file_private *ctx,
 	struct msm_drm_private *priv = drm->dev_private;
 	struct msm_gpu_submitqueue *queue;
 	enum drm_sched_priority sched_prio;
+	extern int enable_preemption;
+	bool preemption_supported;
 	unsigned ring_nr;
 	int ret;
 
@@ -128,6 +171,11 @@ int msm_submitqueue_create(struct drm_device *drm, struct msm_file_private *ctx,
 
 	if (!priv->gpu)
 		return -ENODEV;
+
+	preemption_supported = priv->gpu->nr_rings == 1 && enable_preemption != 0;
+
+	if (flags & MSM_SUBMITQUEUE_ALLOW_PREEMPT && preemption_supported)
+		return -EINVAL;
 
 	ret = msm_gpu_convert_priority(priv->gpu, prio, &ring_nr, &sched_prio);
 	if (ret)
@@ -159,6 +207,7 @@ int msm_submitqueue_create(struct drm_device *drm, struct msm_file_private *ctx,
 		*id = queue->id;
 
 	idr_init(&queue->fence_idr);
+	spin_lock_init(&queue->idr_lock);
 	mutex_init(&queue->lock);
 
 	list_add_tail(&queue->node, &ctx->submitqueues);

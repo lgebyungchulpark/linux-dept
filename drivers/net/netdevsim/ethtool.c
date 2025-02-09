@@ -103,8 +103,10 @@ nsim_set_channels(struct net_device *dev, struct ethtool_channels *ch)
 	struct netdevsim *ns = netdev_priv(dev);
 	int err;
 
+	mutex_lock(&dev->lock);
 	err = netif_set_real_num_queues(dev, ch->combined_count,
 					ch->combined_count);
+	mutex_unlock(&dev->lock);
 	if (err)
 		return err;
 
@@ -140,6 +142,23 @@ nsim_set_fecparam(struct net_device *dev, struct ethtool_fecparam *fecparam)
 	return 0;
 }
 
+static void
+nsim_get_fec_stats(struct net_device *dev, struct ethtool_fec_stats *fec_stats)
+{
+	fec_stats->corrected_blocks.total = 123;
+	fec_stats->uncorrectable_blocks.total = 4;
+}
+
+static int nsim_get_ts_info(struct net_device *dev,
+			    struct kernel_ethtool_ts_info *info)
+{
+	struct netdevsim *ns = netdev_priv(dev);
+
+	info->phc_index = mock_phc_index(ns->phc);
+
+	return 0;
+}
+
 static const struct ethtool_ops nsim_ethtool_ops = {
 	.supported_coalesce_params	= ETHTOOL_COALESCE_ALL_PARAMS,
 	.get_pause_stats	        = nsim_get_pause_stats,
@@ -153,6 +172,8 @@ static const struct ethtool_ops nsim_ethtool_ops = {
 	.set_channels			= nsim_set_channels,
 	.get_fecparam			= nsim_get_fecparam,
 	.set_fecparam			= nsim_set_fecparam,
+	.get_fec_stats			= nsim_get_fec_stats,
+	.get_ts_info			= nsim_get_ts_info,
 };
 
 static void nsim_ethtool_ring_init(struct netdevsim *ns)
@@ -170,6 +191,9 @@ void nsim_ethtool_init(struct netdevsim *ns)
 	ns->netdev->ethtool_ops = &nsim_ethtool_ops;
 
 	nsim_ethtool_ring_init(ns);
+
+	ns->ethtool.pauseparam.report_stats_rx = true;
+	ns->ethtool.pauseparam.report_stats_tx = true;
 
 	ns->ethtool.fec.fec = ETHTOOL_FEC_NONE;
 	ns->ethtool.fec.active_fec = ETHTOOL_FEC_NONE;

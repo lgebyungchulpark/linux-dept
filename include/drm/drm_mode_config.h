@@ -98,22 +98,6 @@ struct drm_mode_config_funcs {
 	const struct drm_format_info *(*get_format_info)(const struct drm_mode_fb_cmd2 *mode_cmd);
 
 	/**
-	 * @output_poll_changed:
-	 *
-	 * Callback used by helpers to inform the driver of output configuration
-	 * changes.
-	 *
-	 * Drivers implementing fbdev emulation use drm_kms_helper_hotplug_event()
-	 * to call this hook to inform the fbdev helper of output changes.
-	 *
-	 * This hook is deprecated, drivers should instead use
-	 * drm_fbdev_generic_setup() which takes care of any necessary
-	 * hotplug event forwarding already without further involvement by
-	 * the driver.
-	 */
-	void (*output_poll_changed)(struct drm_device *dev);
-
-	/**
 	 * @mode_valid:
 	 *
 	 * Device specific validation of display modes. Can be used to reject
@@ -345,7 +329,6 @@ struct drm_mode_config_funcs {
  * @max_width: maximum fb pixel width on this device
  * @max_height: maximum fb pixel height on this device
  * @funcs: core driver provided mode setting functions
- * @fb_base: base address of the framebuffer
  * @poll_enabled: track polling support for this device
  * @poll_running: track polling status for this device
  * @delayed_event: track delayed poll uevent deliver for this device
@@ -507,6 +490,16 @@ struct drm_mode_config {
 	struct list_head plane_list;
 
 	/**
+	 * @panic_lock:
+	 *
+	 * Raw spinlock used to protect critical sections of code that access
+	 * the display hardware or modeset software state, which the panic
+	 * printing code must be protected against. See drm_panic_trylock(),
+	 * drm_panic_lock() and drm_panic_unlock().
+	 */
+	struct raw_spinlock panic_lock;
+
+	/**
 	 * @num_crtc:
 	 *
 	 * Number of CRTCs on this device linked with &drm_crtc.head. This is invariant over the lifetime
@@ -542,7 +535,6 @@ struct drm_mode_config {
 	int min_width, min_height;
 	int max_width, max_height;
 	const struct drm_mode_config_funcs *funcs;
-	resource_size_t fb_base;
 
 	/* output poll support */
 	bool poll_enabled;
@@ -714,11 +706,21 @@ struct drm_mode_config {
 	 * between different TV connector types.
 	 */
 	struct drm_property *tv_select_subconnector_property;
+
 	/**
-	 * @tv_mode_property: Optional TV property to select
+	 * @legacy_tv_mode_property: Optional TV property to select
 	 * the output TV mode.
+	 *
+	 * Superseded by @tv_mode_property
+	 */
+	struct drm_property *legacy_tv_mode_property;
+
+	/**
+	 * @tv_mode_property: Optional TV property to select the TV
+	 * standard output on the connector.
 	 */
 	struct drm_property *tv_mode_property;
+
 	/**
 	 * @tv_left_margin_property: Optional TV property to set the left
 	 * margin (expressed in pixels).
@@ -883,13 +885,6 @@ struct drm_mode_config {
 	uint32_t preferred_depth, prefer_shadow;
 
 	/**
-	 * @prefer_shadow_fbdev:
-	 *
-	 * Hint to framebuffer emulation to prefer shadow-fb rendering.
-	 */
-	bool prefer_shadow_fbdev;
-
-	/**
 	 * @quirk_addfb_prefer_xbgr_30bpp:
 	 *
 	 * Special hack for legacy ADDFB to keep nouveau userspace happy. Should
@@ -918,20 +913,14 @@ struct drm_mode_config {
 	bool async_page_flip;
 
 	/**
-	 * @allow_fb_modifiers:
+	 * @fb_modifiers_not_supported:
 	 *
-	 * Whether the driver supports fb modifiers in the ADDFB2.1 ioctl call.
-	 * Note that drivers should not set this directly, it is automatically
-	 * set in drm_universal_plane_init().
-	 *
-	 * IMPORTANT:
-	 *
-	 * If this is set the driver must fill out the full implicit modifier
-	 * information in their &drm_mode_config_funcs.fb_create hook for legacy
-	 * userspace which does not set modifiers. Otherwise the GETFB2 ioctl is
-	 * broken for modifier aware userspace.
+	 * When this flag is set, the DRM device will not expose modifier
+	 * support to userspace. This is only used by legacy drivers that infer
+	 * the buffer layout through heuristics without using modifiers. New
+	 * drivers shall not set fhis flag.
 	 */
-	bool allow_fb_modifiers;
+	bool fb_modifiers_not_supported;
 
 	/**
 	 * @normalize_zpos:
@@ -946,6 +935,11 @@ struct drm_mode_config {
 	 * combination.
 	 */
 	struct drm_property *modifiers_property;
+
+	/**
+	 * @size_hints_property: Plane SIZE_HINTS property.
+	 */
+	struct drm_property *size_hints_property;
 
 	/* cursor size */
 	uint32_t cursor_width, cursor_height;

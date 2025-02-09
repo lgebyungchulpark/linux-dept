@@ -128,11 +128,6 @@ struct mountres {
 	rpc_authflavor_t *auth_flavors;
 };
 
-struct mnt_fhstatus {
-	u32 status;
-	struct nfs_fh *fh;
-};
-
 /**
  * nfs_mount - Obtain an NFS file handle for the given host and path
  * @info: pointer to mount request arguments
@@ -158,7 +153,7 @@ int nfs_mount(struct nfs_mount_request *info, int timeo, int retrans)
 	struct rpc_create_args args = {
 		.net		= info->net,
 		.protocol	= info->protocol,
-		.address	= info->sap,
+		.address	= (struct sockaddr *)info->sap,
 		.addrsize	= info->salen,
 		.timeout	= &mnt_timeout,
 		.servername	= info->hostname,
@@ -245,7 +240,7 @@ void nfs_umount(const struct nfs_mount_request *info)
 	struct rpc_create_args args = {
 		.net		= info->net,
 		.protocol	= IPPROTO_UDP,
-		.address	= info->sap,
+		.address	= (struct sockaddr *)info->sap,
 		.addrsize	= info->salen,
 		.timeout	= &nfs_umnt_timeout,
 		.servername	= info->hostname,

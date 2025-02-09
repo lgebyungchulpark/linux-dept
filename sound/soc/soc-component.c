@@ -58,7 +58,7 @@ static inline int soc_component_field_shift(struct snd_soc_component *component,
  * In such case, we can update these macros.
  */
 #define soc_component_mark_push(component, substream, tgt)	((component)->mark_##tgt = substream)
-#define soc_component_mark_pop(component, substream, tgt)	((component)->mark_##tgt = NULL)
+#define soc_component_mark_pop(component, tgt)	((component)->mark_##tgt = NULL)
 #define soc_component_mark_match(component, substream, tgt)	((component)->mark_##tgt == substream)
 
 void snd_soc_component_set_aux(struct snd_soc_component *component,
@@ -236,6 +236,43 @@ int snd_soc_component_force_enable_pin_unlocked(
 }
 EXPORT_SYMBOL_GPL(snd_soc_component_force_enable_pin_unlocked);
 
+static void soc_get_kcontrol_name(struct snd_soc_component *component,
+				  char *buf, int size, const char * const ctl)
+{
+	/* When updating, change also snd_soc_dapm_widget_name_cmp() */
+	if (component->name_prefix)
+		snprintf(buf, size, "%s %s", component->name_prefix, ctl);
+	else
+		snprintf(buf, size, "%s", ctl);
+}
+
+struct snd_kcontrol *snd_soc_component_get_kcontrol(struct snd_soc_component *component,
+						    const char * const ctl)
+{
+	char name[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
+
+	soc_get_kcontrol_name(component, name, ARRAY_SIZE(name), ctl);
+
+	return snd_soc_card_get_kcontrol(component->card, name);
+}
+EXPORT_SYMBOL_GPL(snd_soc_component_get_kcontrol);
+
+int snd_soc_component_notify_control(struct snd_soc_component *component,
+				     const char * const ctl)
+{
+	struct snd_kcontrol *kctl;
+
+	kctl = snd_soc_component_get_kcontrol(component, ctl);
+	if (!kctl)
+		return soc_component_ret(component, -EINVAL);
+
+	snd_ctl_notify(component->card->snd_card,
+		       SNDRV_CTL_EVENT_MASK_VALUE, &kctl->id);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(snd_soc_component_notify_control);
+
 /**
  * snd_soc_component_set_jack - configure component jack.
  * @component: COMPONENTs
@@ -255,6 +292,26 @@ int snd_soc_component_set_jack(struct snd_soc_component *component,
 	return soc_component_ret(component, ret);
 }
 EXPORT_SYMBOL_GPL(snd_soc_component_set_jack);
+
+/**
+ * snd_soc_component_get_jack_type
+ * @component: COMPONENTs
+ *
+ * Returns the jack type of the component
+ * This can either be the supported type or one read from
+ * devicetree with the property: jack-type.
+ */
+int snd_soc_component_get_jack_type(
+	struct snd_soc_component *component)
+{
+	int ret = -ENOTSUPP;
+
+	if (component->driver->get_jack_type)
+		ret = component->driver->get_jack_type(component);
+
+	return soc_component_ret(component, ret);
+}
+EXPORT_SYMBOL_GPL(snd_soc_component_get_jack_type);
 
 int snd_soc_component_module_get(struct snd_soc_component *component,
 				 void *mark, int upon_open)
@@ -282,7 +339,7 @@ void snd_soc_component_module_put(struct snd_soc_component *component,
 		module_put(component->dev->driver->owner);
 
 	/* remove the mark from module */
-	soc_component_mark_pop(component, mark, module);
+	soc_component_mark_pop(component, module);
 }
 
 int snd_soc_component_open(struct snd_soc_component *component,
@@ -313,7 +370,7 @@ int snd_soc_component_close(struct snd_soc_component *component,
 		ret = component->driver->close(component, substream);
 
 	/* remove marked substream */
-	soc_component_mark_pop(component, substream, open);
+	soc_component_mark_pop(component, open);
 
 	return soc_component_ret(component, ret);
 }
@@ -458,7 +515,7 @@ void snd_soc_component_compr_free(struct snd_soc_component *component,
 		component->driver->compress_ops->free(component, cstream);
 
 	/* remove marked substream */
-	soc_component_mark_pop(component, cstream, compr_open);
+	soc_component_mark_pop(component, compr_open);
 }
 EXPORT_SYMBOL_GPL(snd_soc_component_compr_free);
 
@@ -530,7 +587,7 @@ int snd_soc_component_compr_get_caps(struct snd_compr_stream *cstream,
 	struct snd_soc_component *component;
 	int i, ret = 0;
 
-	mutex_lock_nested(&rtd->card->pcm_mutex, rtd->card->pcm_subclass);
+	snd_soc_dpcm_mutex_lock(rtd);
 
 	for_each_rtd_components(rtd, i, component) {
 		if (component->driver->compress_ops &&
@@ -541,7 +598,7 @@ int snd_soc_component_compr_get_caps(struct snd_compr_stream *cstream,
 		}
 	}
 
-	mutex_unlock(&rtd->card->pcm_mutex);
+	snd_soc_dpcm_mutex_unlock(rtd);
 
 	return soc_component_ret(component, ret);
 }
@@ -554,7 +611,7 @@ int snd_soc_component_compr_get_codec_caps(struct snd_compr_stream *cstream,
 	struct snd_soc_component *component;
 	int i, ret = 0;
 
-	mutex_lock_nested(&rtd->card->pcm_mutex, rtd->card->pcm_subclass);
+	snd_soc_dpcm_mutex_lock(rtd);
 
 	for_each_rtd_components(rtd, i, component) {
 		if (component->driver->compress_ops &&
@@ -565,7 +622,7 @@ int snd_soc_component_compr_get_codec_caps(struct snd_compr_stream *cstream,
 		}
 	}
 
-	mutex_unlock(&rtd->card->pcm_mutex);
+	snd_soc_dpcm_mutex_unlock(rtd);
 
 	return soc_component_ret(component, ret);
 }
@@ -618,7 +675,7 @@ int snd_soc_component_compr_copy(struct snd_compr_stream *cstream,
 	struct snd_soc_component *component;
 	int i, ret = 0;
 
-	mutex_lock_nested(&rtd->card->pcm_mutex, rtd->card->pcm_subclass);
+	snd_soc_dpcm_mutex_lock(rtd);
 
 	for_each_rtd_components(rtd, i, component) {
 		if (component->driver->compress_ops &&
@@ -629,7 +686,7 @@ int snd_soc_component_compr_copy(struct snd_compr_stream *cstream,
 		}
 	}
 
-	mutex_unlock(&rtd->card->pcm_mutex);
+	snd_soc_dpcm_mutex_unlock(rtd);
 
 	return soc_component_ret(component, ret);
 }
@@ -920,7 +977,7 @@ EXPORT_SYMBOL_GPL(snd_soc_component_test_bits);
 
 int snd_soc_pcm_component_pointer(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i;
 
@@ -932,11 +989,25 @@ int snd_soc_pcm_component_pointer(struct snd_pcm_substream *substream)
 	return 0;
 }
 
+static bool snd_soc_component_is_codec_on_rtd(struct snd_soc_pcm_runtime *rtd,
+					      struct snd_soc_component *component)
+{
+	struct snd_soc_dai *dai;
+	int i;
+
+	for_each_rtd_codec_dais(rtd, i, dai) {
+		if (dai->component == component)
+			return true;
+	}
+
+	return false;
+}
+
 void snd_soc_pcm_component_delay(struct snd_pcm_substream *substream,
 				 snd_pcm_sframes_t *cpu_delay,
 				 snd_pcm_sframes_t *codec_delay)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	snd_pcm_sframes_t delay;
 	int i;
@@ -953,7 +1024,7 @@ void snd_soc_pcm_component_delay(struct snd_pcm_substream *substream,
 
 		delay = component->driver->delay(component, substream);
 
-		if (snd_soc_component_is_codec(component))
+		if (snd_soc_component_is_codec_on_rtd(rtd, component))
 			*codec_delay = max(*codec_delay, delay);
 		else
 			*cpu_delay = max(*cpu_delay, delay);
@@ -963,7 +1034,7 @@ void snd_soc_pcm_component_delay(struct snd_pcm_substream *substream,
 int snd_soc_pcm_component_ioctl(struct snd_pcm_substream *substream,
 				unsigned int cmd, void *arg)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i;
 
@@ -980,7 +1051,7 @@ int snd_soc_pcm_component_ioctl(struct snd_pcm_substream *substream,
 
 int snd_soc_pcm_component_sync_stop(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i, ret;
 
@@ -996,22 +1067,20 @@ int snd_soc_pcm_component_sync_stop(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-int snd_soc_pcm_component_copy_user(struct snd_pcm_substream *substream,
-				    int channel, unsigned long pos,
-				    void __user *buf, unsigned long bytes)
+int snd_soc_pcm_component_copy(struct snd_pcm_substream *substream,
+			       int channel, unsigned long pos,
+			       struct iov_iter *iter, unsigned long bytes)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i;
 
 	/* FIXME. it returns 1st copy now */
 	for_each_rtd_components(rtd, i, component)
-		if (component->driver->copy_user)
-			return soc_component_ret(
-				component,
-				component->driver->copy_user(
-					component, substream, channel,
-					pos, buf, bytes));
+		if (component->driver->copy)
+			return soc_component_ret(component,
+				component->driver->copy(component, substream,
+					channel, pos, iter, bytes));
 
 	return -EINVAL;
 }
@@ -1019,7 +1088,7 @@ int snd_soc_pcm_component_copy_user(struct snd_pcm_substream *substream,
 struct page *snd_soc_pcm_component_page(struct snd_pcm_substream *substream,
 					unsigned long offset)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	struct page *page;
 	int i;
@@ -1040,7 +1109,7 @@ struct page *snd_soc_pcm_component_page(struct snd_pcm_substream *substream,
 int snd_soc_pcm_component_mmap(struct snd_pcm_substream *substream,
 			       struct vm_area_struct *vma)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i;
 
@@ -1087,7 +1156,7 @@ void snd_soc_pcm_component_free(struct snd_soc_pcm_runtime *rtd)
 
 int snd_soc_pcm_component_prepare(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i, ret;
 
@@ -1105,7 +1174,7 @@ int snd_soc_pcm_component_prepare(struct snd_pcm_substream *substream)
 int snd_soc_pcm_component_hw_params(struct snd_pcm_substream *substream,
 				    struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i, ret;
 
@@ -1126,7 +1195,7 @@ int snd_soc_pcm_component_hw_params(struct snd_pcm_substream *substream,
 void snd_soc_pcm_component_hw_free(struct snd_pcm_substream *substream,
 				   int rollback)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i, ret;
 
@@ -1141,7 +1210,7 @@ void snd_soc_pcm_component_hw_free(struct snd_pcm_substream *substream,
 		}
 
 		/* remove marked substream */
-		soc_component_mark_pop(component, substream, hw_params);
+		soc_component_mark_pop(component, hw_params);
 	}
 }
 
@@ -1160,7 +1229,7 @@ static int soc_component_trigger(struct snd_soc_component *component,
 int snd_soc_pcm_component_trigger(struct snd_pcm_substream *substream,
 				  int cmd, int rollback)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i, r, ret = 0;
 
@@ -1185,7 +1254,7 @@ int snd_soc_pcm_component_trigger(struct snd_pcm_substream *substream,
 			r = soc_component_trigger(component, substream, cmd);
 			if (r < 0)
 				ret = r; /* use last ret */
-			soc_component_mark_pop(component, substream, trigger);
+			soc_component_mark_pop(component, trigger);
 		}
 	}
 
@@ -1225,13 +1294,13 @@ void snd_soc_pcm_component_pm_runtime_put(struct snd_soc_pcm_runtime *rtd,
 		pm_runtime_put_autosuspend(component->dev);
 
 		/* remove marked stream */
-		soc_component_mark_pop(component, stream, pm);
+		soc_component_mark_pop(component, pm);
 	}
 }
 
 int snd_soc_pcm_component_ack(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component;
 	int i;
 

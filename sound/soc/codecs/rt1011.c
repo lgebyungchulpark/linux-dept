@@ -13,11 +13,9 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/acpi.h>
 #include <linux/regmap.h>
-#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
 #include <sound/core.h>
@@ -2176,7 +2174,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt1011 = {
 	.set_pll = rt1011_set_component_pll,
 	.use_pmdown_time = 1,
 	.endianness = 1,
-	.non_legacy_dai_naming = 1,
 };
 
 static const struct regmap_config rt1011_regmap = {
@@ -2185,7 +2182,7 @@ static const struct regmap_config rt1011_regmap = {
 	.max_register = RT1011_MAX_REG + 1,
 	.volatile_reg = rt1011_volatile_register,
 	.readable_reg = rt1011_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt1011_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1011_reg),
 	.use_single_read = true,
@@ -2209,7 +2206,7 @@ MODULE_DEVICE_TABLE(acpi, rt1011_acpi_match);
 #endif
 
 static const struct i2c_device_id rt1011_i2c_id[] = {
-	{ "rt1011", 0 },
+	{ "rt1011" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1011_i2c_id);
@@ -2433,8 +2430,7 @@ static int rt1011_parse_dp(struct rt1011_priv *rt1011, struct device *dev)
 	return 0;
 }
 
-static int rt1011_i2c_probe(struct i2c_client *i2c,
-		    const struct i2c_device_id *id)
+static int rt1011_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt1011_priv *rt1011;
 	int ret;

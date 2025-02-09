@@ -501,7 +501,7 @@ static int xgene_edac_mc_remove(struct xgene_edac_mc_ctx *mcu)
 #define MEMERR_L2C_L2ESRA_PAGE_OFFSET		0x0804
 
 /*
- * Processor Module Domain (PMD) context - Context for a pair of processsors.
+ * Processor Module Domain (PMD) context - Context for a pair of processors.
  * Each PMD consists of 2 CPUs and a shared L2 cache. Each CPU consists of
  * its own L1 cache.
  */
@@ -913,8 +913,8 @@ static int xgene_edac_pmd_add(struct xgene_edac *edac, struct device_node *np,
 
 	snprintf(edac_name, sizeof(edac_name), "l2c%d", pmd);
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*ctx),
-					      edac_name, 1, "l2c", 1, 2, NULL,
-					      0, edac_device_alloc_index());
+					      edac_name, 1, "l2c", 1, 2,
+					      edac_device_alloc_index());
 	if (!edac_dev) {
 		rc = -ENOMEM;
 		goto err_group;
@@ -1208,8 +1208,7 @@ static int xgene_edac_l3_add(struct xgene_edac *edac, struct device_node *np,
 
 	edac_idx = edac_device_alloc_index();
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*ctx),
-					      "l3c", 1, "l3c", 1, 0, NULL, 0,
-					      edac_idx);
+					      "l3c", 1, "l3c", 1, 0, edac_idx);
 	if (!edac_dev) {
 		rc = -ENOMEM;
 		goto err_release_group;
@@ -1748,8 +1747,7 @@ static int xgene_edac_soc_add(struct xgene_edac *edac, struct device_node *np,
 
 	edac_idx = edac_device_alloc_index();
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*ctx),
-					      "SOC", 1, "SOC", 1, 2, NULL, 0,
-					      edac_idx);
+					      "SOC", 1, "SOC", 1, 2, edac_idx);
 	if (!edac_dev) {
 		rc = -ENOMEM;
 		goto err_release_group;
@@ -1919,7 +1917,7 @@ static int xgene_edac_probe(struct platform_device *pdev)
 			irq = platform_get_irq_optional(pdev, i);
 			if (irq < 0) {
 				dev_err(&pdev->dev, "No IRQ resource\n");
-				rc = -EINVAL;
+				rc = irq;
 				goto out_err;
 			}
 			rc = devm_request_irq(&pdev->dev, irq,
@@ -1960,7 +1958,7 @@ out_err:
 	return rc;
 }
 
-static int xgene_edac_remove(struct platform_device *pdev)
+static void xgene_edac_remove(struct platform_device *pdev)
 {
 	struct xgene_edac *edac = dev_get_drvdata(&pdev->dev);
 	struct xgene_edac_mc_ctx *mcu;
@@ -1981,8 +1979,6 @@ static int xgene_edac_remove(struct platform_device *pdev)
 
 	list_for_each_entry_safe(node, temp_node, &edac->socs, next)
 		xgene_edac_soc_remove(node);
-
-	return 0;
 }
 
 static const struct of_device_id xgene_edac_of_match[] = {
@@ -2003,6 +1999,9 @@ static struct platform_driver xgene_edac_driver = {
 static int __init xgene_edac_init(void)
 {
 	int rc;
+
+	if (ghes_get_devices())
+		return -EBUSY;
 
 	/* Make sure error reporting method is sane */
 	switch (edac_op_state) {

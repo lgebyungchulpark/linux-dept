@@ -36,6 +36,9 @@ enum ras_command {
 	TA_RAS_COMMAND__ENABLE_FEATURES = 0,
 	TA_RAS_COMMAND__DISABLE_FEATURES,
 	TA_RAS_COMMAND__TRIGGER_ERROR,
+	TA_RAS_COMMAND__QUERY_BLOCK_INFO,
+	TA_RAS_COMMAND__QUERY_SUB_BLOCK_INFO,
+	TA_RAS_COMMAND__QUERY_ADDRESS,
 };
 
 enum ta_ras_status {
@@ -64,7 +67,8 @@ enum ta_ras_status {
 	TA_RAS_STATUS__ERROR_PCS_STATE_ERROR            = 0xA016,
 	TA_RAS_STATUS__ERROR_PCS_STATE_HANG             = 0xA017,
 	TA_RAS_STATUS__ERROR_PCS_STATE_UNKNOWN          = 0xA018,
-	TA_RAS_STATUS__ERROR_UNSUPPORTED_ERROR_INJ      = 0xA019
+	TA_RAS_STATUS__ERROR_UNSUPPORTED_ERROR_INJ      = 0xA019,
+	TA_RAS_STATUS__TEE_ERROR_ACCESS_DENIED          = 0xA01A
 };
 
 enum ta_ras_block {
@@ -83,6 +87,8 @@ enum ta_ras_block {
 	TA_RAS_BLOCK__MP1,
 	TA_RAS_BLOCK__FUSE,
 	TA_RAS_BLOCK__MCA,
+	TA_RAS_BLOCK__VCN,
+	TA_RAS_BLOCK__JPEG,
 	TA_NUM_BLOCK_MAX
 };
 
@@ -100,6 +106,19 @@ enum ta_ras_error_type {
 	TA_RAS_ERROR__SINGLE_CORRECTABLE	= 2,
 	TA_RAS_ERROR__MULTI_UNCORRECTABLE	= 4,
 	TA_RAS_ERROR__POISON			= 8,
+};
+
+enum ta_ras_address_type {
+	TA_RAS_MCA_TO_PA,
+	TA_RAS_PA_TO_MCA,
+};
+
+enum ta_ras_nps_mode {
+	TA_RAS_UNKNOWN_MODE = 0,
+	TA_RAS_NPS1_MODE = 1,
+	TA_RAS_NPS2_MODE = 2,
+	TA_RAS_NPS4_MODE = 4,
+	TA_RAS_NPS8_MODE = 8,
 };
 
 /* Input/output structures for RAS commands */
@@ -126,12 +145,42 @@ struct ta_ras_trigger_error_input {
 struct ta_ras_init_flags {
 	uint8_t poison_mode_en;
 	uint8_t dgpu_mode;
+	uint16_t xcc_mask;
+	uint8_t channel_dis_num;
+	uint8_t nps_mode;
+};
+
+struct ta_ras_mca_addr {
+	uint64_t err_addr;
+	uint32_t ch_inst;
+	uint32_t umc_inst;
+	uint32_t node_inst;
+	uint32_t socket_id;
+};
+
+struct ta_ras_phy_addr {
+	uint64_t pa;
+	uint32_t bank;
+	uint32_t channel_idx;
+};
+
+struct ta_ras_query_address_input {
+	enum ta_ras_address_type addr_type;
+	struct ta_ras_mca_addr ma;
+	struct ta_ras_phy_addr pa;
 };
 
 struct ta_ras_output_flags {
 	uint8_t ras_init_success_flag;
 	uint8_t err_inject_switch_disable_flag;
 	uint8_t reg_access_failure_flag;
+};
+
+struct ta_ras_query_address_output {
+	/* don't use the flags here */
+	struct ta_ras_output_flags flags;
+	struct ta_ras_mca_addr ma;
+	struct ta_ras_phy_addr pa;
 };
 
 /* Common input structure for RAS callbacks */
@@ -141,12 +190,14 @@ union ta_ras_cmd_input {
 	struct ta_ras_enable_features_input	enable_features;
 	struct ta_ras_disable_features_input	disable_features;
 	struct ta_ras_trigger_error_input	trigger_error;
+	struct ta_ras_query_address_input	address;
 
 	uint32_t reserve_pad[256];
 };
 
 union ta_ras_cmd_output {
 	struct ta_ras_output_flags flags;
+	struct ta_ras_query_address_output address;
 
 	uint32_t reserve_pad[256];
 };

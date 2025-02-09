@@ -26,7 +26,6 @@
 
 #include "vmwgfx_drv.h"
 
-#include <drm/ttm/ttm_bo_driver.h>
 #include <drm/ttm/ttm_device.h>
 #include <drm/ttm/ttm_placement.h>
 #include <drm/ttm/ttm_resource.h>
@@ -49,6 +48,7 @@ static int vmw_sys_man_alloc(struct ttm_resource_manager *man,
 static void vmw_sys_man_free(struct ttm_resource_manager *man,
 			     struct ttm_resource *res)
 {
+	ttm_resource_fini(man, res);
 	kfree(res);
 }
 
@@ -69,7 +69,7 @@ int vmw_sys_man_init(struct vmw_private *dev_priv)
 	man->use_tt = true;
 	man->func = &vmw_sys_manager_func;
 
-	ttm_resource_manager_init(man, 0);
+	ttm_resource_manager_init(man, bdev, 0);
 	ttm_set_driver_manager(bdev, VMW_PL_SYSTEM, man);
 	ttm_resource_manager_set_used(man, true);
 	return 0;

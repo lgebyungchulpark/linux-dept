@@ -19,6 +19,12 @@ properties:
   interrupts:
     maxItems: 1
 
+  resets:
+    maxItems: 1
+
+  reset-names:
+    const: audiosys
+
   memory-region:
     maxItems: 1
     description: |
@@ -26,7 +32,7 @@ properties:
       See ../reserved-memory/reserved-memory.txt for details.
 
   mediatek,topckgen:
-    $ref: "/schemas/types.yaml#/definitions/phandle"
+    $ref: /schemas/types.yaml#/definitions/phandle
     description: The phandle of the mediatek topckgen controller
 
   power-domains:
@@ -105,7 +111,7 @@ patternProperties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       etdm modules can share the same external clock pin. Specify
-      which etdm clock source is required by this etdm in moudule.
+      which etdm clock source is required by this etdm in module.
     enum:
       - 0 # etdm1_in
       - 1 # etdm2_in
@@ -116,7 +122,7 @@ patternProperties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       etdm modules can share the same external clock pin. Specify
-      which etdm clock source is required by this etdm out moudule.
+      which etdm clock source is required by this etdm out module.
     enum:
       - 0 # etdm1_in
       - 1 # etdm2_in
@@ -127,6 +133,8 @@ required:
   - compatible
   - reg
   - interrupts
+  - resets
+  - reset-names
   - mediatek,topckgen
   - power-domains
   - clocks
@@ -144,6 +152,8 @@ examples:
         compatible = "mediatek,mt8195-audio";
         reg = <0x10890000 0x10000>;
         interrupts = <GIC_SPI 822 IRQ_TYPE_LEVEL_HIGH 0>;
+        resets = <&watchdog 14>;
+        reset-names = "audiosys";
         mediatek,topckgen = <&topckgen>;
         power-domains = <&spm 7>; //MT8195_POWER_DOMAIN_AUDIO
         memory-region = <&snd_dma_mem_reserved>;

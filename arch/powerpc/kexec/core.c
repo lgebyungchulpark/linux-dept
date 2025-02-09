@@ -18,8 +18,9 @@
 #include <asm/kdump.h>
 #include <asm/machdep.h>
 #include <asm/pgalloc.h>
-#include <asm/prom.h>
 #include <asm/sections.h>
+#include <asm/setup.h>
+#include <asm/firmware.h>
 
 void machine_kexec_mask_interrupts(void) {
 	unsigned int i;
@@ -43,37 +44,15 @@ void machine_kexec_mask_interrupts(void) {
 	}
 }
 
+#ifdef CONFIG_CRASH_DUMP
 void machine_crash_shutdown(struct pt_regs *regs)
 {
 	default_machine_crash_shutdown(regs);
 }
+#endif
 
 void machine_kexec_cleanup(struct kimage *image)
 {
-}
-
-void arch_crash_save_vmcoreinfo(void)
-{
-
-#ifdef CONFIG_NUMA
-	VMCOREINFO_SYMBOL(node_data);
-	VMCOREINFO_LENGTH(node_data, MAX_NUMNODES);
-#endif
-#ifndef CONFIG_NUMA
-	VMCOREINFO_SYMBOL(contig_page_data);
-#endif
-#if defined(CONFIG_PPC64) && defined(CONFIG_SPARSEMEM_VMEMMAP)
-	VMCOREINFO_SYMBOL(vmemmap_list);
-	VMCOREINFO_SYMBOL(mmu_vmemmap_psize);
-	VMCOREINFO_SYMBOL(mmu_psize_defs);
-	VMCOREINFO_STRUCT_SIZE(vmemmap_backing);
-	VMCOREINFO_OFFSET(vmemmap_backing, list);
-	VMCOREINFO_OFFSET(vmemmap_backing, phys);
-	VMCOREINFO_OFFSET(vmemmap_backing, virt_addr);
-	VMCOREINFO_STRUCT_SIZE(mmu_psize_def);
-	VMCOREINFO_OFFSET(mmu_psize_def, shift);
-#endif
-	vmcoreinfo_append_str("KERNELOFFSET=%lx\n", kaslr_offset());
 }
 
 /*
@@ -100,6 +79,7 @@ void machine_kexec(struct kimage *image)
 	for(;;);
 }
 
+#ifdef CONFIG_CRASH_RESERVE
 void __init reserve_crashkernel(void)
 {
 	unsigned long long crash_size, crash_base, total_mem_sz;
@@ -108,7 +88,7 @@ void __init reserve_crashkernel(void)
 	total_mem_sz = memory_limit ? memory_limit : memblock_phys_mem_size();
 	/* use common parsing */
 	ret = parse_crashkernel(boot_command_line, total_mem_sz,
-			&crash_size, &crash_base);
+			&crash_size, &crash_base, NULL, NULL);
 	if (ret == 0 && crash_size > 0) {
 		crashk_res.start = crash_base;
 		crashk_res.end = crash_base + crash_size - 1;
@@ -134,11 +114,18 @@ void __init reserve_crashkernel(void)
 	if (!crashk_res.start) {
 #ifdef CONFIG_PPC64
 		/*
-		 * On 64bit we split the RMO in half but cap it at half of
-		 * a small SLB (128MB) since the crash kernel needs to place
-		 * itself and some stacks to be in the first segment.
+		 * On the LPAR platform place the crash kernel to mid of
+		 * RMA size (max. of 512MB) to ensure the crash kernel
+		 * gets enough space to place itself and some stack to be
+		 * in the first segment. At the same time normal kernel
+		 * also get enough space to allocate memory for essential
+		 * system resource in the first segment. Keep the crash
+		 * kernel starts at 128MB offset on other platforms.
 		 */
-		crashk_res.start = min(0x8000000ULL, (ppc64_rma_size / 2));
+		if (firmware_has_feature(FW_FEATURE_LPAR))
+			crashk_res.start = min_t(u64, ppc64_rma_size / 2, SZ_512M);
+		else
+			crashk_res.start = min_t(u64, ppc64_rma_size / 2, SZ_128M);
 #else
 		crashk_res.start = KDUMP_KERNELBASE;
 #endif
@@ -267,3 +254,4 @@ static int __init kexec_setup(void)
 	return 0;
 }
 late_initcall(kexec_setup);
+#endif /* CONFIG_CRASH_RESERVE */

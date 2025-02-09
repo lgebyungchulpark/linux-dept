@@ -83,6 +83,7 @@ static int ipvlan_port_create(struct net_device *dev)
 	if (err)
 		goto err;
 
+	netdev_hold(dev, &port->dev_tracker, GFP_KERNEL);
 	return 0;
 
 err:
@@ -95,6 +96,7 @@ static void ipvlan_port_destroy(struct net_device *dev)
 	struct ipvl_port *port = ipvlan_port_get_rtnl(dev);
 	struct sk_buff *skb;
 
+	netdev_put(dev, &port->dev_tracker);
 	if (port->mode == IPVLAN_MODE_L3S)
 		ipvlan_l3s_unregister(port);
 	netdev_rx_handler_unregister(dev);
@@ -112,7 +114,7 @@ static void ipvlan_port_destroy(struct net_device *dev)
 	 NETIF_F_GSO_ROBUST | NETIF_F_GSO_SOFTWARE | NETIF_F_GSO_ENCAP_ALL)
 
 #define IPVLAN_ALWAYS_ON \
-	(IPVLAN_ALWAYS_ON_OFLOADS | NETIF_F_LLTX | NETIF_F_VLAN_CHALLENGED)
+	(IPVLAN_ALWAYS_ON_OFLOADS | NETIF_F_VLAN_CHALLENGED)
 
 #define IPVLAN_FEATURES \
 	(NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_HIGHDMA | NETIF_F_FRAGLIST | \
@@ -139,8 +141,8 @@ static int ipvlan_init(struct net_device *dev)
 	dev->vlan_features = phy_dev->vlan_features & IPVLAN_FEATURES;
 	dev->vlan_features |= IPVLAN_ALWAYS_ON_OFLOADS;
 	dev->hw_enc_features |= dev->features;
-	netif_set_gso_max_size(dev, phy_dev->gso_max_size);
-	netif_set_gso_max_segs(dev, phy_dev->gso_max_segs);
+	dev->lltx = true;
+	netif_inherit_tso_max(dev, phy_dev);
 	dev->hard_header_len = phy_dev->hard_header_len;
 
 	netdev_lockdep_set_classes(dev);
@@ -225,8 +227,8 @@ static netdev_tx_t ipvlan_start_xmit(struct sk_buff *skb,
 		pcptr = this_cpu_ptr(ipvlan->pcpu_stats);
 
 		u64_stats_update_begin(&pcptr->syncp);
-		pcptr->tx_pkts++;
-		pcptr->tx_bytes += skblen;
+		u64_stats_inc(&pcptr->tx_pkts);
+		u64_stats_add(&pcptr->tx_bytes, skblen);
 		u64_stats_update_end(&pcptr->syncp);
 	} else {
 		this_cpu_inc(ipvlan->pcpu_stats->tx_drps);
@@ -300,13 +302,13 @@ static void ipvlan_get_stats64(struct net_device *dev,
 		for_each_possible_cpu(idx) {
 			pcptr = per_cpu_ptr(ipvlan->pcpu_stats, idx);
 			do {
-				strt= u64_stats_fetch_begin_irq(&pcptr->syncp);
-				rx_pkts = pcptr->rx_pkts;
-				rx_bytes = pcptr->rx_bytes;
-				rx_mcast = pcptr->rx_mcast;
-				tx_pkts = pcptr->tx_pkts;
-				tx_bytes = pcptr->tx_bytes;
-			} while (u64_stats_fetch_retry_irq(&pcptr->syncp,
+				strt = u64_stats_fetch_begin(&pcptr->syncp);
+				rx_pkts = u64_stats_read(&pcptr->rx_pkts);
+				rx_bytes = u64_stats_read(&pcptr->rx_bytes);
+				rx_mcast = u64_stats_read(&pcptr->rx_mcast);
+				tx_pkts = u64_stats_read(&pcptr->tx_pkts);
+				tx_bytes = u64_stats_read(&pcptr->tx_bytes);
+			} while (u64_stats_fetch_retry(&pcptr->syncp,
 							   strt));
 
 			s->rx_packets += rx_pkts;
@@ -316,13 +318,14 @@ static void ipvlan_get_stats64(struct net_device *dev,
 			s->tx_bytes += tx_bytes;
 
 			/* u32 values are updated without syncp protection. */
-			rx_errs += pcptr->rx_errs;
-			tx_drps += pcptr->tx_drps;
+			rx_errs += READ_ONCE(pcptr->rx_errs);
+			tx_drps += READ_ONCE(pcptr->tx_drps);
 		}
 		s->rx_errors = rx_errs;
 		s->rx_dropped = rx_errs;
 		s->tx_dropped = tx_drps;
 	}
+	s->tx_errors = DEV_STATS_READ(dev, tx_errors);
 }
 
 static int ipvlan_vlan_rx_add_vid(struct net_device *dev, __be16 proto, u16 vid)
@@ -347,7 +350,7 @@ static int ipvlan_get_iflink(const struct net_device *dev)
 {
 	struct ipvl_dev *ipvlan = netdev_priv(dev);
 
-	return ipvlan->phy_dev->ifindex;
+	return READ_ONCE(ipvlan->phy_dev->ifindex);
 }
 
 static const struct net_device_ops ipvlan_netdev_ops = {
@@ -385,6 +388,7 @@ static const struct header_ops ipvlan_header_ops = {
 	.parse		= eth_header_parse,
 	.cache		= eth_header_cache,
 	.cache_update	= eth_header_cache_update,
+	.parse_protocol	= eth_header_parse_protocol,
 };
 
 static void ipvlan_adjust_mtu(struct ipvl_dev *ipvlan, struct net_device *dev)
@@ -409,8 +413,8 @@ static int ipvlan_ethtool_get_link_ksettings(struct net_device *dev,
 static void ipvlan_ethtool_get_drvinfo(struct net_device *dev,
 				       struct ethtool_drvinfo *drvinfo)
 {
-	strlcpy(drvinfo->driver, IPVLAN_DRV, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, IPV_DRV_VER, sizeof(drvinfo->version));
+	strscpy(drvinfo->driver, IPVLAN_DRV, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, IPV_DRV_VER, sizeof(drvinfo->version));
 }
 
 static u32 ipvlan_ethtool_get_msglevel(struct net_device *dev)
@@ -598,15 +602,15 @@ int ipvlan_link_new(struct net *src_net, struct net_device *dev,
 		port->dev_id_start = 0x1;
 
 	/* Since L2 address is shared among all IPvlan slaves including
-	 * master, use unique 16 bit dev-ids to diffentiate among them.
+	 * master, use unique 16 bit dev-ids to differentiate among them.
 	 * Assign IDs between 0x1 and 0xFFFE (used by the master) to each
 	 * slave link [see addrconf_ifid_eui48()].
 	 */
-	err = ida_simple_get(&port->ida, port->dev_id_start, 0xFFFE,
-			     GFP_KERNEL);
+	err = ida_alloc_range(&port->ida, port->dev_id_start, 0xFFFD,
+			      GFP_KERNEL);
 	if (err < 0)
-		err = ida_simple_get(&port->ida, 0x1, port->dev_id_start,
-				     GFP_KERNEL);
+		err = ida_alloc_range(&port->ida, 0x1, port->dev_id_start - 1,
+				      GFP_KERNEL);
 	if (err < 0)
 		goto unregister_netdev;
 	dev->dev_id = err;
@@ -638,7 +642,7 @@ int ipvlan_link_new(struct net *src_net, struct net_device *dev,
 unlink_netdev:
 	netdev_upper_dev_unlink(phy_dev, dev);
 remove_ida:
-	ida_simple_remove(&port->ida, dev->dev_id);
+	ida_free(&port->ida, dev->dev_id);
 unregister_netdev:
 	unregister_netdevice(dev);
 	return err;
@@ -658,7 +662,7 @@ void ipvlan_link_delete(struct net_device *dev, struct list_head *head)
 	}
 	spin_unlock_bh(&ipvlan->addrs_lock);
 
-	ida_simple_remove(&ipvlan->port->ida, dev->dev_id);
+	ida_free(&ipvlan->port->ida, dev->dev_id);
 	list_del_rcu(&ipvlan->pnode);
 	unregister_netdevice_queue(dev, head);
 	netdev_upper_dev_unlink(ipvlan->phy_dev, dev);
@@ -732,6 +736,7 @@ static int ipvlan_device_event(struct notifier_block *unused,
 
 	switch (event) {
 	case NETDEV_UP:
+	case NETDEV_DOWN:
 	case NETDEV_CHANGE:
 		list_for_each_entry(ipvlan, &port->ipvlans, pnode)
 			netif_stacked_transfer_operstate(ipvlan->phy_dev,
@@ -747,7 +752,8 @@ static int ipvlan_device_event(struct notifier_block *unused,
 
 		write_pnet(&port->pnet, newnet);
 
-		ipvlan_migrate_l3s_hook(oldnet, newnet);
+		if (port->mode == IPVLAN_MODE_L3S)
+			ipvlan_migrate_l3s_hook(oldnet, newnet);
 		break;
 	}
 	case NETDEV_UNREGISTER:
@@ -762,8 +768,7 @@ static int ipvlan_device_event(struct notifier_block *unused,
 
 	case NETDEV_FEAT_CHANGE:
 		list_for_each_entry(ipvlan, &port->ipvlans, pnode) {
-			netif_set_gso_max_size(ipvlan->dev, dev->gso_max_size);
-			netif_set_gso_max_segs(ipvlan->dev, dev->gso_max_segs);
+			netif_inherit_tso_max(ipvlan->dev, dev);
 			netdev_update_features(ipvlan->dev);
 		}
 		break;

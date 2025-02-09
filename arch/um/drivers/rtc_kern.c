@@ -168,11 +168,10 @@ cleanup:
 	return err;
 }
 
-static int uml_rtc_remove(struct platform_device *pdev)
+static void uml_rtc_remove(struct platform_device *pdev)
 {
 	device_init_wakeup(&pdev->dev, 0);
 	uml_rtc_cleanup();
-	return 0;
 }
 
 static struct platform_driver uml_rtc_driver = {

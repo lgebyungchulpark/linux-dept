@@ -250,7 +250,7 @@ static int pcm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_efw *efw = substream->private_data;
 	int err = 0;
 
-	if (substream->runtime->status->state == SNDRV_PCM_STATE_OPEN) {
+	if (substream->runtime->state == SNDRV_PCM_STATE_OPEN) {
 		unsigned int rate = params_rate(hw_params);
 		unsigned int frames_per_period = params_period_size(hw_params);
 		unsigned int frames_per_buffer = params_buffer_size(hw_params);
@@ -272,7 +272,7 @@ static int pcm_hw_free(struct snd_pcm_substream *substream)
 
 	mutex_lock(&efw->mutex);
 
-	if (substream->runtime->status->state != SNDRV_PCM_STATE_OPEN)
+	if (substream->runtime->state != SNDRV_PCM_STATE_OPEN)
 		--efw->substreams_counter;
 
 	snd_efw_stream_stop_duplex(efw);
@@ -397,6 +397,7 @@ int snd_efw_create_pcm_devices(struct snd_efw *efw)
 		goto end;
 
 	pcm->private_data = efw;
+	pcm->nonatomic = true;
 	snprintf(pcm->name, sizeof(pcm->name), "%s PCM", efw->card->shortname);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &playback_ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &capture_ops);

@@ -1018,7 +1018,8 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 	size_t size;
 
 	/* instance init */
-	size = struct_size(instance, urbs, num_rcv_urbs + num_snd_urbs);
+	size = struct_size(instance, urbs,
+			   size_add(num_rcv_urbs, num_snd_urbs));
 	instance = kzalloc(size, GFP_KERNEL);
 	if (!instance)
 		return -ENOMEM;
@@ -1026,7 +1027,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 	/* public fields */
 
 	instance->driver = driver;
-	strlcpy(instance->driver_name, driver->driver_name,
+	strscpy(instance->driver_name, driver->driver_name,
 		sizeof(instance->driver_name));
 
 	instance->usb_dev = usb_dev;
@@ -1091,7 +1092,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 			snd_buf_bytes - (snd_buf_bytes % instance->tx_channel.stride));
 
 	/* rx buffer size must be a positive multiple of the endpoint maxpacket */
-	maxpacket = usb_maxpacket(usb_dev, instance->rx_channel.endpoint, 0);
+	maxpacket = usb_maxpacket(usb_dev, instance->rx_channel.endpoint);
 
 	if ((maxpacket < 1) || (maxpacket > UDSL_MAX_BUF_SIZE)) {
 		dev_err(dev, "%s: invalid endpoint %02x!\n", __func__,
@@ -1157,7 +1158,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 		if (i >= num_rcv_urbs)
 			list_add_tail(&urb->urb_list, &channel->list);
 
-		vdbg(&intf->dev, "%s: alloced buffer 0x%p buf size %u urb 0x%p",
+		vdbg(&intf->dev, "%s: allocated buffer 0x%p buf size %u urb 0x%p",
 		     __func__, urb->transfer_buffer, urb->transfer_buffer_length, urb);
 	}
 

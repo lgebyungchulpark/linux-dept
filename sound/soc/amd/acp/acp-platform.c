@@ -18,10 +18,11 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/soc-dai.h>
-#include <linux/pm_runtime.h>
 #include <linux/dma-mapping.h>
 
 #include "amd.h"
+#include "../mach-config.h"
+#include "acp-mach.h"
 
 #define DRV_NAME "acp_i2s_dma"
 
@@ -67,104 +68,197 @@ static const struct snd_pcm_hardware acp_pcm_hardware_capture = {
 	.periods_max = CAPTURE_MAX_NUM_PERIODS,
 };
 
+static const struct snd_pcm_hardware acp6x_pcm_hardware_playback = {
+	.info = SNDRV_PCM_INFO_INTERLEAVED |
+		SNDRV_PCM_INFO_BLOCK_TRANSFER |
+		SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
+		SNDRV_PCM_INFO_PAUSE | SNDRV_PCM_INFO_RESUME,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE |  SNDRV_PCM_FMTBIT_S8 |
+		   SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S24_LE |
+		   SNDRV_PCM_FMTBIT_S32_LE,
+	.channels_min = 2,
+	.channels_max = 32,
+	.rates = SNDRV_PCM_RATE_8000_192000,
+	.rate_min = 8000,
+	.rate_max = 192000,
+	.buffer_bytes_max = PLAYBACK_MAX_NUM_PERIODS * PLAYBACK_MAX_PERIOD_SIZE,
+	.period_bytes_min = PLAYBACK_MIN_PERIOD_SIZE,
+	.period_bytes_max = PLAYBACK_MAX_PERIOD_SIZE,
+	.periods_min = PLAYBACK_MIN_NUM_PERIODS,
+	.periods_max = PLAYBACK_MAX_NUM_PERIODS,
+};
+
+static const struct snd_pcm_hardware acp6x_pcm_hardware_capture = {
+	.info = SNDRV_PCM_INFO_INTERLEAVED |
+		SNDRV_PCM_INFO_BLOCK_TRANSFER |
+		SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
+		SNDRV_PCM_INFO_PAUSE | SNDRV_PCM_INFO_RESUME,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S8 |
+		   SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S24_LE |
+		   SNDRV_PCM_FMTBIT_S32_LE,
+	.channels_min = 2,
+	.channels_max = 32,
+	.rates = SNDRV_PCM_RATE_8000_192000,
+	.rate_min = 8000,
+	.rate_max = 192000,
+	.buffer_bytes_max = CAPTURE_MAX_NUM_PERIODS * CAPTURE_MAX_PERIOD_SIZE,
+	.period_bytes_min = CAPTURE_MIN_PERIOD_SIZE,
+	.period_bytes_max = CAPTURE_MAX_PERIOD_SIZE,
+	.periods_min = CAPTURE_MIN_NUM_PERIODS,
+	.periods_max = CAPTURE_MAX_NUM_PERIODS,
+};
+
 int acp_machine_select(struct acp_dev_data *adata)
 {
 	struct snd_soc_acpi_mach *mach;
-	int size;
+	int size, platform;
 
-	size = sizeof(*adata->machines);
-	mach = snd_soc_acpi_find_machine(adata->machines);
-	if (!mach) {
-		dev_err(adata->dev, "warning: No matching ASoC machine driver found\n");
-		return -EINVAL;
+	if (adata->flag == FLAG_AMD_LEGACY_ONLY_DMIC) {
+		platform = adata->acp_rev;
+		adata->mach_dev = platform_device_register_data(adata->dev, "acp-pdm-mach",
+								PLATFORM_DEVID_NONE, &platform,
+								sizeof(platform));
+	} else {
+		size = sizeof(*adata->machines);
+		mach = snd_soc_acpi_find_machine(adata->machines);
+		if (!mach) {
+			dev_err(adata->dev, "warning: No matching ASoC machine driver found\n");
+			return -EINVAL;
+		}
+		mach->mach_params.subsystem_rev = adata->acp_rev;
+		adata->mach_dev = platform_device_register_data(adata->dev, mach->drv_name,
+								PLATFORM_DEVID_NONE, mach, size);
 	}
-
-	adata->mach_dev = platform_device_register_data(adata->dev, mach->drv_name,
-							PLATFORM_DEVID_NONE, mach, size);
 	if (IS_ERR(adata->mach_dev))
 		dev_warn(adata->dev, "Unable to register Machine device\n");
-
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(acp_machine_select, SND_SOC_ACP_COMMON);
+EXPORT_SYMBOL_NS_GPL(acp_machine_select, "SND_SOC_ACP_COMMON");
 
 static irqreturn_t i2s_irq_handler(int irq, void *data)
 {
 	struct acp_dev_data *adata = data;
+	struct acp_resource *rsrc = adata->rsrc;
 	struct acp_stream *stream;
 	u16 i2s_flag = 0;
-	u32 val, i;
+	u32 ext_intr_stat, ext_intr_stat1;
 
-	if (!adata)
-		return IRQ_NONE;
+	if (adata->rsrc->no_of_ctrls == 2)
+		ext_intr_stat1 = readl(ACP_EXTERNAL_INTR_STAT(adata, (rsrc->irqp_used - 1)));
 
-	val = readl(adata->acp_base + ACP_EXTERNAL_INTR_STAT);
+	ext_intr_stat = readl(ACP_EXTERNAL_INTR_STAT(adata, rsrc->irqp_used));
 
-	for (i = 0; i < ACP_MAX_STREAM; i++) {
-		stream = adata->stream[i];
-		if (stream && (val & stream->irq_bit)) {
-			writel(stream->irq_bit, adata->acp_base + ACP_EXTERNAL_INTR_STAT);
+	spin_lock(&adata->acp_lock);
+	list_for_each_entry(stream, &adata->stream_list, list) {
+		if (ext_intr_stat & stream->irq_bit) {
+			writel(stream->irq_bit,
+			       ACP_EXTERNAL_INTR_STAT(adata, rsrc->irqp_used));
 			snd_pcm_period_elapsed(stream->substream);
 			i2s_flag = 1;
-			break;
+		}
+		if (adata->rsrc->no_of_ctrls == 2) {
+			if (ext_intr_stat1 & stream->irq_bit) {
+				writel(stream->irq_bit, ACP_EXTERNAL_INTR_STAT(adata,
+				       (rsrc->irqp_used - 1)));
+				snd_pcm_period_elapsed(stream->substream);
+				i2s_flag = 1;
+			}
 		}
 	}
-
+	spin_unlock(&adata->acp_lock);
 	if (i2s_flag)
 		return IRQ_HANDLED;
 
 	return IRQ_NONE;
 }
 
-static void config_pte_for_stream(struct acp_dev_data *adata, struct acp_stream *stream)
+void config_pte_for_stream(struct acp_dev_data *adata, struct acp_stream *stream)
 {
-	u32 pte_reg, pte_size, reg_val;
+	struct acp_resource *rsrc = adata->rsrc;
+	u32 reg_val;
 
-	/* Use ATU base Group5 */
-	pte_reg = ACPAXI2AXI_ATU_BASE_ADDR_GRP_5;
-	pte_size =  ACPAXI2AXI_ATU_PAGE_SIZE_GRP_5;
+	reg_val = rsrc->sram_pte_offset;
 	stream->reg_offset = 0x02000000;
 
-	/* Group Enable */
-	reg_val = ACP_SRAM_PTE_OFFSET;
-	writel(reg_val | BIT(31), adata->acp_base + pte_reg);
-	writel(PAGE_SIZE_4K_ENABLE,  adata->acp_base + pte_size);
-}
+	writel((reg_val + GRP1_OFFSET) | BIT(31), adata->acp_base + ACPAXI2AXI_ATU_BASE_ADDR_GRP_1);
+	writel(PAGE_SIZE_4K_ENABLE,  adata->acp_base + ACPAXI2AXI_ATU_PAGE_SIZE_GRP_1);
 
-static void config_acp_dma(struct acp_dev_data *adata, int cpu_id, int size)
+	writel((reg_val + GRP2_OFFSET) | BIT(31), adata->acp_base + ACPAXI2AXI_ATU_BASE_ADDR_GRP_2);
+	writel(PAGE_SIZE_4K_ENABLE,  adata->acp_base + ACPAXI2AXI_ATU_PAGE_SIZE_GRP_2);
+
+	writel(reg_val | BIT(31), adata->acp_base + ACPAXI2AXI_ATU_BASE_ADDR_GRP_5);
+	writel(PAGE_SIZE_4K_ENABLE,  adata->acp_base + ACPAXI2AXI_ATU_PAGE_SIZE_GRP_5);
+
+	writel(0x01, adata->acp_base + ACPAXI2AXI_ATU_CTRL);
+}
+EXPORT_SYMBOL_NS_GPL(config_pte_for_stream, "SND_SOC_ACP_COMMON");
+
+void config_acp_dma(struct acp_dev_data *adata, struct acp_stream *stream, int size)
 {
-	struct acp_stream *stream = adata->stream[cpu_id];
 	struct snd_pcm_substream *substream = stream->substream;
+	struct acp_resource *rsrc = adata->rsrc;
 	dma_addr_t addr = substream->dma_buffer.addr;
 	int num_pages = (PAGE_ALIGN(size) >> PAGE_SHIFT);
 	u32 low, high, val;
 	u16 page_idx;
 
-	val = stream->pte_offset;
+	switch (adata->acp_rev) {
+	case ACP70_PCI_ID:
+	case ACP71_PCI_ID:
+		switch (stream->dai_id) {
+		case I2S_SP_INSTANCE:
+			if (stream->dir == SNDRV_PCM_STREAM_PLAYBACK)
+				val = 0x0;
+			else
+				val = 0x1000;
+			break;
+		case I2S_BT_INSTANCE:
+			if (stream->dir == SNDRV_PCM_STREAM_PLAYBACK)
+				val = 0x2000;
+			else
+				val = 0x3000;
+			break;
+		case I2S_HS_INSTANCE:
+			if (stream->dir == SNDRV_PCM_STREAM_PLAYBACK)
+				val = 0x4000;
+			else
+				val = 0x5000;
+			break;
+		case DMIC_INSTANCE:
+			val = 0x6000;
+			break;
+		default:
+			dev_err(adata->dev, "Invalid dai id %x\n", stream->dai_id);
+			return;
+		}
+		break;
+	default:
+		val = stream->pte_offset;
+		break;
+	}
 
 	for (page_idx = 0; page_idx < num_pages; page_idx++) {
 		/* Load the low address of page int ACP SRAM through SRBM */
 		low = lower_32_bits(addr);
 		high = upper_32_bits(addr);
-		writel(low, adata->acp_base + ACP_SCRATCH_REG_0 + val);
+		writel(low, adata->acp_base + rsrc->scratch_reg_offset + val);
 		high |= BIT(31);
-		writel(high, adata->acp_base + ACP_SCRATCH_REG_0 + val + 4);
+		writel(high, adata->acp_base + rsrc->scratch_reg_offset + val + 4);
 
 		/* Move to next physically contiguous page */
 		val += 8;
 		addr += PAGE_SIZE;
 	}
 }
+EXPORT_SYMBOL_NS_GPL(config_acp_dma, "SND_SOC_ACP_COMMON");
 
 static int acp_dma_open(struct snd_soc_component *component, struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(soc_runtime, 0);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct device *dev = component->dev;
 	struct acp_dev_data *adata = dev_get_drvdata(dev);
+	struct acp_chip_info *chip;
 	struct acp_stream *stream;
-	int stream_id = cpu_dai->driver->id * 2 + substream->stream;
 	int ret;
 
 	stream = kzalloc(sizeof(*stream), GFP_KERNEL);
@@ -172,12 +266,37 @@ static int acp_dma_open(struct snd_soc_component *component, struct snd_pcm_subs
 		return -ENOMEM;
 
 	stream->substream = substream;
-	adata->stream[stream_id] = stream;
+	chip = dev_get_platdata(dev);
+	switch (chip->acp_rev) {
+	case ACP63_PCI_ID:
+	case ACP70_PCI_ID:
+	case ACP71_PCI_ID:
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+			runtime->hw = acp6x_pcm_hardware_playback;
+		else
+			runtime->hw = acp6x_pcm_hardware_capture;
+		break;
+	default:
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+			runtime->hw = acp_pcm_hardware_playback;
+		else
+			runtime->hw = acp_pcm_hardware_capture;
+		break;
+	}
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		runtime->hw = acp_pcm_hardware_playback;
-	else
-		runtime->hw = acp_pcm_hardware_capture;
+	ret = snd_pcm_hw_constraint_step(runtime, 0, SNDRV_PCM_HW_PARAM_PERIOD_BYTES, DMA_SIZE);
+	if (ret) {
+		dev_err(component->dev, "set hw constraint HW_PARAM_PERIOD_BYTES failed\n");
+		kfree(stream);
+		return ret;
+	}
+
+	ret = snd_pcm_hw_constraint_step(runtime, 0, SNDRV_PCM_HW_PARAM_BUFFER_BYTES, DMA_SIZE);
+	if (ret) {
+		dev_err(component->dev, "set hw constraint HW_PARAM_BUFFER_BYTES failed\n");
+		kfree(stream);
+		return ret;
+	}
 
 	ret = snd_pcm_hw_constraint_integer(runtime, SNDRV_PCM_HW_PARAM_PERIODS);
 	if (ret < 0) {
@@ -187,7 +306,11 @@ static int acp_dma_open(struct snd_soc_component *component, struct snd_pcm_subs
 	}
 	runtime->private_data = stream;
 
-	writel(1, adata->acp_base + ACP_EXTERNAL_INTR_ENB);
+	writel(1, ACP_EXTERNAL_INTR_ENB(adata));
+
+	spin_lock_irq(&adata->acp_lock);
+	list_add_tail(&stream->list, &adata->stream_list);
+	spin_unlock_irq(&adata->acp_lock);
 
 	return ret;
 }
@@ -196,16 +319,13 @@ static int acp_dma_hw_params(struct snd_soc_component *component,
 			     struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct acp_dev_data *adata = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(soc_runtime, 0);
 	struct acp_stream *stream = substream->runtime->private_data;
-	int stream_id = cpu_dai->driver->id * 2 + substream->stream;
 	u64 size = params_buffer_bytes(params);
 
 	/* Configure ACP DMA block with params */
 	config_pte_for_stream(adata, stream);
-	config_acp_dma(adata, stream_id, size);
+	config_acp_dma(adata, stream, size);
 
 	return 0;
 }
@@ -242,38 +362,30 @@ static int acp_dma_new(struct snd_soc_component *component,
 	return 0;
 }
 
-static int acp_dma_mmap(struct snd_soc_component *component,
-			struct snd_pcm_substream *substream,
-			struct vm_area_struct *vma)
-{
-	return snd_pcm_lib_default_mmap(substream, vma);
-}
-
 static int acp_dma_close(struct snd_soc_component *component,
 			 struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(soc_runtime, 0);
 	struct device *dev = component->dev;
 	struct acp_dev_data *adata = dev_get_drvdata(dev);
-	struct acp_stream *stream;
-	int stream_id = cpu_dai->driver->id * 2 + substream->stream;
+	struct acp_stream *stream = substream->runtime->private_data;
 
-	stream = adata->stream[stream_id];
+	/* Remove entry from list */
+	spin_lock_irq(&adata->acp_lock);
+	list_del(&stream->list);
+	spin_unlock_irq(&adata->acp_lock);
 	kfree(stream);
-	adata->stream[stream_id] = NULL;
 
 	return 0;
 }
 
 static const struct snd_soc_component_driver acp_pcm_component = {
-	.name		= DRV_NAME,
-	.open		= acp_dma_open,
-	.close		= acp_dma_close,
-	.hw_params	= acp_dma_hw_params,
-	.pointer	= acp_dma_pointer,
-	.mmap		= acp_dma_mmap,
-	.pcm_construct	= acp_dma_new,
+	.name			= DRV_NAME,
+	.open			= acp_dma_open,
+	.close			= acp_dma_close,
+	.hw_params		= acp_dma_hw_params,
+	.pointer		= acp_dma_pointer,
+	.pcm_construct		= acp_dma_new,
+	.legacy_dai_naming	= 1,
 };
 
 int acp_platform_register(struct device *dev)
@@ -296,9 +408,13 @@ int acp_platform_register(struct device *dev)
 		dev_err(dev, "Fail to register acp i2s component\n");
 		return status;
 	}
+
+	INIT_LIST_HEAD(&adata->stream_list);
+	spin_lock_init(&adata->acp_lock);
+
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(acp_platform_register, SND_SOC_ACP_COMMON);
+EXPORT_SYMBOL_NS_GPL(acp_platform_register, "SND_SOC_ACP_COMMON");
 
 int acp_platform_unregister(struct device *dev)
 {
@@ -308,7 +424,7 @@ int acp_platform_unregister(struct device *dev)
 		platform_device_unregister(adata->mach_dev);
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(acp_platform_unregister, SND_SOC_ACP_COMMON);
+EXPORT_SYMBOL_NS_GPL(acp_platform_unregister, "SND_SOC_ACP_COMMON");
 
 MODULE_DESCRIPTION("AMD ACP PCM Driver");
 MODULE_LICENSE("Dual BSD/GPL");

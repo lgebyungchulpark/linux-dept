@@ -2,18 +2,28 @@
 #ifndef _ASM_S390_FTRACE_H
 #define _ASM_S390_FTRACE_H
 
-#define HAVE_FUNCTION_GRAPH_RET_ADDR_PTR
 #define ARCH_SUPPORTS_FTRACE_OPS 1
 #define MCOUNT_INSN_SIZE	6
 
 #ifndef __ASSEMBLY__
+#include <asm/stacktrace.h>
 
-#ifdef CONFIG_CC_IS_CLANG
-/* https://bugs.llvm.org/show_bug.cgi?id=41424 */
-#define ftrace_return_address(n) 0UL
-#else
-#define ftrace_return_address(n) __builtin_return_address(n)
-#endif
+static __always_inline unsigned long return_address(unsigned int n)
+{
+	struct stack_frame *sf;
+
+	if (!n)
+		return (unsigned long)__builtin_return_address(0);
+
+	sf = (struct stack_frame *)current_frame_address();
+	do {
+		sf = (struct stack_frame *)sf->back_chain;
+		if (!sf)
+			return 0;
+	} while (--n);
+	return sf->gprs[8];
+}
+#define ftrace_return_address(n) return_address(n)
 
 void ftrace_caller(void);
 
@@ -41,23 +51,42 @@ static inline unsigned long ftrace_call_adjust(unsigned long addr)
 	return addr;
 }
 
-struct ftrace_regs {
-	struct pt_regs regs;
-};
+#include <linux/ftrace_regs.h>
 
 static __always_inline struct pt_regs *arch_ftrace_get_regs(struct ftrace_regs *fregs)
 {
-	return &fregs->regs;
+	struct pt_regs *regs = &arch_ftrace_regs(fregs)->regs;
+
+	if (test_pt_regs_flag(regs, PIF_FTRACE_FULL_REGS))
+		return regs;
+	return NULL;
 }
 
-static __always_inline void ftrace_instruction_pointer_set(struct ftrace_regs *fregs,
-							   unsigned long ip)
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+struct fgraph_ret_regs {
+	unsigned long gpr2;
+	unsigned long fp;
+};
+
+static __always_inline unsigned long fgraph_ret_regs_return_value(struct fgraph_ret_regs *ret_regs)
 {
-	struct pt_regs *regs = arch_ftrace_get_regs(fregs);
-
-	regs->psw.addr = ip;
+	return ret_regs->gpr2;
 }
 
+static __always_inline unsigned long fgraph_ret_regs_frame_pointer(struct fgraph_ret_regs *ret_regs)
+{
+	return ret_regs->fp;
+}
+#endif /* CONFIG_FUNCTION_GRAPH_TRACER */
+
+static __always_inline void
+ftrace_regs_set_instruction_pointer(struct ftrace_regs *fregs,
+				    unsigned long ip)
+{
+	arch_ftrace_regs(fregs)->regs.psw.addr = ip;
+}
+
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
 /*
  * When an ftrace registered caller is tracing a function that is
  * also set by a register_ftrace_direct() call, it needs to be
@@ -65,10 +94,12 @@ static __always_inline void ftrace_instruction_pointer_set(struct ftrace_regs *f
  * place the direct caller in the ORIG_GPR2 part of pt_regs. This
  * tells the ftrace_caller that there's a direct caller.
  */
-static inline void arch_ftrace_set_direct_caller(struct pt_regs *regs, unsigned long addr)
+static inline void arch_ftrace_set_direct_caller(struct ftrace_regs *fregs, unsigned long addr)
 {
+	struct pt_regs *regs = &arch_ftrace_regs(fregs)->regs;
 	regs->orig_gpr2 = addr;
 }
+#endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
 
 /*
  * Even though the system call numbers are identical for s390/s390x a

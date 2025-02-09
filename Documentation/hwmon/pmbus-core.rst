@@ -121,6 +121,15 @@ Specifically, it provides the following information.
   non-standard PMBus commands to standard commands, or to augment standard
   command return values with device specific information.
 
+PEC Support
+===========
+
+Many PMBus devices support SMBus PEC (Packet Error Checking). If supported
+by both the I2C adapter and by the PMBus chip, it is by default enabled.
+If PEC is supported, the PMBus core driver adds an attribute named 'pec' to
+the I2C device. This attribute can be used to control PEC support in the
+communication with the PMBus chip.
+
 API functions
 =============
 
@@ -165,7 +174,7 @@ Read byte from page <page>, register <reg>.
   int (*read_word_data)(struct i2c_client *client, int page, int phase,
                         int reg);
 
-Read word from page <page>, phase <pase>, register <reg>. If the chip does not
+Read word from page <page>, phase <phase>, register <reg>. If the chip does not
 support multiple phases, the phase parameter can be ignored. If the chip
 supports multiple phases, a phase value of 0xff indicates all phases.
 
@@ -299,6 +308,10 @@ currently provides a flags field with four bits used::
 
 	#define PMBUS_READ_STATUS_AFTER_FAILED_CHECK	BIT(3)
 
+	#define PMBUS_NO_WRITE_PROTECT			BIT(4)
+
+	#define PMBUS_USE_COEFFICIENTS_CMD		BIT(5)
+
 	struct pmbus_platform_data {
 		u32 flags;              /* Device specific flags */
 
@@ -336,7 +349,7 @@ PMBUS_NO_CAPABILITY
 
 Some PMBus chips don't respond with valid data when reading the CAPABILITY
 register. For such chips, this flag should be set so that the PMBus core
-driver doesn't use CAPABILITY to determine it's behavior.
+driver doesn't use CAPABILITY to determine its behavior.
 
 PMBUS_READ_STATUS_AFTER_FAILED_CHECK
 
@@ -349,3 +362,14 @@ This can be done by reading a known register. By setting this flag the
 driver will try to read the STATUS register after each failed
 register check. This read may fail, but it will put the chip into a
 known state.
+
+PMBUS_NO_WRITE_PROTECT
+
+Some PMBus chips respond with invalid data when reading the WRITE_PROTECT
+register. For such chips, this flag should be set so that the PMBus core
+driver doesn't use the WRITE_PROTECT command to determine its behavior.
+
+PMBUS_USE_COEFFICIENTS_CMD
+
+When this flag is set the PMBus core driver will use the COEFFICIENTS
+register to initialize the coefficients for the direct mode format.

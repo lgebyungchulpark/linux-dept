@@ -23,10 +23,9 @@ unsigned long *crst_table_alloc(struct mm_struct *);
 void crst_table_free(struct mm_struct *, unsigned long *);
 
 unsigned long *page_table_alloc(struct mm_struct *);
-struct page *page_table_alloc_pgste(struct mm_struct *mm);
+struct ptdesc *page_table_alloc_pgste(struct mm_struct *mm);
 void page_table_free(struct mm_struct *, unsigned long *);
-void page_table_free_rcu(struct mmu_gather *, unsigned long *, unsigned long);
-void page_table_free_pgste(struct page *page);
+void page_table_free_pgste(struct ptdesc *ptdesc);
 extern int page_table_allocate_pgste;
 
 static inline void crst_table_init(unsigned long *crst, unsigned long entry)
@@ -86,7 +85,7 @@ static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long vmaddr)
 	if (!table)
 		return NULL;
 	crst_table_init(table, _SEGMENT_ENTRY_EMPTY);
-	if (!pgtable_pmd_page_ctor(virt_to_page(table))) {
+	if (!pagetable_pmd_ctor(virt_to_ptdesc(table))) {
 		crst_table_free(mm, table);
 		return NULL;
 	}
@@ -97,23 +96,23 @@ static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
 {
 	if (mm_pmd_folded(mm))
 		return;
-	pgtable_pmd_page_dtor(virt_to_page(pmd));
+	pagetable_pmd_dtor(virt_to_ptdesc(pmd));
 	crst_table_free(mm, (unsigned long *) pmd);
 }
 
 static inline void pgd_populate(struct mm_struct *mm, pgd_t *pgd, p4d_t *p4d)
 {
-	pgd_val(*pgd) = _REGION1_ENTRY | __pa(p4d);
+	set_pgd(pgd, __pgd(_REGION1_ENTRY | __pa(p4d)));
 }
 
 static inline void p4d_populate(struct mm_struct *mm, p4d_t *p4d, pud_t *pud)
 {
-	p4d_val(*p4d) = _REGION2_ENTRY | __pa(pud);
+	set_p4d(p4d, __p4d(_REGION2_ENTRY | __pa(pud)));
 }
 
 static inline void pud_populate(struct mm_struct *mm, pud_t *pud, pmd_t *pmd)
 {
-	pud_val(*pud) = _REGION3_ENTRY | __pa(pmd);
+	set_pud(pud, __pud(_REGION3_ENTRY | __pa(pmd)));
 }
 
 static inline pgd_t *pgd_alloc(struct mm_struct *mm)
@@ -129,7 +128,7 @@ static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
 static inline void pmd_populate(struct mm_struct *mm,
 				pmd_t *pmd, pgtable_t pte)
 {
-	pmd_val(*pmd) = _SEGMENT_ENTRY + __pa(pte);
+	set_pmd(pmd, __pmd(_SEGMENT_ENTRY | __pa(pte)));
 }
 
 #define pmd_populate_kernel(mm, pmd, pte) pmd_populate(mm, pmd, pte)
@@ -142,6 +141,10 @@ static inline void pmd_populate(struct mm_struct *mm,
 
 #define pte_free_kernel(mm, pte) page_table_free(mm, (unsigned long *) pte)
 #define pte_free(mm, pte) page_table_free(mm, (unsigned long *) pte)
+
+/* arch use pte_free_defer() implementation in arch/s390/mm/pgalloc.c */
+#define pte_free_defer pte_free_defer
+void pte_free_defer(struct mm_struct *mm, pgtable_t pgtable);
 
 void vmem_map_init(void);
 void *vmem_crst_alloc(unsigned long val);

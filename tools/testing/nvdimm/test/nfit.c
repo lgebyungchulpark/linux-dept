@@ -23,8 +23,6 @@
 #include "nfit_test.h"
 #include "../watermark.h"
 
-#include <asm/mce.h>
-
 /*
  * Generate an NFIT table to describe the following topology:
  *
@@ -1714,7 +1712,9 @@ static void put_dimms(void *data)
 			device_unregister(t->dimm_dev[i]);
 }
 
-static struct class *nfit_test_dimm;
+static const struct class nfit_test_dimm = {
+	.name = "nfit_test_dimm",
+};
 
 static int dimm_name_to_id(struct device *dev)
 {
@@ -1832,7 +1832,7 @@ static int nfit_test_dimm_init(struct nfit_test *t)
 	if (devm_add_action_or_reset(&t->pdev.dev, put_dimms, t))
 		return -ENOMEM;
 	for (i = 0; i < t->num_dcr; i++) {
-		t->dimm_dev[i] = device_create_with_groups(nfit_test_dimm,
+		t->dimm_dev[i] = device_create_with_groups(&nfit_test_dimm,
 				&t->pdev.dev, 0, NULL,
 				nfit_test_dimm_attribute_groups,
 				"test_dimm%d", i + t->dcr_idx);
@@ -1842,7 +1842,7 @@ static int nfit_test_dimm_init(struct nfit_test *t)
 	return 0;
 }
 
-static void security_init(struct nfit_test *t)
+static void nfit_security_init(struct nfit_test *t)
 {
 	int i;
 
@@ -1880,14 +1880,14 @@ static size_t sizeof_spa(struct acpi_nfit_system_address *spa)
 static int nfit_test0_alloc(struct nfit_test *t)
 {
 	struct acpi_nfit_system_address *spa = NULL;
+	struct acpi_nfit_flush_address *flush;
 	size_t nfit_size = sizeof_spa(spa) * NUM_SPA
 			+ sizeof(struct acpi_nfit_memory_map) * NUM_MEM
 			+ sizeof(struct acpi_nfit_control_region) * NUM_DCR
 			+ offsetof(struct acpi_nfit_control_region,
 					window_size) * NUM_DCR
 			+ sizeof(struct acpi_nfit_data_region) * NUM_BDW
-			+ (sizeof(struct acpi_nfit_flush_address)
-					+ sizeof(u64) * NUM_HINTS) * NUM_DCR
+			+ struct_size(flush, hint_address, NUM_HINTS) * NUM_DCR
 			+ sizeof(struct acpi_nfit_capabilities);
 	int i;
 
@@ -1938,7 +1938,7 @@ static int nfit_test0_alloc(struct nfit_test *t)
 	if (nfit_test_dimm_init(t))
 		return -ENOMEM;
 	smart_init(t);
-	security_init(t);
+	nfit_security_init(t);
 	return ars_state_init(&t->pdev.dev, &t->ars_state);
 }
 
@@ -2842,28 +2842,6 @@ static void nfit_test1_setup(struct nfit_test *t)
 	set_bit(ND_CMD_SET_CONFIG_DATA, &acpi_desc->dimm_cmd_force_en);
 }
 
-static int nfit_test_blk_do_io(struct nd_blk_region *ndbr, resource_size_t dpa,
-		void *iobuf, u64 len, int rw)
-{
-	struct nfit_blk *nfit_blk = ndbr->blk_provider_data;
-	struct nfit_blk_mmio *mmio = &nfit_blk->mmio[BDW];
-	struct nd_region *nd_region = &ndbr->nd_region;
-	unsigned int lane;
-
-	lane = nd_region_acquire_lane(nd_region);
-	if (rw)
-		memcpy(mmio->addr.base + dpa, iobuf, len);
-	else {
-		memcpy(iobuf, mmio->addr.base + dpa, len);
-
-		/* give us some some coverage of the arch_invalidate_pmem() API */
-		arch_invalidate_pmem(mmio->addr.base + dpa, len);
-	}
-	nd_region_release_lane(nd_region, lane);
-
-	return 0;
-}
-
 static unsigned long nfit_ctl_handle;
 
 union acpi_object *result;
@@ -3219,7 +3197,6 @@ static int nfit_test_probe(struct platform_device *pdev)
 	nfit_test->setup(nfit_test);
 	acpi_desc = &nfit_test->acpi_desc;
 	acpi_nfit_desc_init(acpi_desc, &pdev->dev);
-	acpi_desc->blk_do_io = nfit_test_blk_do_io;
 	nd_desc = &acpi_desc->nd_desc;
 	nd_desc->provider_name = NULL;
 	nd_desc->module = THIS_MODULE;
@@ -3265,11 +3242,6 @@ static int nfit_test_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int nfit_test_remove(struct platform_device *pdev)
-{
-	return 0;
-}
-
 static void nfit_test_release(struct device *dev)
 {
 	struct nfit_test *nfit_test = to_nfit_test(dev);
@@ -3284,7 +3256,6 @@ static const struct platform_device_id nfit_test_id[] = {
 
 static struct platform_driver nfit_test_driver = {
 	.probe = nfit_test_probe,
-	.remove = nfit_test_remove,
 	.driver = {
 		.name = KBUILD_MODNAME,
 	},
@@ -3307,11 +3278,9 @@ static __init int nfit_test_init(void)
 	if (!nfit_wq)
 		return -ENOMEM;
 
-	nfit_test_dimm = class_create(THIS_MODULE, "nfit_test_dimm");
-	if (IS_ERR(nfit_test_dimm)) {
-		rc = PTR_ERR(nfit_test_dimm);
+	rc = class_register(&nfit_test_dimm);
+	if (rc)
 		goto err_register;
-	}
 
 	nfit_pool = gen_pool_create(ilog2(SZ_4M), NUMA_NO_NODE);
 	if (!nfit_pool) {
@@ -3398,7 +3367,6 @@ static __exit void nfit_test_exit(void)
 {
 	int i;
 
-	flush_workqueue(nfit_wq);
 	destroy_workqueue(nfit_wq);
 	for (i = 0; i < NUM_NFITS; i++)
 		platform_device_unregister(&instances[i]->pdev);
@@ -3409,10 +3377,11 @@ static __exit void nfit_test_exit(void)
 
 	for (i = 0; i < NUM_NFITS; i++)
 		put_device(&instances[i]->pdev.dev);
-	class_destroy(nfit_test_dimm);
+	class_unregister(&nfit_test_dimm);
 }
 
 module_init(nfit_test_init);
 module_exit(nfit_test_exit);
+MODULE_DESCRIPTION("Test ACPI NFIT devices");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Intel Corporation");

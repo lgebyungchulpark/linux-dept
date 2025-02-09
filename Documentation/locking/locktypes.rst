@@ -211,9 +211,6 @@ raw_spinlock_t and spinlock_t
 raw_spinlock_t
 --------------
 
-raw_spinlock_t is a strict spinning lock implementation regardless of the
-kernel configuration including PREEMPT_RT enabled kernels.
-
 raw_spinlock_t is a strict spinning lock implementation in all kernels,
 including PREEMPT_RT kernels.  Use raw_spinlock_t only in real critical
 core code, low-level interrupt handling and places where disabling
@@ -247,7 +244,7 @@ based on rt_mutex which changes the semantics:
    Non-PREEMPT_RT kernels disable preemption to get this effect.
 
    PREEMPT_RT kernels use a per-CPU lock for serialization which keeps
-   preemption disabled. The lock disables softirq handlers and also
+   preemption enabled. The lock disables softirq handlers and also
    prevents reentrancy due to task preemption.
 
 PREEMPT_RT kernels preserve all other spinlock_t semantics:
@@ -503,7 +500,7 @@ caveats also apply to bit spinlocks.
 Some bit spinlocks are replaced with regular spinlock_t for PREEMPT_RT
 using conditional (#ifdef'ed) code changes at the usage site.  In contrast,
 usage-site changes are not needed for the spinlock_t substitution.
-Instead, conditionals in header files and the core locking implemementation
+Instead, conditionals in header files and the core locking implementation
 enable the compiler to do the substitution transparently.
 
 

@@ -92,6 +92,8 @@
 	phy-handle = <&phy0>;
 	phy-mode = "sgmii";
 	managed = "in-band-status";
+	nvmem-cells = <&base_mac_address 0>;
+	nvmem-cell-names = "mac-address";
 	status = "okay";
 };
 
@@ -154,7 +156,26 @@
 				label = "bootloader environment";
 			};
 		};
+
+		otp-1 {
+			compatible = "user-otp";
+
+			nvmem-layout {
+				compatible = "kontron,sl28-vpd";
+
+				serial_number: serial-number {
+				};
+
+				base_mac_address: base-mac-address {
+					#nvmem-cell-cells = <1>;
+				};
+			};
+		};
 	};
+};
+
+&ftm_alarm0 {
+	status = "okay";
 };
 
 &gpio1 {
@@ -307,10 +328,19 @@
 	status = "okay";
 };
 
+&mscc_felix_port4 {
+	dsa-tag-protocol = "ocelot-8021q";
+};
+
+&mscc_felix_port5 {
+	dsa-tag-protocol = "ocelot-8021q";
+};
+
 &usb0 {
 	status = "okay";
 };
 
 &usb1 {
+	dr_mode = "host";
 	status = "okay";
 };

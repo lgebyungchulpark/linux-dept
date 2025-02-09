@@ -39,7 +39,6 @@
 #include <linux/stringify.h>
 #include <asm/spu.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/cell-regs.h>
 
 #include "spu_priv1_mmio.h"
@@ -255,7 +254,7 @@ static struct attribute *spu_attributes[] = {
 	NULL,
 };
 
-static struct attribute_group spu_attribute_group = {
+static const struct attribute_group spu_attribute_group = {
 	.name	= "thermal",
 	.attrs	= spu_attributes,
 };
@@ -382,6 +381,7 @@ static void __exit thermal_exit(void)
 }
 module_exit(thermal_exit);
 
+MODULE_DESCRIPTION("Cell processor thermal driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Christian Krafft <krafft@de.ibm.com>");
 

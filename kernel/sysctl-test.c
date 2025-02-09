@@ -9,9 +9,6 @@
 #define KUNIT_PROC_READ 0
 #define KUNIT_PROC_WRITE 1
 
-static int i_zero;
-static int i_one_hundred = 100;
-
 /*
  * Test that proc_dointvec will not try to use a NULL .data field even when the
  * length is non-zero.
@@ -29,8 +26,8 @@ static void sysctl_test_api_dointvec_null_tbl_data(struct kunit *test)
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	/*
 	 * proc_dointvec expects a buffer in user space, so we allocate one. We
@@ -79,8 +76,8 @@ static void sysctl_test_api_dointvec_table_maxlen_unset(struct kunit *test)
 		.maxlen		= 0,
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	void __user *buffer = (void __user *)kunit_kzalloc(test, sizeof(int),
 							   GFP_USER);
@@ -122,8 +119,8 @@ static void sysctl_test_api_dointvec_table_len_is_zero(struct kunit *test)
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	void __user *buffer = (void __user *)kunit_kzalloc(test, sizeof(int),
 							   GFP_USER);
@@ -156,8 +153,8 @@ static void sysctl_test_api_dointvec_table_read_but_position_set(
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	void __user *buffer = (void __user *)kunit_kzalloc(test, sizeof(int),
 							   GFP_USER);
@@ -191,8 +188,8 @@ static void sysctl_test_dointvec_read_happy_single_positive(struct kunit *test)
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	size_t len = 4;
 	loff_t pos = 0;
@@ -222,8 +219,8 @@ static void sysctl_test_dointvec_read_happy_single_negative(struct kunit *test)
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	size_t len = 5;
 	loff_t pos = 0;
@@ -251,8 +248,8 @@ static void sysctl_test_dointvec_write_happy_single_positive(struct kunit *test)
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	char input[] = "9";
 	size_t len = sizeof(input) - 1;
@@ -281,8 +278,8 @@ static void sysctl_test_dointvec_write_happy_single_negative(struct kunit *test)
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	char input[] = "-9";
 	size_t len = sizeof(input) - 1;
@@ -313,8 +310,8 @@ static void sysctl_test_api_dointvec_write_single_less_int_min(
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	size_t max_len = 32, len = max_len;
 	loff_t pos = 0;
@@ -351,8 +348,8 @@ static void sysctl_test_api_dointvec_write_single_greater_int_max(
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
-		.extra1		= &i_zero,
-		.extra2         = &i_one_hundred,
+		.extra1		= SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE_HUNDRED,
 	};
 	size_t max_len = 32, len = max_len;
 	loff_t pos = 0;
@@ -370,6 +367,54 @@ static void sysctl_test_api_dointvec_write_single_greater_int_max(
 	KUNIT_EXPECT_EQ(test, 0, *((int *)table.data));
 }
 
+/*
+ * Test that registering an invalid extra value is not allowed.
+ */
+static void sysctl_test_register_sysctl_sz_invalid_extra_value(
+		struct kunit *test)
+{
+	unsigned char data = 0;
+	struct ctl_table table_foo[] = {
+		{
+			.procname	= "foo",
+			.data		= &data,
+			.maxlen		= sizeof(u8),
+			.mode		= 0644,
+			.proc_handler	= proc_dou8vec_minmax,
+			.extra1		= SYSCTL_FOUR,
+			.extra2		= SYSCTL_ONE_THOUSAND,
+		},
+	};
+
+	struct ctl_table table_bar[] = {
+		{
+			.procname	= "bar",
+			.data		= &data,
+			.maxlen		= sizeof(u8),
+			.mode		= 0644,
+			.proc_handler	= proc_dou8vec_minmax,
+			.extra1		= SYSCTL_NEG_ONE,
+			.extra2		= SYSCTL_ONE_HUNDRED,
+		},
+	};
+
+	struct ctl_table table_qux[] = {
+		{
+			.procname	= "qux",
+			.data		= &data,
+			.maxlen		= sizeof(u8),
+			.mode		= 0644,
+			.proc_handler	= proc_dou8vec_minmax,
+			.extra1		= SYSCTL_ZERO,
+			.extra2		= SYSCTL_TWO_HUNDRED,
+		},
+	};
+
+	KUNIT_EXPECT_NULL(test, register_sysctl("foo", table_foo));
+	KUNIT_EXPECT_NULL(test, register_sysctl("foo", table_bar));
+	KUNIT_EXPECT_NOT_NULL(test, register_sysctl("foo", table_qux));
+}
+
 static struct kunit_case sysctl_test_cases[] = {
 	KUNIT_CASE(sysctl_test_api_dointvec_null_tbl_data),
 	KUNIT_CASE(sysctl_test_api_dointvec_table_maxlen_unset),
@@ -381,6 +426,7 @@ static struct kunit_case sysctl_test_cases[] = {
 	KUNIT_CASE(sysctl_test_dointvec_write_happy_single_negative),
 	KUNIT_CASE(sysctl_test_api_dointvec_write_single_less_int_min),
 	KUNIT_CASE(sysctl_test_api_dointvec_write_single_greater_int_max),
+	KUNIT_CASE(sysctl_test_register_sysctl_sz_invalid_extra_value),
 	{}
 };
 
@@ -391,4 +437,5 @@ static struct kunit_suite sysctl_test_suite = {
 
 kunit_test_suites(&sysctl_test_suite);
 
+MODULE_DESCRIPTION("KUnit test of proc sysctl");
 MODULE_LICENSE("GPL v2");

@@ -137,7 +137,8 @@ static struct sctp_association *sctp_association_init(
 		= 5 * asoc->rto_max;
 
 	asoc->timeouts[SCTP_EVENT_TIMEOUT_SACK] = asoc->sackdelay;
-	asoc->timeouts[SCTP_EVENT_TIMEOUT_AUTOCLOSE] = sp->autoclose * HZ;
+	asoc->timeouts[SCTP_EVENT_TIMEOUT_AUTOCLOSE] =
+		(unsigned long)sp->autoclose * HZ;
 
 	/* Initializes the timers */
 	for (i = SCTP_EVENT_TIMEOUT_NONE; i < SCTP_NUM_TIMEOUT_TYPES; ++i)
@@ -226,12 +227,10 @@ static struct sctp_association *sctp_association_init(
 	/* Create an output queue.  */
 	sctp_outq_init(asoc, &asoc->outqueue);
 
-	if (!sctp_ulpq_init(&asoc->ulpq, asoc))
-		goto fail_init;
+	sctp_ulpq_init(&asoc->ulpq, asoc);
 
-	if (sctp_stream_init(&asoc->stream, asoc->c.sinit_num_ostreams,
-			     0, gfp))
-		goto fail_init;
+	if (sctp_stream_init(&asoc->stream, asoc->c.sinit_num_ostreams, 0, gfp))
+		goto stream_free;
 
 	/* Initialize default path MTU. */
 	asoc->pathmtu = sp->pathmtu;
@@ -278,7 +277,6 @@ static struct sctp_association *sctp_association_init(
 
 stream_free:
 	sctp_stream_free(&asoc->stream);
-fail_init:
 	sock_put(asoc->base.sk);
 	sctp_endpoint_put(asoc->ep);
 	return NULL;
@@ -1162,8 +1160,7 @@ int sctp_assoc_update(struct sctp_association *asoc,
 		/* Add any peer addresses from the new association. */
 		list_for_each_entry(trans, &new->peer.transport_addr_list,
 				    transports)
-			if (!sctp_assoc_lookup_paddr(asoc, &trans->ipaddr) &&
-			    !sctp_assoc_add_peer(asoc, &trans->ipaddr,
+			if (!sctp_assoc_add_peer(asoc, &trans->ipaddr,
 						 GFP_ATOMIC, trans->state))
 				return -ENOMEM;
 
@@ -1600,9 +1597,10 @@ int sctp_assoc_set_bind_addr_from_cookie(struct sctp_association *asoc,
 					 struct sctp_cookie *cookie,
 					 gfp_t gfp)
 {
-	int var_size2 = ntohs(cookie->peer_init->chunk_hdr.length);
+	struct sctp_init_chunk *peer_init = (struct sctp_init_chunk *)(cookie + 1);
+	int var_size2 = ntohs(peer_init->chunk_hdr.length);
 	int var_size3 = cookie->raw_addr_list_len;
-	__u8 *raw = (__u8 *)cookie->peer_init + var_size2;
+	__u8 *raw = (__u8 *)peer_init + var_size2;
 
 	return sctp_raw_to_bind_addrs(&asoc->base.bind_addr, raw, var_size3,
 				      asoc->ep->base.bind_addr.port, gfp);

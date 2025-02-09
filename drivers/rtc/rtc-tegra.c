@@ -342,13 +342,11 @@ disable_clk:
 	return ret;
 }
 
-static int tegra_rtc_remove(struct platform_device *pdev)
+static void tegra_rtc_remove(struct platform_device *pdev)
 {
 	struct tegra_rtc_info *info = platform_get_drvdata(pdev);
 
 	clk_disable_unprepare(info->clk);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

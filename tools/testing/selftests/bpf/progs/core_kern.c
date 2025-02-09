@@ -77,7 +77,7 @@ int balancer_ingress(struct __sk_buff *ctx)
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data = (void *)(long)ctx->data;
 	void *ptr;
-	int ret = 0, nh_off, i = 0;
+	int nh_off, i = 0;
 
 	nh_off = 14;
 
@@ -98,6 +98,22 @@ int balancer_ingress(struct __sk_buff *ctx)
 	} while (0);
 #define C30 C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;C;
 	C30;C30;C30; /* 90 calls */
+	return 0;
+}
+
+typedef int (*func_proto_typedef___match)(long);
+typedef int (*func_proto_typedef___doesnt_match)(char *);
+typedef int (*func_proto_typedef_nested1)(func_proto_typedef___match);
+
+int proto_out[3];
+
+SEC("raw_tracepoint/sys_enter")
+int core_relo_proto(void *ctx)
+{
+	proto_out[0] = bpf_core_type_exists(func_proto_typedef___match);
+	proto_out[1] = bpf_core_type_exists(func_proto_typedef___doesnt_match);
+	proto_out[2] = bpf_core_type_exists(func_proto_typedef_nested1);
+
 	return 0;
 }
 

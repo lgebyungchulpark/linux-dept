@@ -12,6 +12,10 @@
 
 #include <linux/usb.h>
 
+#define DRV_NAME_RTSX_USB		"rtsx_usb"
+#define DRV_NAME_RTSX_USB_SDMMC		"rtsx_usb_sdmmc"
+#define DRV_NAME_RTSX_USB_MS		"rtsx_usb_ms"
+
 /* related module names */
 #define RTSX_USB_SD_CARD	0
 #define RTSX_USB_MS_CARD	1
@@ -54,8 +58,6 @@ struct rtsx_ucr {
 	struct usb_device	*pusb_dev;
 	struct usb_interface	*pusb_intf;
 	struct usb_sg_request	current_sg;
-	unsigned char		*iobuf;
-	dma_addr_t		iobuf_dma;
 
 	struct timer_list	sg_timer;
 	struct mutex		dev_mutex;

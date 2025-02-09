@@ -18,8 +18,6 @@
 #include <linux/i2c-algo-bit.h>
 #include <linux/i2c.h>
 
-#include <drm/drm_edid.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_framebuffer.h>
 
 struct hibmc_connector {
@@ -32,9 +30,6 @@ struct hibmc_connector {
 struct hibmc_drm_private {
 	/* hw */
 	void __iomem   *mmio;
-	void __iomem   *fb_map;
-	resource_size_t  fb_base;
-	resource_size_t  fb_size;
 
 	/* drm */
 	struct drm_device dev;
@@ -62,7 +57,6 @@ void hibmc_set_current_gate(struct hibmc_drm_private *priv,
 int hibmc_de_init(struct hibmc_drm_private *priv);
 int hibmc_vdac_init(struct hibmc_drm_private *priv);
 
-int hibmc_mm_init(struct hibmc_drm_private *hibmc);
 int hibmc_ddc_create(struct drm_device *drm_dev, struct hibmc_connector *connector);
 
 #endif

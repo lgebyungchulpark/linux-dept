@@ -32,10 +32,10 @@ struct imx_hdmi_data {
 static int imx_hdmi_hw_params(struct snd_pcm_substream *substream,
 			      struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct imx_hdmi_data *data = snd_soc_card_get_drvdata(rtd->card);
 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct device *dev = card->dev;
 	u32 slot_width = data->cpu_priv.slot_width;
@@ -70,7 +70,7 @@ static const struct snd_soc_dapm_widget imx_hdmi_widgets[] = {
 static int imx_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_card *card = rtd->card;
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	struct snd_soc_component *component = codec_dai->component;
 	struct imx_hdmi_data *data = snd_soc_card_get_drvdata(card);
 	int ret;
@@ -78,8 +78,9 @@ static int imx_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 	data->hdmi_jack_pin.pin = "HDMI Jack";
 	data->hdmi_jack_pin.mask = SND_JACK_LINEOUT;
 	/* enable jack detection */
-	ret = snd_soc_card_jack_new(card, "HDMI Jack", SND_JACK_LINEOUT,
-				    &data->hdmi_jack, &data->hdmi_jack_pin, 1);
+	ret = snd_soc_card_jack_new_pins(card, "HDMI Jack", SND_JACK_LINEOUT,
+					 &data->hdmi_jack,
+					 &data->hdmi_jack_pin, 1);
 	if (ret) {
 		dev_err(card->dev, "Can't new HDMI Jack %d\n", ret);
 		return ret;
@@ -126,6 +127,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data) {
 		ret = -ENOMEM;
+		put_device(&cpu_pdev->dev);
 		goto fail;
 	}
 
@@ -200,13 +202,12 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	snd_soc_card_set_drvdata(&data->card, data);
 	ret = devm_snd_soc_register_card(&pdev->dev, &data->card);
 	if (ret) {
-		dev_err(&pdev->dev, "snd_soc_register_card failed (%d)\n", ret);
+		dev_err_probe(&pdev->dev, ret, "snd_soc_register_card failed\n");
 		goto fail;
 	}
 
 fail:
-	if (cpu_np)
-		of_node_put(cpu_np);
+	of_node_put(cpu_np);
 
 	return ret;
 }

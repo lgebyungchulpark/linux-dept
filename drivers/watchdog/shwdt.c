@@ -279,13 +279,11 @@ static int sh_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int sh_wdt_remove(struct platform_device *pdev)
+static void sh_wdt_remove(struct platform_device *pdev)
 {
 	watchdog_unregister_device(&sh_wdt_dev);
 
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static void sh_wdt_shutdown(struct platform_device *pdev)

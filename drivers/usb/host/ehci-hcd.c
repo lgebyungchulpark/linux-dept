@@ -32,7 +32,7 @@
 #include <asm/byteorder.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #if defined(CONFIG_PPC_PS3)
 #include <asm/firmware.h>
@@ -547,7 +547,7 @@ static int ehci_init(struct usb_hcd *hcd)
 		 * make problems:  throughput reduction (!), data errors...
 		 */
 		if (park) {
-			park = min(park, (unsigned) 3);
+			park = min_t(unsigned int, park, 3);
 			temp |= CMD_PARK;
 			temp |= park << 8;
 		}
@@ -755,10 +755,14 @@ restart:
 
 	/* normal [4.15.1.2] or error [4.15.1.1] completion */
 	if (likely ((status & (STS_INT|STS_ERR)) != 0)) {
-		if (likely ((status & STS_ERR) == 0))
+		if (likely ((status & STS_ERR) == 0)) {
 			INCR(ehci->stats.normal);
-		else
+		} else {
+			/* Force to check port status */
+			if (ehci->has_ci_pec_bug)
+				status |= STS_PCD;
 			INCR(ehci->stats.error);
+		}
 		bh = 1;
 	}
 
@@ -1103,6 +1107,26 @@ static void ehci_remove_device(struct usb_hcd *hcd, struct usb_device *udev)
 
 #ifdef	CONFIG_PM
 
+/* Clear wakeup signal locked in zhaoxin platform when device plug in. */
+static void ehci_zx_wakeup_clear(struct ehci_hcd *ehci)
+{
+	u32 __iomem	*reg = &ehci->regs->port_status[4];
+	u32 		t1 = ehci_readl(ehci, reg);
+
+	t1 &= (u32)~0xf0000;
+	t1 |= PORT_TEST_FORCE;
+	ehci_writel(ehci, t1, reg);
+	t1 = ehci_readl(ehci, reg);
+	msleep(1);
+	t1 &= (u32)~0xf0000;
+	ehci_writel(ehci, t1, reg);
+	ehci_readl(ehci, reg);
+	msleep(1);
+	t1 = ehci_readl(ehci, reg);
+	ehci_writel(ehci, t1 | PORT_CSC, reg);
+	ehci_readl(ehci, reg);
+}
+
 /* suspend/resume, section 4.3 */
 
 /* These routines handle the generic parts of controller suspend/resume */
@@ -1153,6 +1177,9 @@ int ehci_resume(struct usb_hcd *hcd, bool force_reset)
 
 	if (ehci->shutdown)
 		return 0;		/* Controller is dead */
+
+	if (ehci->zx_wakeup_clear_needed)
+		ehci_zx_wakeup_clear(ehci);
 
 	/*
 	 * If CF is still set and reset isn't forced
@@ -1328,7 +1355,6 @@ static int __init ehci_hcd_init(void)
 	if (usb_disabled())
 		return -ENODEV;
 
-	printk(KERN_INFO "%s: " DRIVER_DESC "\n", hcd_name);
 	set_bit(USB_EHCI_LOADED, &usb_hcds_loaded);
 	if (test_bit(USB_UHCI_LOADED, &usb_hcds_loaded) ||
 			test_bit(USB_OHCI_LOADED, &usb_hcds_loaded))

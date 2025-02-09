@@ -6,6 +6,7 @@ mlx5_ib-y := ah.o \
 	     cong.o \
 	     counters.o \
 	     cq.o \
+	     data_direct.o \
 	     dm.o \
 	     doorbell.o \
 	     gsi.o \
@@ -19,6 +20,7 @@ mlx5_ib-y := ah.o \
 	     restrack.o \
 	     srq.o \
 	     srq_cmd.o \
+	     umr.o \
 	     wr.o
 
 mlx5_ib-$(CONFIG_INFINIBAND_ON_DEMAND_PAGING) += odp.o
@@ -27,3 +29,4 @@ mlx5_ib-$(CONFIG_INFINIBAND_USER_ACCESS) += devx.o \
 					    fs.o \
 					    qos.o \
 					    std_types.o
+mlx5_ib-$(CONFIG_MLX5_MACSEC) += macsec.o

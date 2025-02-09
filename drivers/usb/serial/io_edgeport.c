@@ -220,7 +220,7 @@ struct edgeport_serial {
 	__u8			rxHeader3;			/* receive header byte 3 */
 	__u8			rxPort;				/* the port that we are currently receiving data for */
 	__u8			rxStatusCode;			/* the receive status code */
-	__u8			rxStatusParam;			/* the receive status paramater */
+	__u8			rxStatusParam;			/* the receive status parameter */
 	__s16			rxBytesRemaining;		/* the number of port bytes left to read */
 	struct usb_serial	*serial;			/* loop back to the owner of this object */
 };
@@ -281,7 +281,7 @@ static int  send_iosp_ext_cmd(struct edgeport_port *edge_port, __u8 command,
 static int  calc_baud_rate_divisor(struct device *dev, int baud_rate, int *divisor);
 static void change_port_settings(struct tty_struct *tty,
 				struct edgeport_port *edge_port,
-				struct ktermios *old_termios);
+				const struct ktermios *old_termios);
 static int  send_cmd_write_uart_register(struct edgeport_port *edge_port,
 				__u8 regNum, __u8 regValue);
 static int  write_cmd_usb(struct edgeport_port *edge_port,
@@ -770,11 +770,12 @@ static void edge_bulk_out_data_callback(struct urb *urb)
 static void edge_bulk_out_cmd_callback(struct urb *urb)
 {
 	struct edgeport_port *edge_port = urb->context;
+	struct device *dev = &urb->dev->dev;
 	int status = urb->status;
 
 	atomic_dec(&CmdUrbs);
-	dev_dbg(&urb->dev->dev, "%s - FREE URB %p (outstanding %d)\n",
-		__func__, urb, atomic_read(&CmdUrbs));
+	dev_dbg(dev, "%s - FREE URB %p (outstanding %d)\n", __func__, urb,
+		atomic_read(&CmdUrbs));
 
 
 	/* clean up the transfer buffer */
@@ -784,8 +785,7 @@ static void edge_bulk_out_cmd_callback(struct urb *urb)
 	usb_free_urb(urb);
 
 	if (status) {
-		dev_dbg(&urb->dev->dev,
-			"%s - nonzero write bulk status received: %d\n",
+		dev_dbg(dev, "%s - nonzero write bulk status received: %d\n",
 			__func__, status);
 		return;
 	}
@@ -901,7 +901,7 @@ static int edge_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	if (!edge_port->open) {
 		/* open timed out */
-		dev_dbg(dev, "%s - open timedout\n", __func__);
+		dev_dbg(dev, "%s - open timeout\n", __func__);
 		edge_port->openPending = false;
 		return -ENODEV;
 	}
@@ -1129,7 +1129,7 @@ static int edge_write(struct tty_struct *tty, struct usb_serial_port *port,
 	spin_lock_irqsave(&edge_port->ep_lock, flags);
 
 	/* calculate number of bytes to put in fifo */
-	copySize = min((unsigned int)count,
+	copySize = min_t(unsigned int, count,
 				(edge_port->txCredits - fifo->count));
 
 	dev_dbg(&port->dev, "%s of %d byte(s) Fifo room  %d -- will copy %d bytes\n",
@@ -1441,7 +1441,8 @@ static void edge_unthrottle(struct tty_struct *tty)
  * the termios structure
  *****************************************************************************/
 static void edge_set_termios(struct tty_struct *tty,
-	struct usb_serial_port *port, struct ktermios *old_termios)
+			     struct usb_serial_port *port,
+			     const struct ktermios *old_termios)
 {
 	struct edgeport_port *edge_port = usb_get_serial_port_data(port);
 
@@ -1559,12 +1560,12 @@ static int edge_ioctl(struct tty_struct *tty,
  * SerialBreak
  *	this function sends a break to the port
  *****************************************************************************/
-static void edge_break(struct tty_struct *tty, int break_state)
+static int edge_break(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct edgeport_port *edge_port = usb_get_serial_port_data(port);
 	struct edgeport_serial *edge_serial = usb_get_serial_data(port->serial);
-	int status;
+	int status = 0;
 
 	if (!edge_serial->is_epic ||
 	    edge_serial->epic_descriptor.Supports.IOSPChase) {
@@ -1596,6 +1597,8 @@ static void edge_break(struct tty_struct *tty, int break_state)
 			dev_dbg(&port->dev, "%s - error sending break set/clear command.\n",
 				__func__);
 	}
+
+	return status;
 }
 
 
@@ -2325,7 +2328,7 @@ static int send_cmd_write_uart_register(struct edgeport_port *edge_port,
  *****************************************************************************/
 
 static void change_port_settings(struct tty_struct *tty,
-	struct edgeport_port *edge_port, struct ktermios *old_termios)
+	struct edgeport_port *edge_port, const struct ktermios *old_termios)
 {
 	struct device *dev = &edge_port->port->dev;
 	struct edgeport_serial *edge_serial =
@@ -2975,7 +2978,6 @@ static void edge_port_remove(struct usb_serial_port *port)
 
 static struct usb_serial_driver edgeport_2port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "edgeport_2",
 	},
 	.description		= "Edgeport 2 port adapter",
@@ -3010,7 +3012,6 @@ static struct usb_serial_driver edgeport_2port_device = {
 
 static struct usb_serial_driver edgeport_4port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "edgeport_4",
 	},
 	.description		= "Edgeport 4 port adapter",
@@ -3045,7 +3046,6 @@ static struct usb_serial_driver edgeport_4port_device = {
 
 static struct usb_serial_driver edgeport_8port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "edgeport_8",
 	},
 	.description		= "Edgeport 8 port adapter",
@@ -3080,7 +3080,6 @@ static struct usb_serial_driver edgeport_8port_device = {
 
 static struct usb_serial_driver epic_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "epic",
 	},
 	.description		= "EPiC device",

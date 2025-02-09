@@ -41,6 +41,21 @@ enum {
 	/* IOAM Trace Header */
 	IOAM6_IPTUNNEL_TRACE,		/* struct ioam6_trace_hdr */
 
+	/* Insertion frequency:
+	 * "k over n" packets (0 < k <= n)
+	 * [0.0001% ... 100%]
+	 */
+#define IOAM6_IPTUNNEL_FREQ_MIN 1
+#define IOAM6_IPTUNNEL_FREQ_MAX 1000000
+	IOAM6_IPTUNNEL_FREQ_K,		/* u32 */
+	IOAM6_IPTUNNEL_FREQ_N,		/* u32 */
+
+	/* Tunnel src address.
+	 * For encap,auto modes.
+	 * Optional (automatic if not provided).
+	 */
+	IOAM6_IPTUNNEL_SRC,		/* struct in6_addr */
+
 	__IOAM6_IPTUNNEL_MAX,
 };
 

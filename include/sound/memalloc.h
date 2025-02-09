@@ -26,9 +26,6 @@ struct snd_dma_device {
 	struct device *dev;		/* generic device */
 };
 
-#define snd_dma_continuous_data(x)	((struct device *)(__force unsigned long)(x))
-
-
 /*
  * buffer types
  */
@@ -45,7 +42,7 @@ struct snd_dma_device {
 #define SNDRV_DMA_TYPE_NONCONTIG	8	/* non-coherent SG buffer */
 #define SNDRV_DMA_TYPE_NONCOHERENT	9	/* non-coherent buffer */
 #ifdef CONFIG_SND_DMA_SGBUF
-#define SNDRV_DMA_TYPE_DEV_SG		SNDRV_DMA_TYPE_NONCONTIG
+#define SNDRV_DMA_TYPE_DEV_SG		3	/* S/G pages */
 #define SNDRV_DMA_TYPE_DEV_WC_SG	6	/* SG write-combined */
 #else
 #define SNDRV_DMA_TYPE_DEV_SG	SNDRV_DMA_TYPE_DEV /* no SG-buf support */

@@ -20,9 +20,10 @@
 #include <linux/export.h>
 #include <linux/nvram.h>
 #include <linux/pgtable.h>
+#include <linux/of_fdt.h>
+#include <linux/irq.h>
 
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/processor.h>
 #include <asm/setup.h>
 #include <asm/smp.h>
@@ -39,7 +40,7 @@
 #include <asm/time.h>
 #include <asm/serial.h>
 #include <asm/udbg.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 #include <asm/cpu_has_feature.h>
 #include <asm/asm-prototypes.h>
 #include <asm/kdump.h>
@@ -175,7 +176,7 @@ void __init emergency_stack_init(void)
 }
 #endif
 
-#ifdef CONFIG_BOOKE_OR_40x
+#ifdef CONFIG_BOOKE
 void __init exc_lvl_early_init(void)
 {
 	unsigned int i, hw_cpu;
@@ -206,7 +207,7 @@ void __init setup_power_save(void)
 		ppc_md.power_save = ppc6xx_idle;
 #endif
 
-#ifdef CONFIG_E500
+#ifdef CONFIG_PPC_E500
 	if (cpu_has_feature(CPU_FTR_CAN_DOZE) ||
 	    cpu_has_feature(CPU_FTR_CAN_NAP))
 		ppc_md.power_save = e500_idle;

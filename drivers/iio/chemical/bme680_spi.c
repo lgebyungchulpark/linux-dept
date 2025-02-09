@@ -4,8 +4,8 @@
  *
  * Copyright (C) 2018 Himanshu Jha <himanshujha199640@gmail.com>
  */
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
 
@@ -100,7 +100,7 @@ static int bme680_regmap_spi_read(void *context, const void *reg,
 	return spi_write_then_read(spi, &addr, 1, val, val_size);
 }
 
-static struct regmap_bus bme680_regmap_bus = {
+static const struct regmap_bus bme680_regmap_bus = {
 	.write = bme680_regmap_spi_write,
 	.read = bme680_regmap_spi_read,
 	.reg_format_endian_default = REGMAP_ENDIAN_BIG,
@@ -163,3 +163,4 @@ module_spi_driver(bme680_spi_driver);
 MODULE_AUTHOR("Himanshu Jha <himanshujha199640@gmail.com>");
 MODULE_DESCRIPTION("Bosch BME680 SPI driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_BME680");

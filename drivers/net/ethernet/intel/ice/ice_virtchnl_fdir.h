@@ -6,6 +6,7 @@
 
 struct ice_vf;
 struct ice_pf;
+struct ice_vsi;
 
 enum ice_fdir_ctx_stat {
 	ICE_FDIR_CTX_READY,
@@ -28,6 +29,7 @@ struct ice_vf_fdir_ctx {
 struct ice_vf_fdir {
 	u16 fdir_fltr_cnt[ICE_FLTR_PTYPE_MAX][ICE_FD_HW_SEG_MAX];
 	int prof_entry_cnt[ICE_FLTR_PTYPE_MAX][ICE_FD_HW_SEG_MAX];
+	u16 fdir_fltr_cnt_total;
 	struct ice_fd_hw_prof **fdir_prof;
 
 	struct idr fdir_rule_idr;

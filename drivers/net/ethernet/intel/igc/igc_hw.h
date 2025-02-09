@@ -53,11 +53,6 @@ enum igc_mac_type {
 	igc_num_macs  /* List is 1-based, so subtract 1 for true count. */
 };
 
-enum igc_phy_type {
-	igc_phy_unknown = 0,
-	igc_phy_i225,
-};
-
 enum igc_media_type {
 	igc_media_type_unknown = 0,
 	igc_media_type_copper = 1,
@@ -94,12 +89,9 @@ struct igc_mac_info {
 	u32 mta_shadow[MAX_MTA_REG];
 	u16 rar_entry_count;
 
-	u8 forced_speed_duplex;
-
 	bool asf_firmware_present;
 	bool arc_subsystem_valid;
 
-	bool autoneg;
 	bool autoneg_failed;
 	bool get_link_status;
 };
@@ -137,8 +129,6 @@ struct igc_nvm_info {
 
 struct igc_phy_info {
 	struct igc_phy_operations ops;
-
-	enum igc_phy_type type;
 
 	u32 addr;
 	u32 id;
@@ -282,6 +272,7 @@ struct igc_hw_stats {
 	u64 o2bspc;
 	u64 b2ospc;
 	u64 b2ogprc;
+	u64 txdrop;
 };
 
 struct net_device *igc_get_hw_dev(struct igc_hw *hw);

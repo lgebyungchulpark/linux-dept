@@ -14,7 +14,7 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define AD5766_UPPER_WORD_SPI_MASK		GENMASK(31, 16)
 #define AD5766_LOWER_WORD_SPI_MASK		GENMASK(15, 0)
@@ -123,7 +123,7 @@ struct ad5766_state {
 		u32	d32;
 		u16	w16[2];
 		u8	b8[4];
-	} data[3] ____cacheline_aligned;
+	} data[3] __aligned(IIO_DMA_MINALIGN);
 };
 
 struct ad5766_span_tbl {

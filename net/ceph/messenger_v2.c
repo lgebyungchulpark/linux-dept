@@ -8,9 +8,9 @@
 #include <linux/ceph/ceph_debug.h>
 
 #include <crypto/aead.h>
-#include <crypto/algapi.h>  /* for crypto_memneq() */
 #include <crypto/hash.h>
 #include <crypto/sha2.h>
+#include <crypto/utils.h>
 #include <linux/bvec.h>
 #include <linux/crc32c.h>
 #include <linux/net.h>
@@ -52,13 +52,16 @@
 #define FRAME_LATE_STATUS_COMPLETE	0xe
 #define FRAME_LATE_STATUS_ABORTED_MASK	0xf
 
-#define IN_S_HANDLE_PREAMBLE		1
-#define IN_S_HANDLE_CONTROL		2
-#define IN_S_HANDLE_CONTROL_REMAINDER	3
-#define IN_S_PREPARE_READ_DATA		4
-#define IN_S_PREPARE_READ_DATA_CONT	5
-#define IN_S_HANDLE_EPILOGUE		6
-#define IN_S_FINISH_SKIP		7
+#define IN_S_HANDLE_PREAMBLE			1
+#define IN_S_HANDLE_CONTROL			2
+#define IN_S_HANDLE_CONTROL_REMAINDER		3
+#define IN_S_PREPARE_READ_DATA			4
+#define IN_S_PREPARE_READ_DATA_CONT		5
+#define IN_S_PREPARE_READ_ENC_PAGE		6
+#define IN_S_PREPARE_SPARSE_DATA		7
+#define IN_S_PREPARE_SPARSE_DATA_CONT		8
+#define IN_S_HANDLE_EPILOGUE			9
+#define IN_S_FINISH_SKIP			10
 
 #define OUT_S_QUEUE_DATA		1
 #define OUT_S_QUEUE_DATA_CONT		2
@@ -148,13 +151,13 @@ static int do_try_sendpage(struct socket *sock, struct iov_iter *it)
 
 	while (iov_iter_count(it)) {
 		/* iov_iter_iovec() for ITER_BVEC */
-		bv.bv_page = it->bvec->bv_page;
-		bv.bv_offset = it->bvec->bv_offset + it->iov_offset;
-		bv.bv_len = min(iov_iter_count(it),
-				it->bvec->bv_len - it->iov_offset);
+		bvec_set_page(&bv, it->bvec->bv_page,
+			      min(iov_iter_count(it),
+				  it->bvec->bv_len - it->iov_offset),
+			      it->bvec->bv_offset + it->iov_offset);
 
 		/*
-		 * sendpage cannot properly handle pages with
+		 * MSG_SPLICE_PAGES cannot properly handle pages with
 		 * page_count == 0, we need to fall back to sendmsg if
 		 * that's the case.
 		 *
@@ -162,14 +165,13 @@ static int do_try_sendpage(struct socket *sock, struct iov_iter *it)
 		 * coalescing neighboring slab objects into a single frag
 		 * which triggers one of hardened usercopy checks.
 		 */
-		if (sendpage_ok(bv.bv_page)) {
-			ret = sock->ops->sendpage(sock, bv.bv_page,
-						  bv.bv_offset, bv.bv_len,
-						  CEPH_MSG_FLAGS);
-		} else {
-			iov_iter_bvec(&msg.msg_iter, WRITE, &bv, 1, bv.bv_len);
-			ret = sock_sendmsg(sock, &msg);
-		}
+		if (sendpage_ok(bv.bv_page))
+			msg.msg_flags |= MSG_SPLICE_PAGES;
+		else
+			msg.msg_flags &= ~MSG_SPLICE_PAGES;
+
+		iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, &bv, 1, bv.bv_len);
+		ret = sock_sendmsg(sock, &msg);
 		if (ret <= 0) {
 			if (ret == -EAGAIN)
 				ret = 0;
@@ -184,7 +186,7 @@ static int do_try_sendpage(struct socket *sock, struct iov_iter *it)
 
 /*
  * Write as much as possible.  The socket is expected to be corked,
- * so we don't bother with MSG_MORE/MSG_SENDPAGE_NOTLAST here.
+ * so we don't bother with MSG_MORE here.
  *
  * Return:
  *   1 - done, nothing (else) to write
@@ -224,7 +226,7 @@ static void reset_in_kvecs(struct ceph_connection *con)
 	WARN_ON(iov_iter_count(&con->v2.in_iter));
 
 	con->v2.in_kvec_cnt = 0;
-	iov_iter_kvec(&con->v2.in_iter, READ, con->v2.in_kvecs, 0, 0);
+	iov_iter_kvec(&con->v2.in_iter, ITER_DEST, con->v2.in_kvecs, 0, 0);
 }
 
 static void set_in_bvec(struct ceph_connection *con, const struct bio_vec *bv)
@@ -232,7 +234,7 @@ static void set_in_bvec(struct ceph_connection *con, const struct bio_vec *bv)
 	WARN_ON(iov_iter_count(&con->v2.in_iter));
 
 	con->v2.in_bvec = *bv;
-	iov_iter_bvec(&con->v2.in_iter, READ, &con->v2.in_bvec, 1, bv->bv_len);
+	iov_iter_bvec(&con->v2.in_iter, ITER_DEST, &con->v2.in_bvec, 1, bv->bv_len);
 }
 
 static void set_in_skip(struct ceph_connection *con, int len)
@@ -240,7 +242,7 @@ static void set_in_skip(struct ceph_connection *con, int len)
 	WARN_ON(iov_iter_count(&con->v2.in_iter));
 
 	dout("%s con %p len %d\n", __func__, con, len);
-	iov_iter_discard(&con->v2.in_iter, READ, len);
+	iov_iter_discard(&con->v2.in_iter, ITER_DEST, len);
 }
 
 static void add_out_kvec(struct ceph_connection *con, void *buf, int len)
@@ -264,7 +266,7 @@ static void reset_out_kvecs(struct ceph_connection *con)
 
 	con->v2.out_kvec_cnt = 0;
 
-	iov_iter_kvec(&con->v2.out_iter, WRITE, con->v2.out_kvecs, 0, 0);
+	iov_iter_kvec(&con->v2.out_iter, ITER_SOURCE, con->v2.out_kvecs, 0, 0);
 	con->v2.out_iter_sendpage = false;
 }
 
@@ -276,7 +278,7 @@ static void set_out_bvec(struct ceph_connection *con, const struct bio_vec *bv,
 
 	con->v2.out_bvec = *bv;
 	con->v2.out_iter_sendpage = zerocopy;
-	iov_iter_bvec(&con->v2.out_iter, WRITE, &con->v2.out_bvec, 1,
+	iov_iter_bvec(&con->v2.out_iter, ITER_SOURCE, &con->v2.out_bvec, 1,
 		      con->v2.out_bvec.bv_len);
 }
 
@@ -285,11 +287,10 @@ static void set_out_bvec_zero(struct ceph_connection *con)
 	WARN_ON(iov_iter_count(&con->v2.out_iter));
 	WARN_ON(!con->v2.out_zero);
 
-	con->v2.out_bvec.bv_page = ceph_zero_page;
-	con->v2.out_bvec.bv_offset = 0;
-	con->v2.out_bvec.bv_len = min(con->v2.out_zero, (int)PAGE_SIZE);
+	bvec_set_page(&con->v2.out_bvec, ceph_zero_page,
+		      min(con->v2.out_zero, (int)PAGE_SIZE), 0);
 	con->v2.out_iter_sendpage = true;
-	iov_iter_bvec(&con->v2.out_iter, WRITE, &con->v2.out_bvec, 1,
+	iov_iter_bvec(&con->v2.out_iter, ITER_SOURCE, &con->v2.out_bvec, 1,
 		      con->v2.out_bvec.bv_len);
 }
 
@@ -391,6 +392,8 @@ static int head_onwire_len(int ctrl_len, bool secure)
 	int head_len;
 	int rem_len;
 
+	BUG_ON(ctrl_len < 0 || ctrl_len > CEPH_MSG_MAX_CONTROL_LEN);
+
 	if (secure) {
 		head_len = CEPH_PREAMBLE_SECURE_LEN;
 		if (ctrl_len > CEPH_PREAMBLE_INLINE_LEN) {
@@ -409,6 +412,10 @@ static int head_onwire_len(int ctrl_len, bool secure)
 static int __tail_onwire_len(int front_len, int middle_len, int data_len,
 			     bool secure)
 {
+	BUG_ON(front_len < 0 || front_len > CEPH_MSG_MAX_FRONT_LEN ||
+	       middle_len < 0 || middle_len > CEPH_MSG_MAX_MIDDLE_LEN ||
+	       data_len < 0 || data_len > CEPH_MSG_MAX_DATA_LEN);
+
 	if (!front_len && !middle_len && !data_len)
 		return 0;
 
@@ -521,29 +528,34 @@ static int decode_preamble(void *p, struct ceph_frame_desc *desc)
 		desc->fd_aligns[i] = ceph_decode_16(&p);
 	}
 
+	if (desc->fd_lens[0] < 0 ||
+	    desc->fd_lens[0] > CEPH_MSG_MAX_CONTROL_LEN) {
+		pr_err("bad control segment length %d\n", desc->fd_lens[0]);
+		return -EINVAL;
+	}
+	if (desc->fd_lens[1] < 0 ||
+	    desc->fd_lens[1] > CEPH_MSG_MAX_FRONT_LEN) {
+		pr_err("bad front segment length %d\n", desc->fd_lens[1]);
+		return -EINVAL;
+	}
+	if (desc->fd_lens[2] < 0 ||
+	    desc->fd_lens[2] > CEPH_MSG_MAX_MIDDLE_LEN) {
+		pr_err("bad middle segment length %d\n", desc->fd_lens[2]);
+		return -EINVAL;
+	}
+	if (desc->fd_lens[3] < 0 ||
+	    desc->fd_lens[3] > CEPH_MSG_MAX_DATA_LEN) {
+		pr_err("bad data segment length %d\n", desc->fd_lens[3]);
+		return -EINVAL;
+	}
+
 	/*
 	 * This would fire for FRAME_TAG_WAIT (it has one empty
 	 * segment), but we should never get it as client.
 	 */
 	if (!desc->fd_lens[desc->fd_seg_cnt - 1]) {
-		pr_err("last segment empty\n");
-		return -EINVAL;
-	}
-
-	if (desc->fd_lens[0] > CEPH_MSG_MAX_CONTROL_LEN) {
-		pr_err("control segment too big %d\n", desc->fd_lens[0]);
-		return -EINVAL;
-	}
-	if (desc->fd_lens[1] > CEPH_MSG_MAX_FRONT_LEN) {
-		pr_err("front segment too big %d\n", desc->fd_lens[1]);
-		return -EINVAL;
-	}
-	if (desc->fd_lens[2] > CEPH_MSG_MAX_MIDDLE_LEN) {
-		pr_err("middle segment too big %d\n", desc->fd_lens[2]);
-		return -EINVAL;
-	}
-	if (desc->fd_lens[3] > CEPH_MSG_MAX_DATA_LEN) {
-		pr_err("data segment too big %d\n", desc->fd_lens[3]);
+		pr_err("last segment empty, segment count %d\n",
+		       desc->fd_seg_cnt);
 		return -EINVAL;
 	}
 
@@ -721,8 +733,6 @@ static int setup_crypto(struct ceph_connection *con,
 		return ret;
 	}
 
-	WARN_ON((unsigned long)session_key &
-		crypto_shash_alignmask(con->v2.hmac_tfm));
 	ret = crypto_shash_setkey(con->v2.hmac_tfm, session_key,
 				  session_key_len);
 	if (ret) {
@@ -804,8 +814,6 @@ static int hmac_sha256(struct ceph_connection *con, const struct kvec *kvecs,
 		goto out;
 
 	for (i = 0; i < kvec_cnt; i++) {
-		WARN_ON((unsigned long)kvecs[i].iov_base &
-			crypto_shash_alignmask(con->v2.hmac_tfm));
 		ret = crypto_shash_update(desc, kvecs[i].iov_base,
 					  kvecs[i].iov_len);
 		if (ret)
@@ -861,11 +869,8 @@ static void get_bvec_at(struct ceph_msg_data_cursor *cursor,
 		ceph_msg_data_advance(cursor, 0);
 
 	/* get a piece of data, cursor isn't advanced */
-	page = ceph_msg_data_next(cursor, &off, &len, NULL);
-
-	bv->bv_page = page;
-	bv->bv_offset = off;
-	bv->bv_len = len;
+	page = ceph_msg_data_next(cursor, &off, &len);
+	bvec_set_page(bv, page, len, off);
 }
 
 static int calc_sg_cnt(void *buf, int buf_len)
@@ -960,12 +965,48 @@ static void init_sgs_cursor(struct scatterlist **sg,
 	}
 }
 
+/**
+ * init_sgs_pages: set up scatterlist on an array of page pointers
+ * @sg:		scatterlist to populate
+ * @pages:	pointer to page array
+ * @dpos:	position in the array to start (bytes)
+ * @dlen:	len to add to sg (bytes)
+ * @pad:	pointer to pad destination (if any)
+ *
+ * Populate the scatterlist from the page array, starting at an arbitrary
+ * byte in the array and running for a specified length.
+ */
+static void init_sgs_pages(struct scatterlist **sg, struct page **pages,
+			   int dpos, int dlen, u8 *pad)
+{
+	int idx = dpos >> PAGE_SHIFT;
+	int off = offset_in_page(dpos);
+	int resid = dlen;
+
+	do {
+		int len = min(resid, (int)PAGE_SIZE - off);
+
+		sg_set_page(*sg, pages[idx], len, off);
+		*sg = sg_next(*sg);
+		off = 0;
+		++idx;
+		resid -= len;
+	} while (resid);
+
+	if (need_padding(dlen)) {
+		sg_set_buf(*sg, pad, padding_len(dlen));
+		*sg = sg_next(*sg);
+	}
+}
+
 static int setup_message_sgs(struct sg_table *sgt, struct ceph_msg *msg,
 			     u8 *front_pad, u8 *middle_pad, u8 *data_pad,
-			     void *epilogue, bool add_tag)
+			     void *epilogue, struct page **pages, int dpos,
+			     bool add_tag)
 {
 	struct ceph_msg_data_cursor cursor;
 	struct scatterlist *cur_sg;
+	int dlen = data_len(msg);
 	int sg_cnt;
 	int ret;
 
@@ -979,9 +1020,15 @@ static int setup_message_sgs(struct sg_table *sgt, struct ceph_msg *msg,
 	if (middle_len(msg))
 		sg_cnt += calc_sg_cnt(msg->middle->vec.iov_base,
 				      middle_len(msg));
-	if (data_len(msg)) {
-		ceph_msg_data_cursor_init(&cursor, msg, data_len(msg));
-		sg_cnt += calc_sg_cnt_cursor(&cursor);
+	if (dlen) {
+		if (pages) {
+			sg_cnt += calc_pages_for(dpos, dlen);
+			if (need_padding(dlen))
+				sg_cnt++;
+		} else {
+			ceph_msg_data_cursor_init(&cursor, msg, dlen);
+			sg_cnt += calc_sg_cnt_cursor(&cursor);
+		}
 	}
 
 	ret = sg_alloc_table(sgt, sg_cnt, GFP_NOIO);
@@ -995,9 +1042,13 @@ static int setup_message_sgs(struct sg_table *sgt, struct ceph_msg *msg,
 	if (middle_len(msg))
 		init_sgs(&cur_sg, msg->middle->vec.iov_base, middle_len(msg),
 			 middle_pad);
-	if (data_len(msg)) {
-		ceph_msg_data_cursor_init(&cursor, msg, data_len(msg));
-		init_sgs_cursor(&cur_sg, &cursor, data_pad);
+	if (dlen) {
+		if (pages) {
+			init_sgs_pages(&cur_sg, pages, dpos, dlen, data_pad);
+		} else {
+			ceph_msg_data_cursor_init(&cursor, msg, dlen);
+			init_sgs_cursor(&cur_sg, &cursor, data_pad);
+		}
 	}
 
 	WARN_ON(!sg_is_last(cur_sg));
@@ -1032,22 +1083,95 @@ static int decrypt_control_remainder(struct ceph_connection *con)
 			 padded_len(rem_len) + CEPH_GCM_TAG_LEN);
 }
 
-static int decrypt_message(struct ceph_connection *con)
+/* Process sparse read data that lives in a buffer */
+static int process_v2_sparse_read(struct ceph_connection *con,
+				  struct page **pages, int spos)
 {
-	struct sg_table sgt = {};
+	struct ceph_msg_data_cursor *cursor = &con->v2.in_cursor;
 	int ret;
 
-	ret = setup_message_sgs(&sgt, con->in_msg, FRONT_PAD(con->v2.in_buf),
-			MIDDLE_PAD(con->v2.in_buf), DATA_PAD(con->v2.in_buf),
-			con->v2.in_buf, true);
+	for (;;) {
+		char *buf = NULL;
+
+		ret = con->ops->sparse_read(con, cursor, &buf);
+		if (ret <= 0)
+			return ret;
+
+		dout("%s: sparse_read return %x buf %p\n", __func__, ret, buf);
+
+		do {
+			int idx = spos >> PAGE_SHIFT;
+			int soff = offset_in_page(spos);
+			struct page *spage = con->v2.in_enc_pages[idx];
+			int len = min_t(int, ret, PAGE_SIZE - soff);
+
+			if (buf) {
+				memcpy_from_page(buf, spage, soff, len);
+				buf += len;
+			} else {
+				struct bio_vec bv;
+
+				get_bvec_at(cursor, &bv);
+				len = min_t(int, len, bv.bv_len);
+				memcpy_page(bv.bv_page, bv.bv_offset,
+					    spage, soff, len);
+				ceph_msg_data_advance(cursor, len);
+			}
+			spos += len;
+			ret -= len;
+		} while (ret);
+	}
+}
+
+static int decrypt_tail(struct ceph_connection *con)
+{
+	struct sg_table enc_sgt = {};
+	struct sg_table sgt = {};
+	struct page **pages = NULL;
+	bool sparse = !!con->in_msg->sparse_read_total;
+	int dpos = 0;
+	int tail_len;
+	int ret;
+
+	tail_len = tail_onwire_len(con->in_msg, true);
+	ret = sg_alloc_table_from_pages(&enc_sgt, con->v2.in_enc_pages,
+					con->v2.in_enc_page_cnt, 0, tail_len,
+					GFP_NOIO);
 	if (ret)
 		goto out;
 
-	ret = gcm_crypt(con, false, sgt.sgl, sgt.sgl,
-			tail_onwire_len(con->in_msg, true));
+	if (sparse) {
+		dpos = padded_len(front_len(con->in_msg) + padded_len(middle_len(con->in_msg)));
+		pages = con->v2.in_enc_pages;
+	}
+
+	ret = setup_message_sgs(&sgt, con->in_msg, FRONT_PAD(con->v2.in_buf),
+				MIDDLE_PAD(con->v2.in_buf), DATA_PAD(con->v2.in_buf),
+				con->v2.in_buf, pages, dpos, true);
+	if (ret)
+		goto out;
+
+	dout("%s con %p msg %p enc_page_cnt %d sg_cnt %d\n", __func__, con,
+	     con->in_msg, con->v2.in_enc_page_cnt, sgt.orig_nents);
+	ret = gcm_crypt(con, false, enc_sgt.sgl, sgt.sgl, tail_len);
+	if (ret)
+		goto out;
+
+	if (sparse && data_len(con->in_msg)) {
+		ret = process_v2_sparse_read(con, con->v2.in_enc_pages, dpos);
+		if (ret)
+			goto out;
+	}
+
+	WARN_ON(!con->v2.in_enc_page_cnt);
+	ceph_release_page_vector(con->v2.in_enc_pages,
+				 con->v2.in_enc_page_cnt);
+	con->v2.in_enc_pages = NULL;
+	con->v2.in_enc_page_cnt = 0;
 
 out:
 	sg_free_table(&sgt);
+	sg_free_table(&enc_sgt);
 	return ret;
 }
 
@@ -1562,7 +1686,7 @@ static int prepare_message_secure(struct ceph_connection *con)
 
 	encode_epilogue_secure(con, false);
 	ret = setup_message_sgs(&sgt, con->out_msg, zerop, zerop, zerop,
-				&con->v2.out_epil, false);
+				&con->v2.out_epil, NULL, 0, false);
 	if (ret)
 		goto out;
 
@@ -1733,52 +1857,273 @@ static int prepare_read_control_remainder(struct ceph_connection *con)
 	return 0;
 }
 
-static void prepare_read_data(struct ceph_connection *con)
+static int prepare_read_data(struct ceph_connection *con)
 {
 	struct bio_vec bv;
 
-	if (!con_secure(con))
-		con->in_data_crc = -1;
+	con->in_data_crc = -1;
 	ceph_msg_data_cursor_init(&con->v2.in_cursor, con->in_msg,
 				  data_len(con->in_msg));
 
 	get_bvec_at(&con->v2.in_cursor, &bv);
+	if (ceph_test_opt(from_msgr(con->msgr), RXBOUNCE)) {
+		if (unlikely(!con->bounce_page)) {
+			con->bounce_page = alloc_page(GFP_NOIO);
+			if (!con->bounce_page) {
+				pr_err("failed to allocate bounce page\n");
+				return -ENOMEM;
+			}
+		}
+
+		bv.bv_page = con->bounce_page;
+		bv.bv_offset = 0;
+	}
 	set_in_bvec(con, &bv);
 	con->v2.in_state = IN_S_PREPARE_READ_DATA_CONT;
+	return 0;
 }
 
 static void prepare_read_data_cont(struct ceph_connection *con)
 {
 	struct bio_vec bv;
 
-	if (!con_secure(con))
+	if (ceph_test_opt(from_msgr(con->msgr), RXBOUNCE)) {
+		con->in_data_crc = crc32c(con->in_data_crc,
+					  page_address(con->bounce_page),
+					  con->v2.in_bvec.bv_len);
+
+		get_bvec_at(&con->v2.in_cursor, &bv);
+		memcpy_to_page(bv.bv_page, bv.bv_offset,
+			       page_address(con->bounce_page),
+			       con->v2.in_bvec.bv_len);
+	} else {
 		con->in_data_crc = ceph_crc32c_page(con->in_data_crc,
 						    con->v2.in_bvec.bv_page,
 						    con->v2.in_bvec.bv_offset,
 						    con->v2.in_bvec.bv_len);
+	}
 
 	ceph_msg_data_advance(&con->v2.in_cursor, con->v2.in_bvec.bv_len);
 	if (con->v2.in_cursor.total_resid) {
 		get_bvec_at(&con->v2.in_cursor, &bv);
+		if (ceph_test_opt(from_msgr(con->msgr), RXBOUNCE)) {
+			bv.bv_page = con->bounce_page;
+			bv.bv_offset = 0;
+		}
 		set_in_bvec(con, &bv);
 		WARN_ON(con->v2.in_state != IN_S_PREPARE_READ_DATA_CONT);
 		return;
 	}
 
 	/*
-	 * We've read all data.  Prepare to read data padding (if any)
-	 * and epilogue.
+	 * We've read all data.  Prepare to read epilogue.
 	 */
 	reset_in_kvecs(con);
-	if (con_secure(con)) {
-		if (need_padding(data_len(con->in_msg)))
-			add_in_kvec(con, DATA_PAD(con->v2.in_buf),
-				    padding_len(data_len(con->in_msg)));
-		add_in_kvec(con, con->v2.in_buf, CEPH_EPILOGUE_SECURE_LEN);
+	add_in_kvec(con, con->v2.in_buf, CEPH_EPILOGUE_PLAIN_LEN);
+	con->v2.in_state = IN_S_HANDLE_EPILOGUE;
+}
+
+static int prepare_sparse_read_cont(struct ceph_connection *con)
+{
+	int ret;
+	struct bio_vec bv;
+	char *buf = NULL;
+	struct ceph_msg_data_cursor *cursor = &con->v2.in_cursor;
+
+	WARN_ON(con->v2.in_state != IN_S_PREPARE_SPARSE_DATA_CONT);
+
+	if (iov_iter_is_bvec(&con->v2.in_iter)) {
+		if (ceph_test_opt(from_msgr(con->msgr), RXBOUNCE)) {
+			con->in_data_crc = crc32c(con->in_data_crc,
+						  page_address(con->bounce_page),
+						  con->v2.in_bvec.bv_len);
+			get_bvec_at(cursor, &bv);
+			memcpy_to_page(bv.bv_page, bv.bv_offset,
+				       page_address(con->bounce_page),
+				       con->v2.in_bvec.bv_len);
+		} else {
+			con->in_data_crc = ceph_crc32c_page(con->in_data_crc,
+							    con->v2.in_bvec.bv_page,
+							    con->v2.in_bvec.bv_offset,
+							    con->v2.in_bvec.bv_len);
+		}
+
+		ceph_msg_data_advance(cursor, con->v2.in_bvec.bv_len);
+		cursor->sr_resid -= con->v2.in_bvec.bv_len;
+		dout("%s: advance by 0x%x sr_resid 0x%x\n", __func__,
+		     con->v2.in_bvec.bv_len, cursor->sr_resid);
+		WARN_ON_ONCE(cursor->sr_resid > cursor->total_resid);
+		if (cursor->sr_resid) {
+			get_bvec_at(cursor, &bv);
+			if (bv.bv_len > cursor->sr_resid)
+				bv.bv_len = cursor->sr_resid;
+			if (ceph_test_opt(from_msgr(con->msgr), RXBOUNCE)) {
+				bv.bv_page = con->bounce_page;
+				bv.bv_offset = 0;
+			}
+			set_in_bvec(con, &bv);
+			con->v2.data_len_remain -= bv.bv_len;
+			return 0;
+		}
+	} else if (iov_iter_is_kvec(&con->v2.in_iter)) {
+		/* On first call, we have no kvec so don't compute crc */
+		if (con->v2.in_kvec_cnt) {
+			WARN_ON_ONCE(con->v2.in_kvec_cnt > 1);
+			con->in_data_crc = crc32c(con->in_data_crc,
+						  con->v2.in_kvecs[0].iov_base,
+						  con->v2.in_kvecs[0].iov_len);
+		}
+	} else {
+		return -EIO;
+	}
+
+	/* get next extent */
+	ret = con->ops->sparse_read(con, cursor, &buf);
+	if (ret <= 0) {
+		if (ret < 0)
+			return ret;
+
+		reset_in_kvecs(con);
+		add_in_kvec(con, con->v2.in_buf, CEPH_EPILOGUE_PLAIN_LEN);
+		con->v2.in_state = IN_S_HANDLE_EPILOGUE;
+		return 0;
+	}
+
+	if (buf) {
+		/* receive into buffer */
+		reset_in_kvecs(con);
+		add_in_kvec(con, buf, ret);
+		con->v2.data_len_remain -= ret;
+		return 0;
+	}
+
+	if (ret > cursor->total_resid) {
+		pr_warn("%s: ret 0x%x total_resid 0x%zx resid 0x%zx\n",
+			__func__, ret, cursor->total_resid, cursor->resid);
+		return -EIO;
+	}
+	get_bvec_at(cursor, &bv);
+	if (bv.bv_len > cursor->sr_resid)
+		bv.bv_len = cursor->sr_resid;
+	if (ceph_test_opt(from_msgr(con->msgr), RXBOUNCE)) {
+		if (unlikely(!con->bounce_page)) {
+			con->bounce_page = alloc_page(GFP_NOIO);
+			if (!con->bounce_page) {
+				pr_err("failed to allocate bounce page\n");
+				return -ENOMEM;
+			}
+		}
+
+		bv.bv_page = con->bounce_page;
+		bv.bv_offset = 0;
+	}
+	set_in_bvec(con, &bv);
+	con->v2.data_len_remain -= ret;
+	return ret;
+}
+
+static int prepare_sparse_read_data(struct ceph_connection *con)
+{
+	struct ceph_msg *msg = con->in_msg;
+
+	dout("%s: starting sparse read\n", __func__);
+
+	if (WARN_ON_ONCE(!con->ops->sparse_read))
+		return -EOPNOTSUPP;
+
+	if (!con_secure(con))
+		con->in_data_crc = -1;
+
+	ceph_msg_data_cursor_init(&con->v2.in_cursor, msg,
+				  msg->sparse_read_total);
+
+	reset_in_kvecs(con);
+	con->v2.in_state = IN_S_PREPARE_SPARSE_DATA_CONT;
+	con->v2.data_len_remain = data_len(msg);
+	return prepare_sparse_read_cont(con);
+}
+
+static int prepare_read_tail_plain(struct ceph_connection *con)
+{
+	struct ceph_msg *msg = con->in_msg;
+
+	if (!front_len(msg) && !middle_len(msg)) {
+		WARN_ON(!data_len(msg));
+		return prepare_read_data(con);
+	}
+
+	reset_in_kvecs(con);
+	if (front_len(msg)) {
+		add_in_kvec(con, msg->front.iov_base, front_len(msg));
+		WARN_ON(msg->front.iov_len != front_len(msg));
+	}
+	if (middle_len(msg)) {
+		add_in_kvec(con, msg->middle->vec.iov_base, middle_len(msg));
+		WARN_ON(msg->middle->vec.iov_len != middle_len(msg));
+	}
+
+	if (data_len(msg)) {
+		if (msg->sparse_read_total)
+			con->v2.in_state = IN_S_PREPARE_SPARSE_DATA;
+		else
+			con->v2.in_state = IN_S_PREPARE_READ_DATA;
 	} else {
 		add_in_kvec(con, con->v2.in_buf, CEPH_EPILOGUE_PLAIN_LEN);
+		con->v2.in_state = IN_S_HANDLE_EPILOGUE;
 	}
+	return 0;
+}
+
+static void prepare_read_enc_page(struct ceph_connection *con)
+{
+	struct bio_vec bv;
+
+	dout("%s con %p i %d resid %d\n", __func__, con, con->v2.in_enc_i,
+	     con->v2.in_enc_resid);
+	WARN_ON(!con->v2.in_enc_resid);
+
+	bvec_set_page(&bv, con->v2.in_enc_pages[con->v2.in_enc_i],
+		      min(con->v2.in_enc_resid, (int)PAGE_SIZE), 0);
+
+	set_in_bvec(con, &bv);
+	con->v2.in_enc_i++;
+	con->v2.in_enc_resid -= bv.bv_len;
+
+	if (con->v2.in_enc_resid) {
+		con->v2.in_state = IN_S_PREPARE_READ_ENC_PAGE;
+		return;
+	}
+
+	/*
+	 * We are set to read the last piece of ciphertext (ending
+	 * with epilogue) + auth tag.
+	 */
+	WARN_ON(con->v2.in_enc_i != con->v2.in_enc_page_cnt);
 	con->v2.in_state = IN_S_HANDLE_EPILOGUE;
+}
+
+static int prepare_read_tail_secure(struct ceph_connection *con)
+{
+	struct page **enc_pages;
+	int enc_page_cnt;
+	int tail_len;
+
+	tail_len = tail_onwire_len(con->in_msg, true);
+	WARN_ON(!tail_len);
+
+	enc_page_cnt = calc_pages_for(0, tail_len);
+	enc_pages = ceph_alloc_page_vector(enc_page_cnt, GFP_NOIO);
+	if (IS_ERR(enc_pages))
+		return PTR_ERR(enc_pages);
+
+	WARN_ON(con->v2.in_enc_pages || con->v2.in_enc_page_cnt);
+	con->v2.in_enc_pages = enc_pages;
+	con->v2.in_enc_page_cnt = enc_page_cnt;
+	con->v2.in_enc_resid = tail_len;
+	con->v2.in_enc_i = 0;
+
+	prepare_read_enc_page(con);
+	return 0;
 }
 
 static void __finish_skip(struct ceph_connection *con)
@@ -2589,47 +2934,26 @@ static int __handle_control(struct ceph_connection *con, void *p)
 	}
 
 	msg = con->in_msg;  /* set in process_message_header() */
-	if (!front_len(msg) && !middle_len(msg)) {
-		if (!data_len(msg))
-			return process_message(con);
-
-		prepare_read_data(con);
-		return 0;
-	}
-
-	reset_in_kvecs(con);
 	if (front_len(msg)) {
 		WARN_ON(front_len(msg) > msg->front_alloc_len);
-		add_in_kvec(con, msg->front.iov_base, front_len(msg));
 		msg->front.iov_len = front_len(msg);
-
-		if (con_secure(con) && need_padding(front_len(msg)))
-			add_in_kvec(con, FRONT_PAD(con->v2.in_buf),
-				    padding_len(front_len(msg)));
 	} else {
 		msg->front.iov_len = 0;
 	}
 	if (middle_len(msg)) {
 		WARN_ON(middle_len(msg) > msg->middle->alloc_len);
-		add_in_kvec(con, msg->middle->vec.iov_base, middle_len(msg));
 		msg->middle->vec.iov_len = middle_len(msg);
-
-		if (con_secure(con) && need_padding(middle_len(msg)))
-			add_in_kvec(con, MIDDLE_PAD(con->v2.in_buf),
-				    padding_len(middle_len(msg)));
 	} else if (msg->middle) {
 		msg->middle->vec.iov_len = 0;
 	}
 
-	if (data_len(msg)) {
-		con->v2.in_state = IN_S_PREPARE_READ_DATA;
-	} else {
-		add_in_kvec(con, con->v2.in_buf,
-			    con_secure(con) ? CEPH_EPILOGUE_SECURE_LEN :
-					      CEPH_EPILOGUE_PLAIN_LEN);
-		con->v2.in_state = IN_S_HANDLE_EPILOGUE;
-	}
-	return 0;
+	if (!front_len(msg) && !middle_len(msg) && !data_len(msg))
+		return process_message(con);
+
+	if (con_secure(con))
+		return prepare_read_tail_secure(con);
+
+	return prepare_read_tail_plain(con);
 }
 
 static int handle_preamble(struct ceph_connection *con)
@@ -2717,7 +3041,7 @@ static int handle_epilogue(struct ceph_connection *con)
 	int ret;
 
 	if (con_secure(con)) {
-		ret = decrypt_message(con);
+		ret = decrypt_tail(con);
 		if (ret) {
 			if (ret == -EBADMSG)
 				con->error_msg = "integrity error, bad epilogue auth tag";
@@ -2785,12 +3109,21 @@ static int populate_in_iter(struct ceph_connection *con)
 			ret = handle_control_remainder(con);
 			break;
 		case IN_S_PREPARE_READ_DATA:
-			prepare_read_data(con);
-			ret = 0;
+			ret = prepare_read_data(con);
 			break;
 		case IN_S_PREPARE_READ_DATA_CONT:
 			prepare_read_data_cont(con);
 			ret = 0;
+			break;
+		case IN_S_PREPARE_READ_ENC_PAGE:
+			prepare_read_enc_page(con);
+			ret = 0;
+			break;
+		case IN_S_PREPARE_SPARSE_DATA:
+			ret = prepare_sparse_read_data(con);
+			break;
+		case IN_S_PREPARE_SPARSE_DATA_CONT:
+			ret = prepare_sparse_read_cont(con);
 			break;
 		case IN_S_HANDLE_EPILOGUE:
 			ret = handle_epilogue(con);
@@ -2897,9 +3230,8 @@ static void queue_enc_page(struct ceph_connection *con)
 	     con->v2.out_enc_resid);
 	WARN_ON(!con->v2.out_enc_resid);
 
-	bv.bv_page = con->v2.out_enc_pages[con->v2.out_enc_i];
-	bv.bv_offset = 0;
-	bv.bv_len = min(con->v2.out_enc_resid, (int)PAGE_SIZE);
+	bvec_set_page(&bv, con->v2.out_enc_pages[con->v2.out_enc_i],
+		      min(con->v2.out_enc_resid, (int)PAGE_SIZE), 0);
 
 	set_out_bvec(con, &bv, false);
 	con->v2.out_enc_i++;
@@ -3326,20 +3658,16 @@ void ceph_con_v2_revoke(struct ceph_connection *con)
 
 static void revoke_at_prepare_read_data(struct ceph_connection *con)
 {
-	int remaining;  /* data + [data padding] + epilogue */
+	int remaining;
 	int resid;
 
+	WARN_ON(con_secure(con));
 	WARN_ON(!data_len(con->in_msg));
 	WARN_ON(!iov_iter_is_kvec(&con->v2.in_iter));
 	resid = iov_iter_count(&con->v2.in_iter);
 	WARN_ON(!resid);
 
-	if (con_secure(con))
-		remaining = padded_len(data_len(con->in_msg)) +
-			    CEPH_EPILOGUE_SECURE_LEN;
-	else
-		remaining = data_len(con->in_msg) + CEPH_EPILOGUE_PLAIN_LEN;
-
+	remaining = data_len(con->in_msg) + CEPH_EPILOGUE_PLAIN_LEN;
 	dout("%s con %p resid %d remaining %d\n", __func__, con, resid,
 	     remaining);
 	con->v2.in_iter.count -= resid;
@@ -3350,8 +3678,9 @@ static void revoke_at_prepare_read_data(struct ceph_connection *con)
 static void revoke_at_prepare_read_data_cont(struct ceph_connection *con)
 {
 	int recved, resid;  /* current piece of data */
-	int remaining;  /* [data padding] + epilogue */
+	int remaining;
 
+	WARN_ON(con_secure(con));
 	WARN_ON(!data_len(con->in_msg));
 	WARN_ON(!iov_iter_is_bvec(&con->v2.in_iter));
 	resid = iov_iter_count(&con->v2.in_iter);
@@ -3363,12 +3692,7 @@ static void revoke_at_prepare_read_data_cont(struct ceph_connection *con)
 		ceph_msg_data_advance(&con->v2.in_cursor, recved);
 	WARN_ON(resid > con->v2.in_cursor.total_resid);
 
-	if (con_secure(con))
-		remaining = padding_len(data_len(con->in_msg)) +
-			    CEPH_EPILOGUE_SECURE_LEN;
-	else
-		remaining = CEPH_EPILOGUE_PLAIN_LEN;
-
+	remaining = CEPH_EPILOGUE_PLAIN_LEN;
 	dout("%s con %p total_resid %zu remaining %d\n", __func__, con,
 	     con->v2.in_cursor.total_resid, remaining);
 	con->v2.in_iter.count -= resid;
@@ -3376,11 +3700,43 @@ static void revoke_at_prepare_read_data_cont(struct ceph_connection *con)
 	con->v2.in_state = IN_S_FINISH_SKIP;
 }
 
+static void revoke_at_prepare_read_enc_page(struct ceph_connection *con)
+{
+	int resid;  /* current enc page (not necessarily data) */
+
+	WARN_ON(!con_secure(con));
+	WARN_ON(!iov_iter_is_bvec(&con->v2.in_iter));
+	resid = iov_iter_count(&con->v2.in_iter);
+	WARN_ON(!resid || resid > con->v2.in_bvec.bv_len);
+
+	dout("%s con %p resid %d enc_resid %d\n", __func__, con, resid,
+	     con->v2.in_enc_resid);
+	con->v2.in_iter.count -= resid;
+	set_in_skip(con, resid + con->v2.in_enc_resid);
+	con->v2.in_state = IN_S_FINISH_SKIP;
+}
+
+static void revoke_at_prepare_sparse_data(struct ceph_connection *con)
+{
+	int resid;  /* current piece of data */
+	int remaining;
+
+	WARN_ON(con_secure(con));
+	WARN_ON(!data_len(con->in_msg));
+	WARN_ON(!iov_iter_is_bvec(&con->v2.in_iter));
+	resid = iov_iter_count(&con->v2.in_iter);
+	dout("%s con %p resid %d\n", __func__, con, resid);
+
+	remaining = CEPH_EPILOGUE_PLAIN_LEN + con->v2.data_len_remain;
+	con->v2.in_iter.count -= resid;
+	set_in_skip(con, resid + remaining);
+	con->v2.in_state = IN_S_FINISH_SKIP;
+}
+
 static void revoke_at_handle_epilogue(struct ceph_connection *con)
 {
 	int resid;
 
-	WARN_ON(!iov_iter_is_kvec(&con->v2.in_iter));
 	resid = iov_iter_count(&con->v2.in_iter);
 	WARN_ON(!resid);
 
@@ -3393,11 +3749,18 @@ static void revoke_at_handle_epilogue(struct ceph_connection *con)
 void ceph_con_v2_revoke_incoming(struct ceph_connection *con)
 {
 	switch (con->v2.in_state) {
+	case IN_S_PREPARE_SPARSE_DATA:
 	case IN_S_PREPARE_READ_DATA:
 		revoke_at_prepare_read_data(con);
 		break;
 	case IN_S_PREPARE_READ_DATA_CONT:
 		revoke_at_prepare_read_data_cont(con);
+		break;
+	case IN_S_PREPARE_READ_ENC_PAGE:
+		revoke_at_prepare_read_enc_page(con);
+		break;
+	case IN_S_PREPARE_SPARSE_DATA_CONT:
+		revoke_at_prepare_sparse_data(con);
 		break;
 	case IN_S_HANDLE_EPILOGUE:
 		revoke_at_handle_epilogue(con);
@@ -3432,6 +3795,13 @@ void ceph_con_v2_reset_protocol(struct ceph_connection *con)
 	clear_out_sign_kvecs(con);
 	free_conn_bufs(con);
 
+	if (con->v2.in_enc_pages) {
+		WARN_ON(!con->v2.in_enc_page_cnt);
+		ceph_release_page_vector(con->v2.in_enc_pages,
+					 con->v2.in_enc_page_cnt);
+		con->v2.in_enc_pages = NULL;
+		con->v2.in_enc_page_cnt = 0;
+	}
 	if (con->v2.out_enc_pages) {
 		WARN_ON(!con->v2.out_enc_page_cnt);
 		ceph_release_page_vector(con->v2.out_enc_pages,

@@ -26,7 +26,11 @@
 #include <asm/ptrace.h>
 #include <asm/processor.h>
 #include <asm/pdc.h>
+#include <uapi/asm/sigcontext.h>
+#include <asm/ucontext.h>
+#include <asm/rt_sigframe.h>
 #include <linux/uaccess.h>
+#include "signal32.h"
 
 /* Add FRAME_SIZE to the size x and align it to y. All definitions
  * that use align_frame will include space for a frame.
@@ -218,6 +222,16 @@ int main(void)
 	DEFINE(TI_FLAGS, offsetof(struct thread_info, flags));
 	DEFINE(TI_PRE_COUNT, offsetof(struct task_struct, thread_info.preempt_count));
 	BLANK();
+	DEFINE(ASM_SIGFRAME_SIZE, PARISC_RT_SIGFRAME_SIZE);
+	DEFINE(SIGFRAME_CONTEXT_REGS, offsetof(struct rt_sigframe, uc.uc_mcontext) - PARISC_RT_SIGFRAME_SIZE);
+#ifdef CONFIG_64BIT
+	DEFINE(ASM_SIGFRAME_SIZE32, PARISC_RT_SIGFRAME_SIZE32);
+	DEFINE(SIGFRAME_CONTEXT_REGS32, offsetof(struct compat_rt_sigframe, uc.uc_mcontext) - PARISC_RT_SIGFRAME_SIZE32);
+#else
+	DEFINE(ASM_SIGFRAME_SIZE32, PARISC_RT_SIGFRAME_SIZE);
+	DEFINE(SIGFRAME_CONTEXT_REGS32, offsetof(struct rt_sigframe, uc.uc_mcontext) - PARISC_RT_SIGFRAME_SIZE);
+#endif
+	BLANK();
 	DEFINE(ICACHE_BASE, offsetof(struct pdc_cache_info, ic_base));
 	DEFINE(ICACHE_STRIDE, offsetof(struct pdc_cache_info, ic_stride));
 	DEFINE(ICACHE_COUNT, offsetof(struct pdc_cache_info, ic_count));
@@ -261,6 +275,8 @@ int main(void)
 	 * and kernel data on physical huge pages */
 #ifdef CONFIG_HUGETLB_PAGE
 	DEFINE(HUGEPAGE_SIZE, 1UL << REAL_HPAGE_SHIFT);
+#elif !defined(CONFIG_64BIT)
+	DEFINE(HUGEPAGE_SIZE, 4*1024*1024);
 #else
 	DEFINE(HUGEPAGE_SIZE, PAGE_SIZE);
 #endif

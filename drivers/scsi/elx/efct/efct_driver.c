@@ -42,6 +42,7 @@ efct_device_init(void)
 
 	rc = efct_scsi_reg_fc_transport();
 	if (rc) {
+		efct_scsi_tgt_driver_exit();
 		pr_err("failed to register to FC host\n");
 		return rc;
 	}
@@ -777,5 +778,6 @@ static void __exit efct_exit(void)
 module_init(efct_init);
 module_exit(efct_exit);
 MODULE_VERSION(EFCT_DRIVER_VERSION);
+MODULE_DESCRIPTION("Emulex Fibre Channel Target driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Broadcom");

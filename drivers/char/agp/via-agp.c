@@ -128,9 +128,6 @@ static int via_fetch_size_agp3(void)
 static int via_configure_agp3(void)
 {
 	u32 temp;
-	struct aper_size_info_16 *current_size;
-
-	current_size = A_SIZE_16(agp_bridge->current_size);
 
 	/* address to map to */
 	agp_bridge->gart_bus_addr = pci_bus_address(agp_bridge->dev,
@@ -492,9 +489,7 @@ static void agp_via_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-#define agp_via_suspend NULL
-
-static int __maybe_unused agp_via_resume(struct device *dev)
+static int agp_via_resume(struct device *dev)
 {
 	struct agp_bridge_data *bridge = dev_get_drvdata(dev);
 
@@ -554,7 +549,7 @@ static const struct pci_device_id agp_via_pci_table[] = {
 
 MODULE_DEVICE_TABLE(pci, agp_via_pci_table);
 
-static SIMPLE_DEV_PM_OPS(agp_via_pm_ops, agp_via_suspend, agp_via_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(agp_via_pm_ops, NULL, agp_via_resume);
 
 static struct pci_driver agp_via_pci_driver = {
 	.name		= "agpgart-via",
@@ -580,5 +575,6 @@ static void __exit agp_via_cleanup(void)
 module_init(agp_via_init);
 module_exit(agp_via_cleanup);
 
+MODULE_DESCRIPTION("VIA AGPGART routines");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Dave Jones");

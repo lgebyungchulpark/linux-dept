@@ -152,7 +152,6 @@ struct ad7793_chip_info {
 
 struct ad7793_state {
 	const struct ad7793_chip_info	*chip_info;
-	struct regulator		*reg;
 	u16				int_vref_mv;
 	u16				mode;
 	u16				conf;
@@ -769,14 +768,9 @@ static const struct ad7793_chip_info ad7793_chip_info_tbl[] = {
 	},
 };
 
-static void ad7793_reg_disable(void *reg)
-{
-	regulator_disable(reg);
-}
-
 static int ad7793_probe(struct spi_device *spi)
 {
-	const struct ad7793_platform_data *pdata = spi->dev.platform_data;
+	const struct ad7793_platform_data *pdata = dev_get_platdata(&spi->dev);
 	struct ad7793_state *st;
 	struct iio_dev *indio_dev;
 	int ret, vref_mv = 0;
@@ -800,23 +794,11 @@ static int ad7793_probe(struct spi_device *spi)
 	ad_sd_init(&st->sd, indio_dev, spi, &ad7793_sigma_delta_info);
 
 	if (pdata->refsel != AD7793_REFSEL_INTERNAL) {
-		st->reg = devm_regulator_get(&spi->dev, "refin");
-		if (IS_ERR(st->reg))
-			return PTR_ERR(st->reg);
-
-		ret = regulator_enable(st->reg);
-		if (ret)
+		ret = devm_regulator_get_enable_read_voltage(&spi->dev, "refin");
+		if (ret < 0)
 			return ret;
 
-		ret = devm_add_action_or_reset(&spi->dev, ad7793_reg_disable, st->reg);
-		if (ret)
-			return ret;
-
-		vref_mv = regulator_get_voltage(st->reg);
-		if (vref_mv < 0)
-			return vref_mv;
-
-		vref_mv /= 1000;
+		vref_mv = ret / 1000;
 	} else {
 		vref_mv = 1170; /* Build-in ref */
 	}
@@ -842,16 +824,16 @@ static int ad7793_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad7793_id[] = {
-	{"ad7785", ID_AD7785},
-	{"ad7792", ID_AD7792},
-	{"ad7793", ID_AD7793},
-	{"ad7794", ID_AD7794},
-	{"ad7795", ID_AD7795},
-	{"ad7796", ID_AD7796},
-	{"ad7797", ID_AD7797},
-	{"ad7798", ID_AD7798},
-	{"ad7799", ID_AD7799},
-	{}
+	{ "ad7785", ID_AD7785 },
+	{ "ad7792", ID_AD7792 },
+	{ "ad7793", ID_AD7793 },
+	{ "ad7794", ID_AD7794 },
+	{ "ad7795", ID_AD7795 },
+	{ "ad7796", ID_AD7796 },
+	{ "ad7797", ID_AD7797 },
+	{ "ad7798", ID_AD7798 },
+	{ "ad7799", ID_AD7799 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad7793_id);
 
@@ -867,3 +849,4 @@ module_spi_driver(ad7793_driver);
 MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD7793 and similar ADCs");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_AD_SIGMA_DELTA");

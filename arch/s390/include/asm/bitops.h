@@ -113,76 +113,71 @@ static inline bool arch_test_and_change_bit(unsigned long nr,
 	return old & mask;
 }
 
-static inline void arch___set_bit(unsigned long nr, volatile unsigned long *ptr)
+static __always_inline void
+arch___set_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	unsigned long *addr = __bitops_word(nr, ptr);
+	unsigned long *p = __bitops_word(nr, addr);
 	unsigned long mask = __bitops_mask(nr);
 
-	*addr |= mask;
+	*p |= mask;
 }
 
-static inline void arch___clear_bit(unsigned long nr,
-				    volatile unsigned long *ptr)
+static __always_inline void
+arch___clear_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	unsigned long *addr = __bitops_word(nr, ptr);
+	unsigned long *p = __bitops_word(nr, addr);
 	unsigned long mask = __bitops_mask(nr);
 
-	*addr &= ~mask;
+	*p &= ~mask;
 }
 
-static inline void arch___change_bit(unsigned long nr,
-				     volatile unsigned long *ptr)
+static __always_inline void
+arch___change_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	unsigned long *addr = __bitops_word(nr, ptr);
+	unsigned long *p = __bitops_word(nr, addr);
 	unsigned long mask = __bitops_mask(nr);
 
-	*addr ^= mask;
+	*p ^= mask;
 }
 
-static inline bool arch___test_and_set_bit(unsigned long nr,
-					   volatile unsigned long *ptr)
+static __always_inline bool
+arch___test_and_set_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	unsigned long *addr = __bitops_word(nr, ptr);
-	unsigned long mask = __bitops_mask(nr);
-	unsigned long old;
-
-	old = *addr;
-	*addr |= mask;
-	return old & mask;
-}
-
-static inline bool arch___test_and_clear_bit(unsigned long nr,
-					     volatile unsigned long *ptr)
-{
-	unsigned long *addr = __bitops_word(nr, ptr);
+	unsigned long *p = __bitops_word(nr, addr);
 	unsigned long mask = __bitops_mask(nr);
 	unsigned long old;
 
-	old = *addr;
-	*addr &= ~mask;
+	old = *p;
+	*p |= mask;
 	return old & mask;
 }
 
-static inline bool arch___test_and_change_bit(unsigned long nr,
-					      volatile unsigned long *ptr)
+static __always_inline bool
+arch___test_and_clear_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	unsigned long *addr = __bitops_word(nr, ptr);
+	unsigned long *p = __bitops_word(nr, addr);
 	unsigned long mask = __bitops_mask(nr);
 	unsigned long old;
 
-	old = *addr;
-	*addr ^= mask;
+	old = *p;
+	*p &= ~mask;
 	return old & mask;
 }
 
-static inline bool arch_test_bit(unsigned long nr,
-				 const volatile unsigned long *ptr)
+static __always_inline bool
+arch___test_and_change_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	const volatile unsigned long *addr = __bitops_word(nr, ptr);
+	unsigned long *p = __bitops_word(nr, addr);
 	unsigned long mask = __bitops_mask(nr);
+	unsigned long old;
 
-	return *addr & mask;
+	old = *p;
+	*p ^= mask;
+	return old & mask;
 }
+
+#define arch_test_bit generic_test_bit
+#define arch_test_bit_acquire generic_test_bit_acquire
 
 static inline bool arch_test_and_set_bit_lock(unsigned long nr,
 					      volatile unsigned long *ptr)
@@ -205,6 +200,16 @@ static inline void arch___clear_bit_unlock(unsigned long nr,
 	smp_mb();
 	arch___clear_bit(nr, ptr);
 }
+
+static inline bool arch_xor_unlock_is_negative_byte(unsigned long mask,
+		volatile unsigned long *ptr)
+{
+	unsigned long old;
+
+	old = __atomic64_xor_barrier(mask, (long *)ptr);
+	return old & BIT(7);
+}
+#define arch_xor_unlock_is_negative_byte arch_xor_unlock_is_negative_byte
 
 #include <asm-generic/bitops/instrumented-atomic.h>
 #include <asm-generic/bitops/instrumented-non-atomic.h>
@@ -255,8 +260,6 @@ static inline bool test_bit_inv(unsigned long nr,
 {
 	return test_bit(nr ^ (BITS_PER_LONG - 1), ptr);
 }
-
-#ifdef CONFIG_HAVE_MARCH_Z9_109_FEATURES
 
 /**
  * __flogr - find leftmost one
@@ -376,18 +379,9 @@ static inline int fls(unsigned int word)
 	return fls64(word);
 }
 
-#else /* CONFIG_HAVE_MARCH_Z9_109_FEATURES */
-
-#include <asm-generic/bitops/__ffs.h>
-#include <asm-generic/bitops/ffs.h>
-#include <asm-generic/bitops/__fls.h>
-#include <asm-generic/bitops/fls.h>
-#include <asm-generic/bitops/fls64.h>
-
-#endif /* CONFIG_HAVE_MARCH_Z9_109_FEATURES */
-
+#include <asm/arch_hweight.h>
+#include <asm-generic/bitops/const_hweight.h>
 #include <asm-generic/bitops/ffz.h>
-#include <asm-generic/bitops/hweight.h>
 #include <asm-generic/bitops/sched.h>
 #include <asm-generic/bitops/le.h>
 #include <asm-generic/bitops/ext2-atomic-setbit.h>

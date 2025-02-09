@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * SPI bus driver for the Ingenic JZ47xx SoCs
+ * SPI bus driver for the Ingenic SoCs
  * Copyright (c) 2017-2021 Artur Rojek <contact@artur-rojek.eu>
  * Copyright (c) 2017-2021 Paul Cercueil <paul@crapouillou.net>
+ * Copyright (c) 2022 周琰杰 (Zhou Yanjie) <zhouyanjie@wanyeetech.com>
  */
 
 #include <linux/clk.h>
@@ -11,10 +12,11 @@
 #include <linux/dma-mapping.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
+#include "internals.h"
 
 #define REG_SSIDR	0x0
 #define REG_SSICR0	0x4
@@ -52,6 +54,9 @@ struct jz_soc_info {
 	u32 bits_per_word_mask;
 	struct reg_field flen_field;
 	bool has_trendian;
+
+	unsigned int max_speed_hz;
+	unsigned int max_native_cs;
 };
 
 struct ingenic_spi {
@@ -238,11 +243,10 @@ static int spi_ingenic_transfer_one(struct spi_controller *ctlr,
 {
 	struct ingenic_spi *priv = spi_controller_get_devdata(ctlr);
 	unsigned int bits = xfer->bits_per_word ?: spi->bits_per_word;
-	bool can_dma = ctlr->can_dma && ctlr->can_dma(ctlr, spi, xfer);
 
 	spi_ingenic_prepare_transfer(priv, spi, xfer);
 
-	if (ctlr->cur_msg_mapped && can_dma)
+	if (spi_xfer_is_dma_mapped(ctlr, spi, xfer))
 		return spi_ingenic_dma_tx(ctlr, xfer, bits);
 
 	if (bits > 16)
@@ -259,7 +263,7 @@ static int spi_ingenic_prepare_message(struct spi_controller *ctlr,
 {
 	struct ingenic_spi *priv = spi_controller_get_devdata(ctlr);
 	struct spi_device *spi = message->spi;
-	unsigned int cs = REG_SSICR1_FRMHL << spi->chip_select;
+	unsigned int cs = REG_SSICR1_FRMHL << spi_get_chipselect(spi, 0);
 	unsigned int ssicr0_mask = REG_SSICR0_LOOP | REG_SSICR0_FSEL;
 	unsigned int ssicr1_mask = REG_SSICR1_PHA | REG_SSICR1_POL | cs;
 	unsigned int ssicr0 = 0, ssicr1 = 0;
@@ -278,7 +282,7 @@ static int spi_ingenic_prepare_message(struct spi_controller *ctlr,
 
 	if (spi->mode & SPI_LOOP)
 		ssicr0 |= REG_SSICR0_LOOP;
-	if (spi->chip_select)
+	if (spi_get_chipselect(spi, 0))
 		ssicr0 |= REG_SSICR0_FSEL;
 
 	if (spi->mode & SPI_CPHA)
@@ -342,14 +346,17 @@ static bool spi_ingenic_can_dma(struct spi_controller *ctlr,
 static int spi_ingenic_request_dma(struct spi_controller *ctlr,
 				   struct device *dev)
 {
-	ctlr->dma_tx = dma_request_slave_channel(dev, "tx");
-	if (!ctlr->dma_tx)
-		return -ENODEV;
+	struct dma_chan *chan;
 
-	ctlr->dma_rx = dma_request_slave_channel(dev, "rx");
+	chan = dma_request_chan(dev, "tx");
+	if (IS_ERR(chan))
+		return PTR_ERR(chan);
+	ctlr->dma_tx = chan;
 
-	if (!ctlr->dma_rx)
-		return -ENODEV;
+	chan = dma_request_chan(dev, "rx");
+	if (IS_ERR(chan))
+		return PTR_ERR(chan);
+	ctlr->dma_rx = chan;
 
 	ctlr->can_dma = spi_ingenic_can_dma;
 
@@ -380,7 +387,7 @@ static int spi_ingenic_probe(struct platform_device *pdev)
 	struct spi_controller *ctlr;
 	struct ingenic_spi *priv;
 	void __iomem *base;
-	int ret;
+	int num_cs, ret;
 
 	pdata = of_device_get_match_data(dev);
 	if (!pdata) {
@@ -388,7 +395,7 @@ static int spi_ingenic_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	ctlr = devm_spi_alloc_master(dev, sizeof(*priv));
+	ctlr = devm_spi_alloc_host(dev, sizeof(*priv));
 	if (!ctlr) {
 		dev_err(dev, "Unable to allocate SPI controller.\n");
 		return -ENOMEM;
@@ -416,6 +423,9 @@ static int spi_ingenic_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->flen_field))
 		return PTR_ERR(priv->flen_field);
 
+	if (device_property_read_u32(dev, "num-cs", &num_cs))
+		num_cs = pdata->max_native_cs;
+
 	platform_set_drvdata(pdev, ctlr);
 
 	ctlr->prepare_transfer_hardware = spi_ingenic_prepare_hardware;
@@ -428,8 +438,10 @@ static int spi_ingenic_probe(struct platform_device *pdev)
 	ctlr->max_dma_len = SPI_INGENIC_FIFO_SIZE;
 	ctlr->bits_per_word_mask = pdata->bits_per_word_mask;
 	ctlr->min_speed_hz = 7200;
-	ctlr->max_speed_hz = 54000000;
-	ctlr->num_chipselect = 2;
+	ctlr->max_speed_hz = pdata->max_speed_hz;
+	ctlr->use_gpio_descriptors = true;
+	ctlr->max_native_cs = pdata->max_native_cs;
+	ctlr->num_chipselect = num_cs;
 	ctlr->dev.of_node = pdev->dev.of_node;
 
 	if (spi_ingenic_request_dma(ctlr, dev))
@@ -452,17 +464,44 @@ static const struct jz_soc_info jz4750_soc_info = {
 	.bits_per_word_mask = SPI_BPW_RANGE_MASK(2, 17),
 	.flen_field = REG_FIELD(REG_SSICR1, 4, 7),
 	.has_trendian = false,
+
+	.max_speed_hz = 54000000,
+	.max_native_cs = 2,
 };
 
 static const struct jz_soc_info jz4780_soc_info = {
 	.bits_per_word_mask = SPI_BPW_RANGE_MASK(2, 32),
 	.flen_field = REG_FIELD(REG_SSICR1, 3, 7),
 	.has_trendian = true,
+
+	.max_speed_hz = 54000000,
+	.max_native_cs = 2,
+};
+
+static const struct jz_soc_info x1000_soc_info = {
+	.bits_per_word_mask = SPI_BPW_RANGE_MASK(2, 32),
+	.flen_field = REG_FIELD(REG_SSICR1, 3, 7),
+	.has_trendian = true,
+
+	.max_speed_hz = 50000000,
+	.max_native_cs = 2,
+};
+
+static const struct jz_soc_info x2000_soc_info = {
+	.bits_per_word_mask = SPI_BPW_RANGE_MASK(2, 32),
+	.flen_field = REG_FIELD(REG_SSICR1, 3, 7),
+	.has_trendian = true,
+
+	.max_speed_hz = 50000000,
+	.max_native_cs = 1,
 };
 
 static const struct of_device_id spi_ingenic_of_match[] = {
 	{ .compatible = "ingenic,jz4750-spi", .data = &jz4750_soc_info },
+	{ .compatible = "ingenic,jz4775-spi", .data = &jz4780_soc_info },
 	{ .compatible = "ingenic,jz4780-spi", .data = &jz4780_soc_info },
+	{ .compatible = "ingenic,x1000-spi", .data = &x1000_soc_info },
+	{ .compatible = "ingenic,x2000-spi", .data = &x2000_soc_info },
 	{}
 };
 MODULE_DEVICE_TABLE(of, spi_ingenic_of_match);
@@ -476,7 +515,8 @@ static struct platform_driver spi_ingenic_driver = {
 };
 
 module_platform_driver(spi_ingenic_driver);
-MODULE_DESCRIPTION("SPI bus driver for the Ingenic JZ47xx SoCs");
+MODULE_DESCRIPTION("SPI bus driver for the Ingenic SoCs");
 MODULE_AUTHOR("Artur Rojek <contact@artur-rojek.eu>");
 MODULE_AUTHOR("Paul Cercueil <paul@crapouillou.net>");
+MODULE_AUTHOR("周琰杰 (Zhou Yanjie) <zhouyanjie@wanyeetech.com>");
 MODULE_LICENSE("GPL");

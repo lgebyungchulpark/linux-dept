@@ -23,6 +23,7 @@
 #include <asm/page.h>
 #include <asm/pgalloc.h>
 #include <asm/sections.h>
+#include <asm/sgialib.h>
 
 #include <asm/sn/arch.h>
 #include <asm/sn/agent.h>
@@ -34,7 +35,6 @@
 #define PFN_NASIDSHFT		(NASID_SHFT - PAGE_SHIFT)
 
 struct node_data *__node_data[MAX_NUMNODES];
-
 EXPORT_SYMBOL(__node_data);
 
 static u64 gen_region_mask(void)
@@ -360,6 +360,7 @@ static void __init node_mem_init(nasid_t node)
 	 */
 	__node_data[node] = __va(slot_freepfn << PAGE_SHIFT);
 	memset(__node_data[node], 0, PAGE_SIZE);
+	node_data[node] = &__node_data[node]->pglist;
 
 	NODE_DATA(node)->node_start_pfn = start_pfn;
 	NODE_DATA(node)->node_spanned_pages = end_pfn - start_pfn;

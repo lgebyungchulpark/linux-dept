@@ -20,15 +20,25 @@
 #include <linux/blkdev.h>
 #include <linux/radix-tree.h>
 #include <linux/t10-pi.h>
+#include <linux/kfifo.h>
 
-#define NVMET_DEFAULT_VS		NVME_VS(1, 3, 0)
+#define NVMET_DEFAULT_VS		NVME_VS(2, 1, 0)
 
+#define NVMET_NS_ENABLED		XA_MARK_1
 #define NVMET_ASYNC_EVENTS		4
 #define NVMET_ERROR_LOG_SLOTS		128
 #define NVMET_NO_ERROR_LOC		((u16)-1)
 #define NVMET_DEFAULT_CTRL_MODEL	"Linux"
 #define NVMET_MN_MAX_SIZE		40
 #define NVMET_SN_MAX_SIZE		20
+#define NVMET_FR_MAX_SIZE		8
+#define NVMET_PR_LOG_QUEUE_SIZE		64
+
+#define nvmet_for_each_ns(xa, index, entry) \
+	xa_for_each(xa, index, entry)
+
+#define nvmet_for_each_enabled_ns(xa, index, entry) \
+	xa_for_each_marked(xa, index, entry, NVMET_NS_ENABLED)
 
 /*
  * Supported optional AENs:
@@ -55,8 +65,41 @@
 #define IPO_IATTR_CONNECT_SQE(x)	\
 	(cpu_to_le32(offsetof(struct nvmf_connect_command, x)))
 
+struct nvmet_pr_registrant {
+	u64			rkey;
+	uuid_t			hostid;
+	enum nvme_pr_type	rtype;
+	struct list_head	entry;
+	struct rcu_head		rcu;
+};
+
+struct nvmet_pr {
+	bool			enable;
+	unsigned long		notify_mask;
+	atomic_t		generation;
+	struct nvmet_pr_registrant __rcu *holder;
+	/*
+	 * During the execution of the reservation command, mutual
+	 * exclusion is required throughout the process. However,
+	 * while waiting asynchronously for the 'per controller
+	 * percpu_ref' to complete before the 'preempt and abort'
+	 * command finishes, a semaphore is needed to ensure mutual
+	 * exclusion instead of a mutex.
+	 */
+	struct semaphore	pr_sem;
+	struct list_head	registrant_list;
+};
+
+struct nvmet_pr_per_ctrl_ref {
+	struct percpu_ref	ref;
+	struct completion	free_done;
+	struct completion	confirm_done;
+	uuid_t			hostid;
+};
+
 struct nvmet_ns {
 	struct percpu_ref	ref;
+	struct file		*bdev_file;
 	struct block_device	*bdev;
 	struct file		*file;
 	bool			readonly;
@@ -77,13 +120,14 @@ struct nvmet_ns {
 
 	struct completion	disable_done;
 	mempool_t		*bvec_pool;
-	struct kmem_cache	*bvec_cache;
 
-	int			use_p2pmem;
 	struct pci_dev		*p2p_dev;
+	int			use_p2pmem;
 	int			pi_type;
 	int			metadata_size;
 	u8			csi;
+	struct nvmet_pr		pr;
+	struct xarray		pr_per_ctrl_refs;
 };
 
 static inline struct nvmet_ns *to_nvmet_ns(struct config_item *item)
@@ -108,6 +152,19 @@ struct nvmet_sq {
 	u16			size;
 	u32			sqhd;
 	bool			sqhd_disabled;
+#ifdef CONFIG_NVME_TARGET_AUTH
+	bool			authenticated;
+	struct delayed_work	auth_expired_work;
+	u16			dhchap_tid;
+	u8			dhchap_status;
+	u8			dhchap_step;
+	u8			*dhchap_c1;
+	u8			*dhchap_c2;
+	u32			dhchap_s1;
+	u32			dhchap_s2;
+	u8			*dhchap_skey;
+	int			dhchap_skey_len;
+#endif
 	struct completion	free_done;
 	struct completion	confirm_done;
 };
@@ -145,9 +202,11 @@ struct nvmet_port {
 	struct config_group		ana_groups_group;
 	struct nvmet_ana_group		ana_default_group;
 	enum nvme_ana_state		*ana_state;
+	struct key			*keyring;
 	void				*priv;
 	bool				enabled;
 	int				inline_data_size;
+	int				max_queue_size;
 	const struct nvmet_fabrics_ops	*tr_ops;
 	bool				pi_enable;
 };
@@ -164,6 +223,23 @@ static inline struct nvmet_port *ana_groups_to_port(
 	return container_of(to_config_group(item), struct nvmet_port,
 			ana_groups_group);
 }
+
+static inline u8 nvmet_port_disc_addr_treq_secure_channel(struct nvmet_port *port)
+{
+	return (port->disc_addr.treq & NVME_TREQ_SECURE_CHANNEL_MASK);
+}
+
+static inline bool nvmet_port_secure_channel_required(struct nvmet_port *port)
+{
+    return nvmet_port_disc_addr_treq_secure_channel(port) == NVMF_TREQ_REQUIRED;
+}
+
+struct nvmet_pr_log_mgr {
+	struct mutex		lock;
+	u64			lost_count;
+	u64			counter;
+	DECLARE_KFIFO(log_queue, struct nvme_pr_log, NVMET_PR_LOG_QUEUE_SIZE);
+};
 
 struct nvmet_ctrl {
 	struct nvmet_subsys	*subsys;
@@ -204,11 +280,23 @@ struct nvmet_ctrl {
 
 	struct device		*p2p_client;
 	struct radix_tree_root	p2p_ns_map;
-
+#ifdef CONFIG_NVME_TARGET_DEBUGFS
+	struct dentry		*debugfs_dir;
+#endif
 	spinlock_t		error_lock;
 	u64			err_counter;
 	struct nvme_error_slot	slots[NVMET_ERROR_LOG_SLOTS];
 	bool			pi_support;
+#ifdef CONFIG_NVME_TARGET_AUTH
+	struct nvme_dhchap_key	*host_key;
+	struct nvme_dhchap_key	*ctrl_key;
+	u8			shash_id;
+	struct crypto_kpp	*dh_tfm;
+	u8			dh_gid;
+	u8			*dh_key;
+	size_t			dh_keysize;
+#endif
+	struct nvmet_pr_log_mgr pr_log_mgr;
 };
 
 struct nvmet_subsys {
@@ -227,7 +315,9 @@ struct nvmet_subsys {
 
 	struct list_head	hosts;
 	bool			allow_any_host;
-
+#ifdef CONFIG_NVME_TARGET_DEBUGFS
+	struct dentry		*debugfs_dir;
+#endif
 	u16			max_qid;
 
 	u64			ver;
@@ -242,6 +332,8 @@ struct nvmet_subsys {
 	struct config_group	allowed_hosts_group;
 
 	char			*model_number;
+	u32			ieee_oui;
+	char			*firmware_rev;
 
 #ifdef CONFIG_NVME_TARGET_PASSTHRU
 	struct nvme_ctrl	*passthru_ctrl;
@@ -249,6 +341,7 @@ struct nvmet_subsys {
 	struct config_group	passthru_group;
 	unsigned int		admin_timeout;
 	unsigned int		io_timeout;
+	unsigned int		clear_ids;
 #endif /* CONFIG_NVME_TARGET_PASSTHRU */
 
 #ifdef CONFIG_BLK_DEV_ZONED
@@ -270,6 +363,12 @@ static inline struct nvmet_subsys *namespaces_to_subsys(
 
 struct nvmet_host {
 	struct config_group	group;
+	u8			*dhchap_secret;
+	u8			*dhchap_ctrl_secret;
+	u8			dhchap_key_hash;
+	u8			dhchap_ctrl_key_hash;
+	u8			dhchap_hash_id;
+	u8			dhchap_dhgroup_id;
 };
 
 static inline struct nvmet_host *to_host(struct config_item *item)
@@ -306,6 +405,8 @@ struct nvmet_fabrics_ops {
 	void (*delete_ctrl)(struct nvmet_ctrl *ctrl);
 	void (*disc_traddr)(struct nvmet_req *req,
 			struct nvmet_port *port, char *traddr);
+	ssize_t (*host_traddr)(struct nvmet_ctrl *ctrl,
+			char *traddr, size_t traddr_len);
 	u16 (*install_queue)(struct nvmet_sq *nvme_sq);
 	void (*discovery_chg)(struct nvmet_port *port);
 	u8 (*get_mdts)(const struct nvmet_ctrl *ctrl);
@@ -346,6 +447,9 @@ struct nvmet_req {
 			struct work_struct	zmgmt_work;
 		} z;
 #endif /* CONFIG_BLK_DEV_ZONED */
+		struct {
+			struct work_struct	abort_work;
+		} r;
 	};
 	int			sg_cnt;
 	int			metadata_sg_cnt;
@@ -362,10 +466,14 @@ struct nvmet_req {
 	struct device		*p2p_client;
 	u16			error_loc;
 	u64			error_slba;
+	struct nvmet_pr_per_ctrl_ref *pc_ref;
 };
 
+#define NVMET_MAX_MPOOL_BVEC		16
+extern struct kmem_cache *nvmet_bvec_cache;
 extern struct workqueue_struct *buffered_io_wq;
 extern struct workqueue_struct *zbd_wq;
+extern struct workqueue_struct *nvmet_wq;
 
 static inline void nvmet_set_result(struct nvmet_req *req, u32 result)
 {
@@ -418,7 +526,8 @@ u16 nvmet_file_parse_io_cmd(struct nvmet_req *req);
 u16 nvmet_bdev_zns_parse_io_cmd(struct nvmet_req *req);
 u16 nvmet_parse_admin_cmd(struct nvmet_req *req);
 u16 nvmet_parse_discovery_cmd(struct nvmet_req *req);
-u16 nvmet_parse_fabrics_cmd(struct nvmet_req *req);
+u16 nvmet_parse_fabrics_admin_cmd(struct nvmet_req *req);
+u16 nvmet_parse_fabrics_io_cmd(struct nvmet_req *req);
 
 bool nvmet_req_init(struct nvmet_req *req, struct nvmet_cq *cq,
 		struct nvmet_sq *sq, const struct nvmet_fabrics_ops *ops);
@@ -444,12 +553,15 @@ void nvmet_ctrl_fatal_error(struct nvmet_ctrl *ctrl);
 
 void nvmet_update_cc(struct nvmet_ctrl *ctrl, u32 new);
 u16 nvmet_alloc_ctrl(const char *subsysnqn, const char *hostnqn,
-		struct nvmet_req *req, u32 kato, struct nvmet_ctrl **ctrlp);
+		struct nvmet_req *req, u32 kato, struct nvmet_ctrl **ctrlp,
+		uuid_t *hostid);
 struct nvmet_ctrl *nvmet_ctrl_find_get(const char *subsysnqn,
 				       const char *hostnqn, u16 cntlid,
 				       struct nvmet_req *req);
 void nvmet_ctrl_put(struct nvmet_ctrl *ctrl);
 u16 nvmet_check_ctrl_status(struct nvmet_req *req);
+ssize_t nvmet_ctrl_host_traddr(struct nvmet_ctrl *ctrl,
+		char *traddr, size_t traddr_len);
 
 struct nvmet_subsys *nvmet_subsys_alloc(const char *subsysnqn,
 		enum nvme_subsys_type type);
@@ -495,10 +607,12 @@ void nvmet_subsys_disc_changed(struct nvmet_subsys *subsys,
 		struct nvmet_host *host);
 void nvmet_add_async_event(struct nvmet_ctrl *ctrl, u8 event_type,
 		u8 event_info, u8 log_page);
+bool nvmet_subsys_nsid_exists(struct nvmet_subsys *subsys, u32 nsid);
 
-#define NVMET_QUEUE_SIZE	1024
+#define NVMET_MIN_QUEUE_SIZE	16
+#define NVMET_MAX_QUEUE_SIZE	1024
 #define NVMET_NR_QUEUES		128
-#define NVMET_MAX_CMD		NVMET_QUEUE_SIZE
+#define NVMET_MAX_CMD(ctrl)	(NVME_CAP_MQES(ctrl->cap) + 1)
 
 /*
  * Nice round number that makes a list of nsids fit into a page.
@@ -541,13 +655,13 @@ u16 nvmet_bdev_flush(struct nvmet_req *req);
 u16 nvmet_file_flush(struct nvmet_req *req);
 void nvmet_ns_changed(struct nvmet_subsys *subsys, u32 nsid);
 void nvmet_bdev_ns_revalidate(struct nvmet_ns *ns);
-int nvmet_file_ns_revalidate(struct nvmet_ns *ns);
-void nvmet_ns_revalidate(struct nvmet_ns *ns);
+void nvmet_file_ns_revalidate(struct nvmet_ns *ns);
+bool nvmet_ns_revalidate(struct nvmet_ns *ns);
 u16 blk_to_nvme_status(struct nvmet_req *req, blk_status_t blk_sts);
 
 bool nvmet_bdev_zns_enable(struct nvmet_ns *ns);
-void nvmet_execute_identify_cns_cs_ctrl(struct nvmet_req *req);
-void nvmet_execute_identify_cns_cs_ns(struct nvmet_req *req);
+void nvmet_execute_identify_ctrl_zns(struct nvmet_req *req);
+void nvmet_execute_identify_ns_zns(struct nvmet_req *req);
 void nvmet_bdev_execute_zone_mgmt_recv(struct nvmet_req *req);
 void nvmet_bdev_execute_zone_mgmt_send(struct nvmet_req *req);
 void nvmet_bdev_execute_zone_append(struct nvmet_req *req);
@@ -652,18 +766,69 @@ static inline bool nvmet_use_inline_bvec(struct nvmet_req *req)
 	       req->sg_cnt <= NVMET_MAX_INLINE_BIOVEC;
 }
 
-static inline void nvmet_req_cns_error_complete(struct nvmet_req *req)
-{
-	pr_debug("unhandled identify cns %d on qid %d\n",
-	       req->cmd->identify.cns, req->sq->qid);
-	req->error_loc = offsetof(struct nvme_identify, cns);
-	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_SC_DNR);
-}
-
 static inline void nvmet_req_bio_put(struct nvmet_req *req, struct bio *bio)
 {
 	if (bio != &req->b.inline_bio)
 		bio_put(bio);
 }
 
+#ifdef CONFIG_NVME_TARGET_AUTH
+void nvmet_execute_auth_send(struct nvmet_req *req);
+void nvmet_execute_auth_receive(struct nvmet_req *req);
+int nvmet_auth_set_key(struct nvmet_host *host, const char *secret,
+		       bool set_ctrl);
+int nvmet_auth_set_host_hash(struct nvmet_host *host, const char *hash);
+u8 nvmet_setup_auth(struct nvmet_ctrl *ctrl);
+void nvmet_auth_sq_init(struct nvmet_sq *sq);
+void nvmet_destroy_auth(struct nvmet_ctrl *ctrl);
+void nvmet_auth_sq_free(struct nvmet_sq *sq);
+int nvmet_setup_dhgroup(struct nvmet_ctrl *ctrl, u8 dhgroup_id);
+bool nvmet_check_auth_status(struct nvmet_req *req);
+int nvmet_auth_host_hash(struct nvmet_req *req, u8 *response,
+			 unsigned int hash_len);
+int nvmet_auth_ctrl_hash(struct nvmet_req *req, u8 *response,
+			 unsigned int hash_len);
+static inline bool nvmet_has_auth(struct nvmet_ctrl *ctrl)
+{
+	return ctrl->host_key != NULL;
+}
+int nvmet_auth_ctrl_exponential(struct nvmet_req *req,
+				u8 *buf, int buf_size);
+int nvmet_auth_ctrl_sesskey(struct nvmet_req *req,
+			    u8 *buf, int buf_size);
+#else
+static inline u8 nvmet_setup_auth(struct nvmet_ctrl *ctrl)
+{
+	return 0;
+}
+static inline void nvmet_auth_sq_init(struct nvmet_sq *sq)
+{
+}
+static inline void nvmet_destroy_auth(struct nvmet_ctrl *ctrl) {};
+static inline void nvmet_auth_sq_free(struct nvmet_sq *sq) {};
+static inline bool nvmet_check_auth_status(struct nvmet_req *req)
+{
+	return true;
+}
+static inline bool nvmet_has_auth(struct nvmet_ctrl *ctrl)
+{
+	return false;
+}
+static inline const char *nvmet_dhchap_dhgroup_name(u8 dhgid) { return NULL; }
+#endif
+
+int nvmet_pr_init_ns(struct nvmet_ns *ns);
+u16 nvmet_parse_pr_cmd(struct nvmet_req *req);
+u16 nvmet_pr_check_cmd_access(struct nvmet_req *req);
+int nvmet_ctrl_init_pr(struct nvmet_ctrl *ctrl);
+void nvmet_ctrl_destroy_pr(struct nvmet_ctrl *ctrl);
+void nvmet_pr_exit_ns(struct nvmet_ns *ns);
+void nvmet_execute_get_log_page_resv(struct nvmet_req *req);
+u16 nvmet_set_feat_resv_notif_mask(struct nvmet_req *req, u32 mask);
+u16 nvmet_get_feat_resv_notif_mask(struct nvmet_req *req);
+u16 nvmet_pr_get_ns_pc_ref(struct nvmet_req *req);
+static inline void nvmet_pr_put_ns_pc_ref(struct nvmet_pr_per_ctrl_ref *pc_ref)
+{
+	percpu_ref_put(&pc_ref->ref);
+}
 #endif /* _NVMET_H */

@@ -28,6 +28,11 @@ struct cachefiles_xattr {
 static const char cachefiles_xattr_cache[] =
 	XATTR_USER_PREFIX "CacheFiles.cache";
 
+struct cachefiles_vol_xattr {
+	__be32	reserved;	/* Reserved, should be 0 */
+	__u8	data[];		/* netfs volume coherency data */
+} __packed;
+
 /*
  * set the state xattr on a cache file
  */
@@ -59,9 +64,15 @@ int cachefiles_set_object_xattr(struct cachefiles_object *object)
 		memcpy(buf->data, fscache_get_aux(object->cookie), len);
 
 	ret = cachefiles_inject_write_error();
-	if (ret == 0)
-		ret = vfs_setxattr(&init_user_ns, dentry, cachefiles_xattr_cache,
-				   buf, sizeof(struct cachefiles_xattr) + len, 0);
+	if (ret == 0) {
+		ret = mnt_want_write_file(file);
+		if (ret == 0) {
+			ret = vfs_setxattr(&nop_mnt_idmap, dentry,
+					   cachefiles_xattr_cache, buf,
+					   sizeof(struct cachefiles_xattr) + len, 0);
+			mnt_drop_write_file(file);
+		}
+	}
 	if (ret < 0) {
 		trace_cachefiles_vfs_error(object, file_inode(file), ret,
 					   cachefiles_trace_setxattr_error);
@@ -103,11 +114,13 @@ int cachefiles_check_auxdata(struct cachefiles_object *object, struct file *file
 
 	xlen = cachefiles_inject_read_error();
 	if (xlen == 0)
-		xlen = vfs_getxattr(&init_user_ns, dentry, cachefiles_xattr_cache, buf, tlen);
+		xlen = vfs_getxattr(&nop_mnt_idmap, dentry, cachefiles_xattr_cache, buf, tlen);
 	if (xlen != tlen) {
-		if (xlen < 0)
+		if (xlen < 0) {
+			ret = xlen;
 			trace_cachefiles_vfs_error(object, file_inode(file), xlen,
 						   cachefiles_trace_getxattr_error);
+		}
 		if (xlen == -EIO)
 			cachefiles_io_error_obj(
 				object,
@@ -144,8 +157,14 @@ int cachefiles_remove_object_xattr(struct cachefiles_cache *cache,
 	int ret;
 
 	ret = cachefiles_inject_remove_error();
-	if (ret == 0)
-		ret = vfs_removexattr(&init_user_ns, dentry, cachefiles_xattr_cache);
+	if (ret == 0) {
+		ret = mnt_want_write(cache->mnt);
+		if (ret == 0) {
+			ret = vfs_removexattr(&nop_mnt_idmap, dentry,
+					      cachefiles_xattr_cache);
+			mnt_drop_write(cache->mnt);
+		}
+	}
 	if (ret < 0) {
 		trace_cachefiles_vfs_error(object, d_inode(dentry), ret,
 					   cachefiles_trace_remxattr_error);
@@ -185,6 +204,7 @@ void cachefiles_prepare_to_write(struct fscache_cookie *cookie)
  */
 bool cachefiles_set_volume_xattr(struct cachefiles_volume *volume)
 {
+	struct cachefiles_vol_xattr *buf;
 	unsigned int len = volume->vcookie->coherency_len;
 	const void *p = volume->vcookie->coherency;
 	struct dentry *dentry = volume->dentry;
@@ -192,10 +212,23 @@ bool cachefiles_set_volume_xattr(struct cachefiles_volume *volume)
 
 	_enter("%x,#%d", volume->vcookie->debug_id, len);
 
+	len += sizeof(*buf);
+	buf = kmalloc(len, GFP_KERNEL);
+	if (!buf)
+		return false;
+	buf->reserved = cpu_to_be32(0);
+	memcpy(buf->data, p, volume->vcookie->coherency_len);
+
 	ret = cachefiles_inject_write_error();
-	if (ret == 0)
-		ret = vfs_setxattr(&init_user_ns, dentry, cachefiles_xattr_cache,
-				   p, len, 0);
+	if (ret == 0) {
+		ret = mnt_want_write(volume->cache->mnt);
+		if (ret == 0) {
+			ret = vfs_setxattr(&nop_mnt_idmap, dentry,
+					   cachefiles_xattr_cache,
+					   buf, len, 0);
+			mnt_drop_write(volume->cache->mnt);
+		}
+	}
 	if (ret < 0) {
 		trace_cachefiles_vfs_error(NULL, d_inode(dentry), ret,
 					   cachefiles_trace_setxattr_error);
@@ -209,6 +242,7 @@ bool cachefiles_set_volume_xattr(struct cachefiles_volume *volume)
 					       cachefiles_coherency_vol_set_ok);
 	}
 
+	kfree(buf);
 	_leave(" = %d", ret);
 	return ret == 0;
 }
@@ -218,7 +252,7 @@ bool cachefiles_set_volume_xattr(struct cachefiles_volume *volume)
  */
 int cachefiles_check_volume_xattr(struct cachefiles_volume *volume)
 {
-	struct cachefiles_xattr *buf;
+	struct cachefiles_vol_xattr *buf;
 	struct dentry *dentry = volume->dentry;
 	unsigned int len = volume->vcookie->coherency_len;
 	const void *p = volume->vcookie->coherency;
@@ -228,15 +262,17 @@ int cachefiles_check_volume_xattr(struct cachefiles_volume *volume)
 
 	_enter("");
 
+	len += sizeof(*buf);
 	buf = kmalloc(len, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
 	xlen = cachefiles_inject_read_error();
 	if (xlen == 0)
-		xlen = vfs_getxattr(&init_user_ns, dentry, cachefiles_xattr_cache, buf, len);
+		xlen = vfs_getxattr(&nop_mnt_idmap, dentry, cachefiles_xattr_cache, buf, len);
 	if (xlen != len) {
 		if (xlen < 0) {
+			ret = xlen;
 			trace_cachefiles_vfs_error(NULL, d_inode(dentry), xlen,
 						   cachefiles_trace_getxattr_error);
 			if (xlen == -EIO)
@@ -245,7 +281,9 @@ int cachefiles_check_volume_xattr(struct cachefiles_volume *volume)
 					"Failed to read xattr with error %zd", xlen);
 		}
 		why = cachefiles_coherency_vol_check_xattr;
-	} else if (memcmp(buf->data, p, len) != 0) {
+	} else if (buf->reserved != cpu_to_be32(0)) {
+		why = cachefiles_coherency_vol_check_resv;
+	} else if (memcmp(buf->data, p, len - sizeof(*buf)) != 0) {
 		why = cachefiles_coherency_vol_check_cmp;
 	} else {
 		why = cachefiles_coherency_vol_check_ok;

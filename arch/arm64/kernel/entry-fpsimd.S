@@ -86,3 +86,49 @@ SYM_FUNC_START(sve_flush_live)
 SYM_FUNC_END(sve_flush_live)
 
 #endif /* CONFIG_ARM64_SVE */
+
+#ifdef CONFIG_ARM64_SME
+
+SYM_FUNC_START(sme_get_vl)
+	_sme_rdsvl	0, 1
+	ret
+SYM_FUNC_END(sme_get_vl)
+
+SYM_FUNC_START(sme_set_vq)
+	sme_load_vq x0, x1, x2
+	ret
+SYM_FUNC_END(sme_set_vq)
+
+/*
+ * Save the ZA and ZT state
+ *
+ * x0 - pointer to buffer for state
+ * x1 - number of ZT registers to save
+ */
+SYM_FUNC_START(sme_save_state)
+	_sme_rdsvl	2, 1		// x2 = VL/8
+	sme_save_za 0, x2, 12		// Leaves x0 pointing to the end of ZA
+
+	cbz	x1, 1f
+	_str_zt 0
+1:
+	ret
+SYM_FUNC_END(sme_save_state)
+
+/*
+ * Load the ZA and ZT state
+ *
+ * x0 - pointer to buffer for state
+ * x1 - number of ZT registers to save
+ */
+SYM_FUNC_START(sme_load_state)
+	_sme_rdsvl	2, 1		// x2 = VL/8
+	sme_load_za 0, x2, 12		// Leaves x0 pointing to the end of ZA
+
+	cbz	x1, 1f
+	_ldr_zt 0
+1:
+	ret
+SYM_FUNC_END(sme_load_state)
+
+#endif /* CONFIG_ARM64_SME */

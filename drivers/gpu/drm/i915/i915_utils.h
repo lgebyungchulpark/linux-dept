@@ -28,39 +28,22 @@
 #include <linux/list.h>
 #include <linux/overflow.h>
 #include <linux/sched.h>
+#include <linux/string_helpers.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 #include <linux/sched/clock.h>
 
+#ifdef CONFIG_X86
+#include <asm/hypervisor.h>
+#endif
+
 struct drm_i915_private;
 struct timer_list;
 
-#define FDO_BUG_URL "https://gitlab.freedesktop.org/drm/intel/-/wikis/How-to-file-i915-bugs"
-
-#undef WARN_ON
-/* Many gcc seem to no see through this and fall over :( */
-#if 0
-#define WARN_ON(x) ({ \
-	bool __i915_warn_cond = (x); \
-	if (__builtin_constant_p(__i915_warn_cond)) \
-		BUILD_BUG_ON(__i915_warn_cond); \
-	WARN(__i915_warn_cond, "WARN_ON(" #x ")"); })
-#else
-#define WARN_ON(x) WARN((x), "%s", "WARN_ON(" __stringify(x) ")")
-#endif
-
-#undef WARN_ON_ONCE
-#define WARN_ON_ONCE(x) WARN_ONCE((x), "%s", "WARN_ON_ONCE(" __stringify(x) ")")
+#define FDO_BUG_URL "https://drm.pages.freedesktop.org/intel-docs/how-to-file-i915-bugs.html"
 
 #define MISSING_CASE(x) WARN(1, "Missing case (%s == %ld)\n", \
 			     __stringify(x), (long)(x))
-
-void __printf(3, 4)
-__i915_printk(struct drm_i915_private *dev_priv, const char *level,
-	      const char *fmt, ...);
-
-#define i915_report_error(dev_priv, fmt, ...)				   \
-	__i915_printk(dev_priv, KERN_ERR, fmt, ##__VA_ARGS__)
 
 #if IS_ENABLED(CONFIG_DRM_I915_DEBUG)
 
@@ -79,23 +62,12 @@ bool i915_error_injected(void);
 
 #define i915_inject_probe_failure(i915) i915_inject_probe_error((i915), -ENODEV)
 
-#define i915_probe_error(i915, fmt, ...)				   \
-	__i915_printk(i915, i915_error_injected() ? KERN_DEBUG : KERN_ERR, \
-		      fmt, ##__VA_ARGS__)
-
-#if defined(GCC_VERSION) && GCC_VERSION >= 70000
-#define add_overflows_t(T, A, B) \
-	__builtin_add_overflow_p((A), (B), (T)0)
-#else
-#define add_overflows_t(T, A, B) ({ \
-	typeof(A) a = (A); \
-	typeof(B) b = (B); \
-	(T)(a + b) < a; \
+#define i915_probe_error(i915, fmt, ...) ({ \
+	if (i915_error_injected()) \
+		drm_dbg(&(i915)->drm, fmt, ##__VA_ARGS__); \
+	else \
+		drm_err(&(i915)->drm, fmt, ##__VA_ARGS__); \
 })
-#endif
-
-#define add_overflows(A, B) \
-	add_overflows_t(typeof((A) + (B)), (A), (B))
 
 #define range_overflows(start, size, max) ({ \
 	typeof(start) start__ = (start); \
@@ -120,43 +92,6 @@ bool i915_error_injected(void);
 
 #define range_overflows_end_t(type, start, size, max) \
 	range_overflows_end((type)(start), (type)(size), (type)(max))
-
-/* Note we don't consider signbits :| */
-#define overflows_type(x, T) \
-	(sizeof(x) > sizeof(T) && (x) >> BITS_PER_TYPE(T))
-
-static inline bool
-__check_struct_size(size_t base, size_t arr, size_t count, size_t *size)
-{
-	size_t sz;
-
-	if (check_mul_overflow(count, arr, &sz))
-		return false;
-
-	if (check_add_overflow(sz, base, &sz))
-		return false;
-
-	*size = sz;
-	return true;
-}
-
-/**
- * check_struct_size() - Calculate size of structure with trailing array.
- * @p: Pointer to the structure.
- * @member: Name of the array member.
- * @n: Number of elements in the array.
- * @sz: Total size of structure and array
- *
- * Calculates size of memory needed for structure @p followed by an
- * array of @n @member elements, like struct_size() but reports
- * whether it overflowed, and the resultant size in @sz
- *
- * Return: false if the calculation overflowed.
- */
-#define check_struct_size(p, member, n, sz) \
-	likely(__check_struct_size(sizeof(*(p)), \
-				   sizeof(*(p)->member) + __must_be_array((p)->member), \
-				   n, sz))
 
 #define ptr_mask_bits(ptr, n) ({					\
 	unsigned long __v = (unsigned long)(ptr);			\
@@ -192,10 +127,6 @@ __check_struct_size(size_t base, size_t arr, size_t count, size_t *size)
 #define page_pack_bits(ptr, bits) ptr_pack_bits(ptr, bits, PAGE_SHIFT)
 #define page_unpack_bits(ptr, bits) ptr_unpack_bits(ptr, bits, PAGE_SHIFT)
 
-#define struct_member(T, member) (((T *)0)->member)
-
-#define ptr_offset(ptr, member) offsetof(typeof(*(ptr)), member)
-
 #define fetch_and_zero(ptr) ({						\
 	typeof(*ptr) __T = *(ptr);					\
 	*(ptr) = (typeof(*ptr))0;					\
@@ -215,7 +146,7 @@ static __always_inline ptrdiff_t ptrdiff(const void *a, const void *b)
  */
 #define container_of_user(ptr, type, member) ({				\
 	void __user *__mptr = (void __user *)(ptr);			\
-	BUILD_BUG_ON_MSG(!__same_type(*(ptr), struct_member(type, member)) && \
+	BUILD_BUG_ON_MSG(!__same_type(*(ptr), typeof_member(type, member)) && \
 			 !__same_type(*(ptr), void),			\
 			 "pointer type mismatch in container_of()");	\
 	((type __user *)(__mptr - offsetof(type, member))); })
@@ -237,11 +168,6 @@ static __always_inline ptrdiff_t ptrdiff(const void *a, const void *b)
 	typeof(*(U)) mbz__;						\
 	get_user(mbz__, (U)) ? -EFAULT : mbz__ ? -EINVAL : 0;		\
 })
-
-static inline u64 ptr_to_u64(const void *ptr)
-{
-	return (uintptr_t)ptr;
-}
 
 #define u64_to_ptr(T, x) ({						\
 	typecheck(u64, x);						\
@@ -306,7 +232,7 @@ wait_remaining_ms_from_jiffies(unsigned long timestamp_jiffies, int to_wait_ms)
 	}
 }
 
-/**
+/*
  * __wait_for - magic wait macro
  *
  * Macro to help avoid open coding check/wait/timeout patterns. Note that it's
@@ -344,7 +270,7 @@ wait_remaining_ms_from_jiffies(unsigned long timestamp_jiffies, int to_wait_ms)
 #define wait_for(COND, MS)		_wait_for((COND), (MS) * 1000, 10, 1000)
 
 /* If CONFIG_PREEMPT_COUNT is disabled, in_atomic() always reports false. */
-#if defined(CONFIG_DRM_I915_DEBUG) && defined(CONFIG_PREEMPT_COUNT)
+#if IS_ENABLED(CONFIG_DRM_I915_DEBUG) && IS_ENABLED(CONFIG_PREEMPT_COUNT)
 # define _WAIT_FOR_ATOMIC_CHECK(ATOMIC) WARN_ON_ONCE((ATOMIC) && !in_atomic())
 #else
 # define _WAIT_FOR_ATOMIC_CHECK(ATOMIC) do { } while (0)
@@ -410,30 +336,6 @@ wait_remaining_ms_from_jiffies(unsigned long timestamp_jiffies, int to_wait_ms)
 #define KHz(x) (1000 * (x))
 #define MHz(x) KHz(1000 * (x))
 
-#define KBps(x) (1000 * (x))
-#define MBps(x) KBps(1000 * (x))
-#define GBps(x) ((u64)1000 * MBps((x)))
-
-static inline const char *yesno(bool v)
-{
-	return v ? "yes" : "no";
-}
-
-static inline const char *onoff(bool v)
-{
-	return v ? "on" : "off";
-}
-
-static inline const char *enabledisable(bool v)
-{
-	return v ? "enable" : "disable";
-}
-
-static inline const char *enableddisabled(bool v)
-{
-	return v ? "enabled" : "disabled";
-}
-
 void add_taint_for_CI(struct drm_i915_private *i915, unsigned int taint);
 static inline void __add_taint_for_CI(unsigned int taint)
 {
@@ -458,5 +360,19 @@ static inline bool timer_expired(const struct timer_list *t)
 {
 	return timer_active(t) && !timer_pending(t);
 }
+
+static inline bool i915_run_as_guest(void)
+{
+#if IS_ENABLED(CONFIG_X86)
+	return !hypervisor_is_type(X86_HYPER_NATIVE);
+#else
+	/* Not supported yet */
+	return false;
+#endif
+}
+
+bool i915_vtd_active(struct drm_i915_private *i915);
+
+bool i915_direct_stolen_access(struct drm_i915_private *i915);
 
 #endif /* !__I915_UTILS_H */

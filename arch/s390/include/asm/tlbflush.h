@@ -25,9 +25,7 @@ static inline void __tlb_flush_idte(unsigned long asce)
 	if (MACHINE_HAS_TLB_GUEST)
 		opt |= IDTE_GUEST_ASCE;
 	/* Global TLB flush for the mm */
-	asm volatile(
-		"	.insn	rrf,0xb98e0000,0,%0,%1,0"
-		: : "a" (opt), "a" (asce) : "cc");
+	asm volatile("idte 0,%1,%0" : : "a" (opt), "a" (asce) : "cc");
 }
 
 /*
@@ -48,11 +46,6 @@ static inline void __tlb_flush_mm(struct mm_struct *mm)
 {
 	unsigned long gmap_asce;
 
-	/*
-	 * If the machine has IDTE we prefer to do a per mm flush
-	 * on all cpus instead of doing a local flush if the mm
-	 * only ran on the local cpu.
-	 */
 	preempt_disable();
 	atomic_inc(&mm->context.flush_count);
 	/* Reset TLB flush mask */

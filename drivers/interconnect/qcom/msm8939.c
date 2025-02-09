@@ -5,18 +5,16 @@
  * With reference of msm8916 interconnect driver of Georgi Djakov.
  */
 
-#include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect-provider.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <linux/of_device.h>
 
 #include <dt-bindings/interconnect/qcom,msm8939.h>
 
-#include "smd-rpm.h"
 #include "icc-rpm.h"
 
 enum {
@@ -1251,7 +1249,7 @@ static struct qcom_icc_node snoc_pcnoc_slv = {
 	.links = snoc_pcnoc_slv_links,
 };
 
-static struct qcom_icc_node *msm8939_snoc_nodes[] = {
+static struct qcom_icc_node * const msm8939_snoc_nodes[] = {
 	[BIMC_SNOC_SLV] = &bimc_snoc_slv,
 	[MASTER_QDSS_BAM] = &mas_qdss_bam,
 	[MASTER_QDSS_ETR] = &mas_qdss_etr,
@@ -1281,15 +1279,16 @@ static const struct regmap_config msm8939_snoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc msm8939_snoc = {
+static const struct qcom_icc_desc msm8939_snoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = msm8939_snoc_nodes,
 	.num_nodes = ARRAY_SIZE(msm8939_snoc_nodes),
+	.bus_clk_desc = &bus_1_clk,
 	.regmap_cfg = &msm8939_snoc_regmap_config,
 	.qos_offset = 0x7000,
 };
 
-static struct qcom_icc_node *msm8939_snoc_mm_nodes[] = {
+static struct qcom_icc_node * const msm8939_snoc_mm_nodes[] = {
 	[MASTER_VIDEO_P0] = &mas_video,
 	[MASTER_JPEG] = &mas_jpeg,
 	[MASTER_VFE] = &mas_vfe,
@@ -1301,23 +1300,16 @@ static struct qcom_icc_node *msm8939_snoc_mm_nodes[] = {
 	[SNOC_MM_INT_2] = &mm_int_2,
 };
 
-static const struct regmap_config msm8939_snoc_mm_regmap_config = {
-	.reg_bits	= 32,
-	.reg_stride	= 4,
-	.val_bits	= 32,
-	.max_register	= 0x14080,
-	.fast_io	= true,
-};
-
-static struct qcom_icc_desc msm8939_snoc_mm = {
+static const struct qcom_icc_desc msm8939_snoc_mm = {
 	.type = QCOM_ICC_NOC,
 	.nodes = msm8939_snoc_mm_nodes,
 	.num_nodes = ARRAY_SIZE(msm8939_snoc_mm_nodes),
-	.regmap_cfg = &msm8939_snoc_mm_regmap_config,
+	.bus_clk_desc = &bus_2_clk,
+	.regmap_cfg = &msm8939_snoc_regmap_config,
 	.qos_offset = 0x7000,
 };
 
-static struct qcom_icc_node *msm8939_bimc_nodes[] = {
+static struct qcom_icc_node * const msm8939_bimc_nodes[] = {
 	[BIMC_SNOC_MAS] = &bimc_snoc_mas,
 	[MASTER_AMPSS_M0] = &mas_apss,
 	[MASTER_GRAPHICS_3D] = &mas_gfx,
@@ -1337,15 +1329,16 @@ static const struct regmap_config msm8939_bimc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc msm8939_bimc = {
+static const struct qcom_icc_desc msm8939_bimc = {
 	.type = QCOM_ICC_BIMC,
 	.nodes = msm8939_bimc_nodes,
 	.num_nodes = ARRAY_SIZE(msm8939_bimc_nodes),
+	.bus_clk_desc = &bimc_clk,
 	.regmap_cfg = &msm8939_bimc_regmap_config,
 	.qos_offset = 0x8000,
 };
 
-static struct qcom_icc_node *msm8939_pcnoc_nodes[] = {
+static struct qcom_icc_node * const msm8939_pcnoc_nodes[] = {
 	[MASTER_BLSP_1] = &mas_blsp_1,
 	[MASTER_DEHR] = &mas_dehr,
 	[MASTER_LPASS] = &mas_audio,
@@ -1408,10 +1401,11 @@ static const struct regmap_config msm8939_pcnoc_regmap_config = {
 	.fast_io	= true,
 };
 
-static struct qcom_icc_desc msm8939_pcnoc = {
+static const struct qcom_icc_desc msm8939_pcnoc = {
 	.type = QCOM_ICC_NOC,
 	.nodes = msm8939_pcnoc_nodes,
 	.num_nodes = ARRAY_SIZE(msm8939_pcnoc_nodes),
+	.bus_clk_desc = &bus_0_clk,
 	.regmap_cfg = &msm8939_pcnoc_regmap_config,
 	.qos_offset = 0x7000,
 };
@@ -1431,6 +1425,7 @@ static struct platform_driver msm8939_noc_driver = {
 	.driver = {
 		.name = "qnoc-msm8939",
 		.of_match_table = msm8939_noc_of_match,
+		.sync_state = icc_sync_state,
 	},
 };
 module_platform_driver(msm8939_noc_driver);

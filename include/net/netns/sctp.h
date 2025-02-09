@@ -2,6 +2,9 @@
 #ifndef __NETNS_SCTP_H__
 #define __NETNS_SCTP_H__
 
+#include <linux/timer.h>
+#include <net/snmp.h>
+
 struct sock;
 struct proc_dir_entry;
 struct sctp_mib;
@@ -122,14 +125,14 @@ struct netns_sctp {
 	int pf_expose;
 
 	/*
-	 * Policy for preforming sctp/socket accounting
+	 * Policy for performing sctp/socket accounting
 	 * 0   - do socket level accounting, all assocs share sk_sndbuf
 	 * 1   - do sctp accounting, each asoc may use sk_sndbuf bytes
 	 */
 	int sndbuf_policy;
 
 	/*
-	 * Policy for preforming sctp/socket accounting
+	 * Policy for performing sctp/socket accounting
 	 * 0   - do socket level accounting, all assocs share sk_rcvbuf
 	 * 1   - do sctp accounting, each asoc may use sk_rcvbuf bytes
 	 */
@@ -172,6 +175,10 @@ struct netns_sctp {
 
 	/* Threshold for autoclose timeout, in seconds. */
 	unsigned long max_autoclose;
+
+#ifdef CONFIG_NET_L3_MASTER_DEV
+	int l3mdev_accept;
+#endif
 };
 
 #endif /* __NETNS_SCTP_H__ */
